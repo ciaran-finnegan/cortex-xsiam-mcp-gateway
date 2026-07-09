@@ -4,14 +4,21 @@
 
 Cortex XSIAM MCP Gateway is a FastMCP server that exposes Cortex XSIAM
 capabilities to MCP clients. The current implementation runs tools locally with
-a configured XSIAM API key. The target production architecture adds an identity
-and authorization gateway layer before any XSIAM API call.
+a configured XSIAM API key. The target production architecture adds identity and
+authorization controls before any XSIAM API call.
+
+An AI gateway such as Portkey or LiteLLM is optional. Teams can deploy this MCP
+server directly behind Entra ID token validation, or place it behind an AI
+gateway when they already use one for central model routing, policy, telemetry,
+or identity forwarding.
 
 ```mermaid
 flowchart LR
   User["User"] --> Client["MCP client"]
-  Client --> Gateway["MCP Gateway"]
-  Gateway --> Auth["Identity validation<br/>Entra ID or Portkey"]
+  Client --> OptionalGateway["Optional AI gateway<br/>Portkey, LiteLLM, etc."]
+  Client --> MCP["MCP server"]
+  OptionalGateway --> MCP
+  MCP --> Auth["Identity validation<br/>Entra ID token or trusted gateway claims"]
   Auth --> Policy["Tool and dataset policy"]
   Policy --> Broker["Credential broker"]
   Broker --> XSIAM["Cortex XSIAM API"]
@@ -52,13 +59,16 @@ flowchart LR
 ## Target Production Flow
 
 1. User signs in with Entra ID.
-2. Portkey or the MCP server validates identity.
-3. User groups/app roles are stored in `MCPContext`.
-4. Tool policy decides if the tool can be invoked.
-5. Dataset policy decides if the dataset can be queried.
-6. Credential broker selects a least-privilege XSIAM API key.
-7. XSIAM request is executed.
-8. Audit event records principal, role, tool, dataset, decision, and credential profile.
+2. Either the MCP server validates the Entra token directly, or an optional AI
+   gateway such as Portkey or LiteLLM validates the user and forwards a trusted
+   identity assertion.
+3. MCP server validates the direct token or the gateway forwarding contract.
+4. User groups/app roles are stored in `MCPContext`.
+5. Tool policy decides if the tool can be invoked.
+6. Dataset policy decides if the dataset can be queried.
+7. Credential broker selects a least-privilege XSIAM API key.
+8. XSIAM request is executed.
+9. Audit event records principal, role, tool, dataset, decision, and credential profile.
 
 ## Design Principles
 

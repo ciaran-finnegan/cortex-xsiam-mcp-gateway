@@ -24,7 +24,7 @@ The current authentication model is server-to-XSIAM only:
 - `CORTEX_MCP_PAPI_AUTH_ID`
 
 There is no current incoming user authentication, Entra token validation,
-Portkey identity verification, user role mapping, or per-user/per-role
+optional AI gateway identity verification, user role mapping, or per-user/per-role
 credential selection.
 
 Log search has an initial dataset policy hook:
@@ -46,8 +46,11 @@ Example:
 }
 ```
 
-In production, `groups` should come from Entra or Portkey-forwarded identity
-claims, not from default environment variables.
+In production, `groups` should come from verified identity claims, not from
+default environment variables. Some deployments can validate Entra ID tokens
+directly in the MCP server. Deployments that already use Portkey, LiteLLM, or a
+similar AI gateway can instead forward trusted identity claims from that gateway,
+provided the MCP server validates the forwarding contract.
 
 ## Current Tools
 
@@ -147,8 +150,9 @@ The current server has these gaps:
 - No incoming OAuth/OIDC/JWT validation for users.
 - No mapping from Entra user or group claims to XSIAM roles.
 - No full tool policy enforcement before every tool executes.
-- Dataset allowlist exists for `search_logs`, but it still needs Entra/Portkey
-  identity and broader XQL guardrails.
+- Dataset allowlist exists for `search_logs`, but it still needs incoming
+  identity, whether direct Entra validation or optional gateway-forwarded
+  claims, plus broader XQL guardrails.
 - No per-role XSIAM API key selection.
 - No audit trail tying an MCP request to an Entra user.
 - `execute_xql_query` remains a raw XQL path and should be restricted to
@@ -162,9 +166,10 @@ until those controls exist.
 Recommended flow:
 
 1. User authenticates through Entra ID, either directly to the MCP server or via
-   Portkey.
-2. MCP server verifies user identity and receives stable claims such as user ID,
-   UPN, tenant ID, groups, and app roles.
+   an optional AI gateway such as Portkey or LiteLLM.
+2. MCP server verifies user identity directly, or validates trusted claims
+   forwarded by the optional gateway, and receives stable claims such as user
+   ID, UPN, tenant ID, groups, and app roles.
 3. MCP server maps Entra groups/app roles to XSIAM roles and scopes.
 4. MCP server checks a local policy before tool execution.
 5. MCP server selects the least-privilege XSIAM API credential for that role.
@@ -210,8 +215,9 @@ security operations access.
 The first implementation milestone should be:
 
 1. Add request identity model.
-2. Add Entra/Portkey identity verification for HTTP mode.
+2. Add direct Entra identity verification for HTTP mode.
 3. Add policy engine and tool metadata.
 4. Add credential broker for role-scoped XSIAM API keys.
 5. Add safe `search_logs` wrapper.
 6. Restrict raw `execute_xql_query` to privileged roles.
+7. Add optional Portkey/LiteLLM-style gateway identity-forwarding validation.
