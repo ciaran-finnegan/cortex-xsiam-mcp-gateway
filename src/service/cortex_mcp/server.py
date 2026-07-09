@@ -9,6 +9,8 @@ from starlette.responses import JSONResponse
 from config.config import get_config
 from entities.MCPContext import MCPContext
 from service.cortex_mcp.audit_middleware import ToolAuditMiddleware
+from service.cortex_mcp.tool_policy_middleware import ToolPolicyMiddleware
+from usecase.identity import parse_csv
 
 logger = logging.getLogger("Cortex MCP")
 
@@ -40,11 +42,10 @@ def create_mcp_lifespan(api_key: str | None = None, api_key_id: str | None = Non
                 raise ValueError("Missing authentication headers")
 
             config = get_config()
-            groups = tuple(group.strip() for group in config.log_search_default_groups.split(",") if group.strip())
             context = MCPContext(
                 auth_headers={"Authorization": api_key, "X-XDR-AUTH-ID": api_key_id},
                 principal_id=config.log_search_default_principal_id,
-                groups=groups,
+                groups=parse_csv(config.log_search_default_groups),
             )
 
             # Register dynamic tools
@@ -78,7 +79,7 @@ def create_mcp_server(api_key: str | None = None, api_key_id: str | None = None)
 
     mcp = FastMCP(
         name="Cortex MCP Server",
-        middleware=[ToolAuditMiddleware()],
+        middleware=[ToolAuditMiddleware(), ToolPolicyMiddleware()],
         lifespan=lifespan,
     )
 

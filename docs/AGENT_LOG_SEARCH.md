@@ -2,13 +2,14 @@
 
 ## Design
 
-The LLM agent translates the user's plain-English request into structured MCP
-tool calls. The MCP server provides compact discovery, policy enforcement, XQL
-execution, and audit logging.
+Claude Code, Codex, or another MCP client agent translates the user's
+plain-English request into structured MCP tool calls. The MCP server provides compact
+discovery, policy enforcement, XQL execution, and audit logging.
 
 The MCP server should not act as a broad second natural-language interpreter.
 It should give the agent enough live context to choose valid datasets and
-fields, then validate the resulting request.
+fields, then validate the resulting request. It does not expose a
+`natural_language_query` argument.
 
 ## Recommended Agent Flow
 
@@ -65,15 +66,16 @@ Agents should:
 The MCP server enforces caps on discovery output so a broad tenant schema does
 not get dumped into the model context.
 
-## Natural Language Fallback
+## Plain-English Handling
 
-`search_logs.natural_language_query` remains an experimental fallback for simple
-SOC patterns. It is not the preferred enterprise path.
-
-The preferred path is:
+Plain-English handling belongs in Claude Code, Codex, or another MCP client
+agent:
 
 1. Agent understands the user request.
 2. Agent discovers allowed datasets and observed fields.
 3. Agent calls `search_logs` with structured JSON.
 4. MCP server enforces policy, executes XQL, and audits the call.
 
+Do not ask the MCP server to translate open-ended prompts into XQL. If the user
+request is vague, the agent should ask a clarifying question or run only a small
+`dry_run=true` structured search against an allowed dataset.

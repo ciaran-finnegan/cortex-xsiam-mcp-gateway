@@ -5,28 +5,33 @@
 - [x] Create public fork and project scaffolding.
 - [x] Add `search_logs` wrapper.
 - [x] Add dataset allowlist policy.
-- [x] Add conservative natural-language-to-XQL templates.
+- [x] Remove server-side natural-language query handling in favor of Claude
+      Code structured MCP calls.
 - [x] Add CI, CodeQL, Dependency Review, Dependabot, and Scorecard.
 - [x] Add structured audit logging for every MCP tool invocation.
 - [x] Add optional Cortex XSIAM HTTP Log Collector export for audit events.
 - [x] Restrict `execute_xql_query` to security/admin roles.
+- [x] Add Entra ID token validation for HTTP transport.
+- [x] Add optional AI gateway identity-forwarding validation for Portkey,
+      LiteLLM, and similar gateways.
+- [x] Add tool-level policy for every MCP tool.
+- [x] Add role-to-XSIAM-credential broker using pre-provisioned profiles.
 - [x] Add compact agent guidance, allowed dataset discovery, and XQL-backed
       field discovery for log-search agents.
+- [x] Add agent workflow tests for Claude Code/Codex-style structured log
+      searches.
 - [x] Document enterprise deployment architecture and current upstream MCP
       limitations.
 - [x] Add alpha release process documentation.
 - [x] Add AI review configuration for Codex, Claude, CodeRabbit, and Copilot.
-- [ ] Add Entra ID token validation for HTTP transport.
-- [ ] Add optional AI gateway identity-forwarding validation for Portkey,
-      LiteLLM, and similar gateways.
-- [ ] Add tool-level policy for every MCP tool.
+- [ ] Validate Entra, gateway, dataset policy, tool policy, credential broker,
+      and audit export against a non-production XSIAM tenant.
 - [ ] Complete FastMCP 3 compatibility work to remove the unpatched transitive
       `diskcache` dependency carried by FastMCP 2.x
       ([#26](https://github.com/ciaran-finnegan/cortex-xsiam-mcp-gateway/issues/26)).
 
 ## Beta
 
-- [ ] Add role-to-XSIAM-credential broker.
 - [ ] Add field-level output redaction.
 - [ ] Add cached/curated dataset catalogue configuration for production tenants.
 - [ ] Add streaming XQL result retrieval.

@@ -42,6 +42,78 @@ class Settings(BaseSettings):
         "Security,Admin",
         validation_alias="RAW_XQL_PRIVILEGED_GROUPS",
     )
+    tool_access_policy: str = Field(
+        (
+            '{"Admin":["*"],"Security":["*"],'
+            '"SOC":["get_log_search_guidance","list_log_datasets","discover_log_fields","search_logs",'
+            '"get_xql_query_quota","get_cases","get_issues"],'
+            '"Tier1":["get_log_search_guidance","list_log_datasets","discover_log_fields","search_logs",'
+            '"get_xql_query_quota","get_cases","get_issues"]}'
+        ),
+        validation_alias="TOOL_ACCESS_POLICY",
+    )
+
+    # --- Incoming Identity Settings ---
+    identity_auth_mode: str = Field("none", validation_alias="MCP_IDENTITY_AUTH_MODE")
+    entra_tenant_id: str = Field("", validation_alias="ENTRA_TENANT_ID")
+    entra_issuer: str = Field("", validation_alias="ENTRA_ISSUER")
+    entra_audience: str = Field("", validation_alias="ENTRA_AUDIENCE")
+    entra_jwks_uri: str = Field("", validation_alias="ENTRA_JWKS_URI")
+    entra_jwt_public_key: str = Field("", validation_alias="ENTRA_JWT_PUBLIC_KEY")
+    entra_jwt_algorithm: str = Field("RS256", validation_alias="ENTRA_JWT_ALGORITHM")
+    entra_required_scopes: str = Field("", validation_alias="ENTRA_REQUIRED_SCOPES")
+    entra_principal_claims: str = Field(
+        "preferred_username,upn,email,oid,sub",
+        validation_alias="ENTRA_PRINCIPAL_CLAIMS",
+    )
+    entra_groups_claim: str = Field("groups", validation_alias="ENTRA_GROUPS_CLAIM")
+    entra_roles_claim: str = Field("roles", validation_alias="ENTRA_ROLES_CLAIM")
+
+    # --- Optional Trusted AI Gateway Identity Settings ---
+    gateway_shared_secret: str = Field("", validation_alias="MCP_GATEWAY_SHARED_SECRET")
+    gateway_allowed_issuers: str = Field("", validation_alias="MCP_GATEWAY_ALLOWED_ISSUERS")
+    gateway_max_clock_skew_seconds: int = Field(
+        300,
+        validation_alias="MCP_GATEWAY_MAX_CLOCK_SKEW_SECONDS",
+    )
+    gateway_principal_header: str = Field(
+        "X-MCP-Gateway-Principal",
+        validation_alias="MCP_GATEWAY_PRINCIPAL_HEADER",
+    )
+    gateway_groups_header: str = Field(
+        "X-MCP-Gateway-Groups",
+        validation_alias="MCP_GATEWAY_GROUPS_HEADER",
+    )
+    gateway_roles_header: str = Field(
+        "X-MCP-Gateway-Roles",
+        validation_alias="MCP_GATEWAY_ROLES_HEADER",
+    )
+    gateway_issuer_header: str = Field(
+        "X-MCP-Gateway-Issuer",
+        validation_alias="MCP_GATEWAY_ISSUER_HEADER",
+    )
+    gateway_timestamp_header: str = Field(
+        "X-MCP-Gateway-Timestamp",
+        validation_alias="MCP_GATEWAY_TIMESTAMP_HEADER",
+    )
+    gateway_nonce_header: str = Field(
+        "X-MCP-Gateway-Nonce",
+        validation_alias="MCP_GATEWAY_NONCE_HEADER",
+    )
+    gateway_signature_header: str = Field(
+        "X-MCP-Gateway-Signature",
+        validation_alias="MCP_GATEWAY_SIGNATURE_HEADER",
+    )
+
+    # --- XSIAM Credential Broker Settings ---
+    xsiam_credential_broker_enabled: bool = Field(
+        False,
+        validation_alias="XSIAM_CREDENTIAL_BROKER_ENABLED",
+    )
+    xsiam_credential_profiles: str = Field(
+        "{}",
+        validation_alias="XSIAM_CREDENTIAL_PROFILES",
+    )
 
     # --- Audit Settings ---
     audit_log_enabled: bool = Field(True, validation_alias="AUDIT_LOG_ENABLED")

@@ -22,11 +22,13 @@ from functools import partial
 
 from fastmcp import FastMCP
 from fastmcp.server.server import Transport
+from starlette.middleware import Middleware
 
 from config.config import get_config
 from pkg.client import PAPIClient
 from pkg.setup_logging import setup_logging
 from pkg.util import bundle_openapi_from_folders, get_papi_auth_headers, get_papi_url
+from service.cortex_mcp.identity_middleware import IdentityMiddleware
 from service.cortex_mcp.server import create_mcp_server
 from usecase.module_util import discover_and_register_modules
 
@@ -107,6 +109,7 @@ async def async_main(transport: Transport):
             host=config.mcp_host,
             port=config.mcp_port,
             path=config.mcp_path,
+            middleware=[Middleware(IdentityMiddleware)],
         )
 
 

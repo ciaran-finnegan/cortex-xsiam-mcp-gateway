@@ -2,18 +2,23 @@
 
 ## Current State
 
-The current implementation authenticates to XSIAM with a configured API key and
-API key ID. Incoming MCP users are not yet authenticated by Entra ID. Optional
-AI gateway identity forwarding, such as Portkey or LiteLLM, is also not yet
-implemented.
+The current implementation authenticates to XSIAM with either a configured
+default API key or a role/group-scoped credential profile selected by the
+credential broker.
 
-`search_logs` enforces dataset allowlists using groups from `MCPContext`.
-`execute_xql_query` is restricted to privileged groups. Every MCP tool call is
-audited through middleware, with optional export to a Cortex XSIAM HTTP Log
-Collector.
+For HTTP transport, incoming users can be authenticated through Entra bearer
+JWT validation, HMAC-signed trusted gateway identity forwarding, or either path
+when `MCP_IDENTITY_AUTH_MODE=entra_or_gateway`.
 
-In development, groups come from environment defaults. In production, they must
-come from verified identity claims.
+Every MCP tool invocation is checked against `TOOL_ACCESS_POLICY`.
+`search_logs` also enforces dataset allowlists using verified groups/app roles
+from `MCPContext`. `execute_xql_query` and caller-supplied raw XQL through
+`search_logs(query=...)` are restricted to privileged groups. Every MCP tool
+call is audited through middleware, with optional export to a Cortex XSIAM HTTP
+Log Collector.
+
+In local stdio development, groups can come from environment defaults. In
+production HTTP deployments, groups must come from verified identity claims.
 
 ## Target State
 
@@ -60,9 +65,9 @@ sequenceDiagram
 | Layer | Purpose |
 | --- | --- |
 | Identity | Verify the human or service calling MCP. |
-| Tool policy | Decide which tools can be invoked. Implemented for raw XQL only. |
+| Tool policy | Decide which tools can be invoked. |
 | Dataset policy | Decide which XSIAM datasets can be queried. |
-| Credential policy | Select the least-privilege XSIAM API credential. |
+| Credential policy | Select a pre-provisioned least-privilege XSIAM API credential. |
 | Output policy | Redact or suppress fields not allowed for the caller. |
 | Audit | Record every tool invocation and policy outcome. |
 
@@ -87,18 +92,22 @@ Tool invocation audit is implemented. It records principal, groups, tool,
 outcome, dataset, argument hashes, duration, and XSIAM API key ID hash. Cortex
 XSIAM SIEM export is supported through an HTTP Log Collector.
 
-Raw XQL and natural-language prompts are hashed by default. Full query logging
-requires `AUDIT_LOG_INCLUDE_QUERY_TEXT=true`.
+Raw XQL is hashed by default. Full query logging requires
+`AUDIT_LOG_INCLUDE_QUERY_TEXT=true`.
+
+## Credential Policy
+
+The credential broker does not dynamically provision per-user API keys. It
+selects from pre-provisioned XSIAM API key profiles mapped to groups/app roles.
+If the broker is enabled and no profile matches the verified principal, tool
+execution fails closed.
 
 ## Known Gaps
 
-- Incoming Entra authentication is not implemented.
-- Optional Portkey/LiteLLM-style gateway identity forwarding is not
-  implemented.
-- Per-role XSIAM credential selection is not implemented.
-- Tool-level authorization is not implemented for every tool.
 - Output redaction is not implemented.
 - Large result streaming is not implemented.
+- Live enterprise validation is still required for each tenant-specific Entra,
+  gateway, dataset, tool, credential, and audit-export configuration.
 
 ## Threat Model Summary
 
@@ -106,10 +115,10 @@ Primary risks:
 
 - broad API key misuse;
 - unauthorized dataset search;
-- malicious or overbroad natural-language-to-XQL translation;
+- malicious or overbroad agent-generated query plans;
 - leakage of query results to unauthorized users;
 - prompt injection causing unsafe tool use;
-- incomplete tool-level authorization.
+- credential profile misconfiguration.
 
 Core mitigations:
 
@@ -119,4 +128,5 @@ Core mitigations:
 - require explicit dataset declarations;
 - use least-privilege API keys;
 - log all authorization decisions;
-- keep natural-language translation deterministic or policy-validated.
+- keep plain-English interpretation in the client agent and validate structured
+  calls on the server.

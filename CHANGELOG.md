@@ -6,8 +6,17 @@ This project follows a lightweight changelog format until stable releases begin.
 
 - Added compact agent log-search guidance, allowed dataset discovery, and
   XQL-backed field discovery tools for LLM agents.
-- Repositioned `natural_language_query` as an experimental fallback rather than
-  the primary enterprise log-search path.
+- Removed the server-side `natural_language_query` log-search path in favor of
+  Claude Code/Codex structured MCP calls.
+- Added Claude Code/Codex log-search workflow tests for dataset discovery,
+  field discovery, structured dry runs, denied datasets, and raw-XQL
+  authorization.
+- Added Entra JWT validation for HTTP transport.
+- Added optional HMAC-signed trusted gateway identity forwarding for Portkey,
+  LiteLLM, and similar gateways.
+- Added tool-level policy middleware for every MCP tool invocation.
+- Added XSIAM credential broker support for pre-provisioned role/group-scoped
+  API key profiles.
 - Added enterprise-first README with deployment diagrams, alpha limitations,
   and comparison with the current Palo Alto Cortex MCP deployment model.
 - Added framework-level audit middleware for every MCP tool invocation.

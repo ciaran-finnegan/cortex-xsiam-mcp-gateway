@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastmcp import Context, FastMCP
@@ -18,15 +17,16 @@ from entities.llm_config import LLM_FORMATTING_BASE_INSTRUCTIONS
 from pkg.util import create_response
 from usecase.base_module import BaseModule
 from usecase.fetcher import get_fetcher
+from usecase.identity import resolve_mcp_context
 from usecase.log_policy import (
     DatasetAuthorizationError,
+    ToolAuthorizationError,
     ensure_dataset_authorized,
+    ensure_raw_xql_authorized,
 )
 from usecase.xql_builder import (
     MAX_XQL_RESULT_LIMIT,
-    XQLTranslationError,
     build_structured_xql,
-    translate_log_search_to_xql,
 )
 from usecase.xql_discovery import (
     DEFAULT_DISCOVERY_DATASET_COUNT,
@@ -65,7 +65,7 @@ async def get_log_search_guidance() -> str:
             ],
             "rules": [
                 "Do not invent dataset or field names; discover them first.",
-                "Prefer structured filters over natural_language_query.",
+                "Convert plain-English requests into structured search_logs arguments in Claude Code, Codex, or another MCP client agent.",
                 "Request only the fields needed to answer the user.",
                 "Use low limits first and summarize results; do not pull broad result sets by default.",
                 "Use dry_run=true on search_logs when you need to inspect generated XQL before execution.",
@@ -77,29 +77,12 @@ async def get_log_search_guidance() -> str:
                 "search_logs": "Executes structured log searches with dataset policy enforcement.",
                 "execute_xql_query": "Privileged raw-XQL escape hatch for security/admin roles.",
             },
-            "natural_language_translation": {
-                "status": "experimental fallback",
-                "recommendation": "Agents should normally convert user requests into structured search_logs arguments themselves.",
+            "plain_english_handling": {
+                "owner": "Claude Code, Codex, or another MCP client agent",
+                "server_contract": "This MCP server does not accept natural-language log queries. It accepts discovered datasets, discovered fields, structured filters, raw XQL for privileged users, and bounded limits.",
             },
         }
     )
-
-
-def _relative_timeframe_to_epoch_ms(relative: str) -> dict:
-    amount = int(relative[:-1])
-    unit = relative[-1]
-    now = datetime.now(timezone.utc)
-
-    if unit == "m":
-        start = now - timedelta(minutes=amount)
-    elif unit == "h":
-        start = now - timedelta(hours=amount)
-    elif unit == "d":
-        start = now - timedelta(days=amount)
-    else:
-        raise ValueError(f"Unsupported relative timeframe: {relative}")
-
-    return {"from": int(start.timestamp() * 1000), "to": int(now.timestamp() * 1000)}
 
 
 def _extract_query_id(response_data: dict) -> str | None:
@@ -114,7 +97,7 @@ def _extract_query_id(response_data: dict) -> str | None:
 
 
 def _get_lifespan_context(ctx: Context):
-    return ctx.request_context.lifespan_context
+    return resolve_mcp_context(ctx)
 
 
 async def _run_xql_query(
@@ -193,13 +176,9 @@ async def search_logs(
         str | None,
         Field(description="Raw XQL query to execute. Use this for precise analyst-authored XQL."),
     ] = None,
-    natural_language_query: Annotated[
-        str | None,
-        Field(description="Experimental fallback only. Agents should normally translate user intent into structured filters."),
-    ] = None,
     dataset: Annotated[
         str,
-        Field(description="Dataset to search when building XQL from structured or natural-language inputs."),
+        Field(description="Dataset to search when building XQL from structured inputs."),
     ] = "xdr_data",
     filters: Annotated[
         list[dict] | None,
@@ -224,31 +203,26 @@ async def search_logs(
     ] = False,
 ) -> str:
     """
-    Search Cortex XSIAM logs using raw XQL, structured parameters, or an experimental constrained NL fallback.
+    Search Cortex XSIAM logs using raw XQL or structured parameters.
 
-    Prefer structured filters for agent workflows. Agents should use list_log_datasets and discover_log_fields
-    before constructing this request.
+    Claude Code, Codex, and other MCP agents should translate plain-English user
+    requests into structured arguments after using list_log_datasets and
+    discover_log_fields.
     """
     try:
-        translation = None
+        context = _get_lifespan_context(ctx)
         if query:
+            ensure_raw_xql_authorized(context)
             xql = query.strip()
-        elif natural_language_query:
-            translated = translate_log_search_to_xql(natural_language_query, dataset, fields, limit)
-            xql = translated["query"]
-            translation = translated["translation"]
-            if timeframe is None and translation.get("time_window"):
-                timeframe = _relative_timeframe_to_epoch_ms(translation["time_window"]["relative"])
         else:
             xql = build_structured_xql(dataset, filters, fields, limit)
 
-        policy_decision = ensure_dataset_authorized(_get_lifespan_context(ctx), dataset)
+        policy_decision = ensure_dataset_authorized(context, dataset)
 
         if dry_run:
             return create_response(
                 data={
                     "query": xql,
-                    "translation": translation,
                     "timeframe": timeframe,
                     "dataset_policy": policy_decision.__dict__,
                     "executed": False,
@@ -256,7 +230,6 @@ async def search_logs(
             )
 
         response_data = await _run_xql_query(ctx, xql, limit, timeframe=timeframe, tenants=tenants)
-        response_data["translation"] = translation
         response_data["dataset_policy"] = policy_decision.__dict__
         response_data["executed"] = True
         return create_response(data=response_data)
@@ -264,8 +237,8 @@ async def search_logs(
     except DatasetAuthorizationError as e:
         logger.info(f"Dataset authorization denied: {e}")
         return create_response(data={"error": str(e), "executed": False}, is_error=True)
-    except XQLTranslationError as e:
-        logger.info(f"Natural-language XQL translation refused: {e}")
+    except ToolAuthorizationError as e:
+        logger.info(f"Tool authorization denied: {e}")
         return create_response(data={"error": str(e), "executed": False}, is_error=True)
     except (ValueError, KeyError, TypeError) as e:
         logger.exception(f"Invalid log search request: {e}")

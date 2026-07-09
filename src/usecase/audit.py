@@ -70,14 +70,12 @@ def summarize_tool_arguments(tool_name: str, arguments: dict[str, Any] | None) -
             }
         )
 
-    for field_name in ("query", "natural_language_query"):
-        value = arguments.get(field_name)
-        if not isinstance(value, str) or not value:
-            continue
-        summary[f"{field_name}_sha256"] = _hash_text(value)
-        summary[f"{field_name}_length"] = len(value)
+    value = arguments.get("query")
+    if isinstance(value, str) and value:
+        summary["query_sha256"] = _hash_text(value)
+        summary["query_length"] = len(value)
         if config.audit_log_include_query_text:
-            summary[field_name] = value
+            summary["query"] = value
 
     if tool_name == "execute_xql_query" and "query" not in arguments:
         summary["raw_xql_requested"] = True
