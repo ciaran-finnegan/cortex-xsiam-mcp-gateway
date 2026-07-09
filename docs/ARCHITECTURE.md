@@ -1,0 +1,70 @@
+# Architecture
+
+## Overview
+
+Cortex XSIAM MCP Gateway is a FastMCP server that exposes Cortex XSIAM
+capabilities to MCP clients. The current implementation runs tools locally with
+a configured XSIAM API key. The target production architecture adds an identity
+and authorization gateway layer before any XSIAM API call.
+
+```mermaid
+flowchart LR
+  User["User"] --> Client["MCP client"]
+  Client --> Gateway["MCP Gateway"]
+  Gateway --> Auth["Identity validation<br/>Entra ID or Portkey"]
+  Auth --> Policy["Tool and dataset policy"]
+  Policy --> Broker["Credential broker"]
+  Broker --> XSIAM["Cortex XSIAM API"]
+  Policy --> Audit["Audit log"]
+```
+
+## Runtime Components
+
+| Component | Responsibility |
+| --- | --- |
+| `src/main.py` | Starts the FastMCP server and imports built-in/OpenAPI tools. |
+| `src/service/cortex_mcp/server.py` | Creates the FastMCP server and lifespan context. |
+| `src/usecase/builtin_components/` | Python tool modules. |
+| `src/usecase/builtin_components/openapi/` | OpenAPI fragments converted into MCP tools. |
+| `src/usecase/fetcher.py` | Calls XSIAM public APIs. |
+| `src/usecase/xql_builder.py` | Builds safe structured XQL and conservative NL-to-XQL templates. |
+| `src/usecase/log_policy.py` | Enforces dataset allowlists for log search. |
+| `src/entities/MCPContext.py` | Holds auth headers and principal metadata. |
+
+## Current Request Flow
+
+1. MCP client calls a tool.
+2. Tool uses the lifespan `MCPContext`.
+3. `Fetcher` builds XSIAM API headers.
+4. XSIAM API is called with the configured API key.
+5. Tool returns JSON to the MCP client.
+
+## `search_logs` Request Flow
+
+1. User provides raw XQL, structured filters, or a natural-language query.
+2. Natural-language input is converted only if it matches safe templates.
+3. Structured input is converted to XQL.
+4. The requested dataset is checked against `LOG_SEARCH_DATASET_POLICY`.
+5. The server starts an XQL query.
+6. The server polls for results.
+7. Results and policy metadata are returned.
+
+## Target Production Flow
+
+1. User signs in with Entra ID.
+2. Portkey or the MCP server validates identity.
+3. User groups/app roles are stored in `MCPContext`.
+4. Tool policy decides if the tool can be invoked.
+5. Dataset policy decides if the dataset can be queried.
+6. Credential broker selects a least-privilege XSIAM API key.
+7. XSIAM request is executed.
+8. Audit event records principal, role, tool, dataset, decision, and credential profile.
+
+## Design Principles
+
+- Fail closed when identity or authorization is uncertain.
+- Prefer structured query parameters for agent workflows.
+- Treat raw XQL as privileged.
+- Keep natural-language translation explainable and reviewable.
+- Avoid one broad XSIAM API key for all users.
+- Preserve exact XSIAM data; do not invent security findings.
