@@ -2,62 +2,33 @@
 
 ## Short Answer
 
-This MCP server can be used to search XSIAM logs. It has a safer `search_logs`
-tool for dataset-scoped log search and a legacy `execute_xql_query` tool for
-privileged raw XQL.
+This MCP server can be used to search XSIAM logs. The preferred path is
+`search_logs`, which is dataset-scoped, policy-checked, and designed for
+Claude Code/Codex-style agents that turn plain-English investigation requests
+into structured MCP tool calls.
 
-It is not yet a complete governed enterprise log-search MCP because incoming
-Entra identity validation, trusted gateway claim validation, and role-scoped
-XSIAM credential brokering are still alpha blockers.
+The raw `execute_xql_query` tool remains available only to privileged groups.
+Caller-supplied raw XQL through `search_logs(query=...)` is also privileged.
 
-For the Entra ID and XSIAM role-based access goal, this server is a reasonable
-base to fork and refactor, but the authorization layer must be added before it
-is exposed to multiple users.
+## Implemented Controls
 
-## Current Runtime Server
+The current alpha implementation includes:
 
-The useful server implementation is the Python `cortex-mcp` service copied into
-this repository. It uses FastMCP and supports `stdio` and `streamable-http`
-transport modes.
+- Entra bearer JWT validation for HTTP transport.
+- Optional HMAC-signed trusted gateway identity forwarding for Portkey,
+  LiteLLM, and similar gateways.
+- Tool-level policy for every MCP tool through `TOOL_ACCESS_POLICY`.
+- Dataset allowlist policy for `search_logs`, `list_log_datasets`, and
+  `discover_log_fields`.
+- Raw XQL restriction through `RAW_XQL_PRIVILEGED_GROUPS`.
+- Role/group-scoped XSIAM credential selection from pre-provisioned API key
+  profiles.
+- Structured audit logging for every MCP tool invocation.
+- Optional audit export to a Cortex XSIAM HTTP Log Collector.
 
-The current authentication model is server-to-XSIAM only:
-
-- `CORTEX_MCP_PAPI_URL`
-- `CORTEX_MCP_PAPI_AUTH_HEADER`
-- `CORTEX_MCP_PAPI_AUTH_ID`
-
-There is no current incoming user authentication, Entra token validation,
-optional AI gateway identity verification, user role mapping, or per-user/per-role
-credential selection.
-
-Log search has an initial dataset policy hook:
-
-- `LOG_SEARCH_DATASET_POLICY`
-  JSON object mapping groups to allowed datasets. Use `*` for all datasets.
-- `LOG_SEARCH_DEFAULT_PRINCIPAL_ID`
-  Development/default principal until incoming identity is wired in.
-- `LOG_SEARCH_DEFAULT_GROUPS`
-  Comma-separated development/default groups until incoming identity is wired in.
-- `RAW_XQL_PRIVILEGED_GROUPS`
-  Comma-separated groups allowed to invoke `execute_xql_query`.
-- `AUDIT_LOG_*`
-  Structured audit logging and optional Cortex XSIAM HTTP Log Collector export.
-
-Example:
-
-```json
-{
-  "Security": ["*"],
-  "Tier1": ["xdr_data"],
-  "CloudTeam": ["xdr_data", "cloud_audit_logs"]
-}
-```
-
-In production, `groups` should come from verified identity claims, not from
-default environment variables. Some deployments can validate Entra ID tokens
-directly in the MCP server. Deployments that already use Portkey, LiteLLM, or a
-similar AI gateway can instead forward trusted identity claims from that gateway,
-provided the MCP server validates the forwarding contract.
+For local stdio development, `LOG_SEARCH_DEFAULT_PRINCIPAL_ID` and
+`LOG_SEARCH_DEFAULT_GROUPS` can still seed a development principal. Do not use
+those defaults as production authorization.
 
 ## Current Tools
 
@@ -65,17 +36,13 @@ Python-implemented tools:
 
 - `get_cases`: searches XSIAM cases/incidents.
 - `get_issues`: searches XSIAM issues/alerts.
-- `execute_xql_query`: runs an arbitrary XQL query and polls for results. This
-  is restricted to `RAW_XQL_PRIVILEGED_GROUPS`.
-- `get_log_search_guidance`: returns compact agent instructions for XSIAM log
-  search.
-- `list_log_datasets`: returns policy-allowed datasets using XSIAM dataset
-  discovery where available.
-- `discover_log_fields`: runs a bounded XQL sample against one allowed dataset
-  and returns observed field metadata, not event data.
-- `search_logs`: searches logs using raw XQL, structured parameters, or a
-  conservative experimental natural-language template translator.
-- `get_xql_query_quota`: retrieves XQL query quota usage.
+- `execute_xql_query`: privileged raw XQL query execution.
+- `get_log_search_guidance`: compact agent instructions for XSIAM log search.
+- `list_log_datasets`: policy-allowed dataset discovery.
+- `discover_log_fields`: bounded XQL sample returning observed field metadata,
+  not event values.
+- `search_logs`: structured log search with optional privileged raw XQL.
+- `get_xql_query_quota`: XQL query quota visibility.
 
 OpenAPI-generated tools:
 
@@ -86,78 +53,47 @@ OpenAPI-generated tools:
 - `get_vulnerabilities`
 - `get_assessment_profile_results`
 
-Resources:
-
-- Example case response JSON.
-- Example issue response JSON.
-
-CLI commands:
-
-- `start`
-- `update`
-- `version`
-
 ## Log Search Capability
-
-The preferred log search path is `search_logs`.
-
-Users can search logs if all of the following are true:
-
-- The XSIAM API key has XQL/query permissions.
-- The requested dataset is allowed for the caller's groups.
-- The query stays within practical time and result limits.
-- The current shared API key is acceptable until credential brokering is
-  implemented.
 
 The intended agent workflow is:
 
-1. Agent translates the user's plain-English request into an investigation plan.
-2. Agent discovers allowed datasets with `list_log_datasets`.
-3. Agent discovers observed field names with `discover_log_fields`.
-4. Agent calls `search_logs` with structured parameters and a low limit.
+1. Agent translates the user's plain-English request into an investigation
+   plan.
+2. Agent calls `get_log_search_guidance`.
+3. Agent discovers allowed datasets with `list_log_datasets`.
+4. Agent discovers observed field names with `discover_log_fields`.
+5. Agent calls `search_logs` with explicit `dataset`, `filters`, `fields`,
+   `timeframe`, and a low `limit`.
 
-`search_logs` supports three modes:
+`search_logs` supports two modes:
 
-- Raw XQL through `query`.
-- Structured XQL generation through `dataset`, `filters`, `fields`, and `limit`.
-- Experimental conservative natural-language fallback through
-  `natural_language_query`.
+- Structured XQL generation through `dataset`, `filters`, `fields`, and
+  `limit`.
+- Privileged raw XQL through `query`.
 
-The natural-language path is intentionally template-based and is not the primary
-enterprise design. The LLM agent should normally produce structured tool
-arguments after using discovery tools.
+It does not accept `natural_language_query`. The client agent is responsible
+for interpreting plain English and producing structured MCP calls.
 
-Before execution, `search_logs` checks the requested `dataset` against the
-caller's groups. Security-team users can be granted `*`; other groups can be
-limited to specific datasets. Raw XQL also requires the caller to provide the
-intended `dataset` parameter so the policy decision is deterministic.
+Before execution, the server checks:
 
-The legacy `execute_xql_query` path does not parse datasets from arbitrary XQL,
-so it is restricted to privileged groups.
+- the MCP tool is allowed for the principal's groups/app roles;
+- the requested dataset is allowed by `LOG_SEARCH_DATASET_POLICY`;
+- raw XQL is allowed only for `RAW_XQL_PRIVILEGED_GROUPS`;
+- result limits are capped.
 
 ## XSIAM XQL API Review
 
 The XSIAM API supports the log-search use case through these endpoints:
 
 - `POST /public_api/v1/xql/start_xql_query`
-  Starts an XQL query. The request can include `query`, optional `tenants`, and
-  optional `timeframe`.
 - `POST /public_api/v1/xql/get_query_results`
-  Retrieves results for a query started through `start_xql_query`. The standard
-  result endpoint is capped at 1000 results and does not provide normal
-  pagination.
 - `POST /public_api/v1/xql/get_query_results_stream`
-  Retrieves larger result sets with a stream ID returned by the query API.
 - `POST /public_api/v1/xql/get_quota`
-  Retrieves XQL query quota usage.
 - `POST /public_api/v1/xql/get_datasets`
-  Retrieves datasets and dataset properties. Field discovery is handled with
-  bounded XQL samples because fields can vary by dataset, parser, integration,
-  and time range.
 
-The API documentation states that XSIAM allows up to four API queries in
-parallel for this query family, so the MCP server should eventually add
-concurrency control per tenant and per user.
+Field discovery uses bounded XQL samples because fields can vary by dataset,
+parser, integration, and time range. Discovery returns field names, inferred
+types, and observed counts only; it does not return sample event values.
 
 Sources:
 
@@ -167,87 +103,30 @@ Sources:
 - https://docs-cortex.paloaltonetworks.com/r/Cortex-XSIAM-REST-API/Get-XQL-query-Quota
 - https://docs-cortex.paloaltonetworks.com/r/Cortex-XSIAM-REST-API/Get-all-datasets
 
-## Why It Is Not Yet Enough
+## Credential Model
 
-The current server has these gaps:
+The gateway should not dynamically provision XSIAM API keys for every user.
+Instead, provision least-privilege XSIAM API keys for roles or groups and map
+verified Entra/gateway groups to those profiles with
+`XSIAM_CREDENTIAL_PROFILES`.
 
-- No incoming OAuth/OIDC/JWT validation for users.
-- No mapping from Entra user or group claims to XSIAM roles.
-- No full tool policy enforcement before every tool executes.
-- Dataset allowlist exists for `search_logs`, but it still needs incoming
-  identity, whether direct Entra validation or optional gateway-forwarded
-  claims, plus broader XQL guardrails.
-- No per-role XSIAM API key selection.
-- Audit trail currently ties MCP requests to the principal in `MCPContext`;
-  Entra-backed user identity is still pending.
-- `execute_xql_query` remains a raw XQL path and is restricted to
-  security-team/admin groups.
+If `XSIAM_CREDENTIAL_BROKER_ENABLED=true` and no credential profile matches the
+principal, execution fails closed.
 
-The raw XQL tool is powerful, so it should be treated as a privileged capability
-until those controls exist.
+## Remaining Gaps
 
-## Recommended Target Model
+- Field-level output redaction is not implemented.
+- Streaming XQL result retrieval is not implemented.
+- Per-tenant/per-user XQL concurrency controls are not implemented.
+- Live validation is still needed for each tenant-specific Entra, gateway,
+  dataset, tool, credential, and audit-export configuration.
+- FastMCP 3 compatibility work is still pending.
 
-Recommended flow:
+## Recommended Next Hardening
 
-1. User authenticates through Entra ID, either directly to the MCP server or via
-   an optional AI gateway such as Portkey or LiteLLM.
-2. MCP server verifies user identity directly, or validates trusted claims
-   forwarded by the optional gateway, and receives stable claims such as user
-   ID, UPN, tenant ID, groups, and app roles.
-3. MCP server maps Entra groups/app roles to XSIAM roles and scopes.
-4. MCP server checks a local policy before tool execution.
-5. MCP server selects the least-privilege XSIAM API credential for that role.
-6. MCP server calls XSIAM.
-7. MCP server logs the user, role, tool, dataset/API endpoint, decision, and
-   credential profile used.
-8. MCP server exports audit events to Cortex XSIAM or another durable sink.
-
-## Recommended Log Search Refactor
-
-Keep `execute_xql_query` restricted to high-trust roles.
-
-Continue hardening the safer first-class tool:
-
-`search_logs(dataset, time_range, filters, fields, limit)`
-
-The discovery and search tools should:
-
-- Help the agent discover allowed datasets and observed fields progressively.
-- Cap discovery output so the MCP server does not dump tenant schema into model
-  context.
-- Avoid returning sample event values during field discovery.
-- Enforce allowed datasets by role.
-- Enforce max lookback windows by role.
-- Enforce max result limits by role.
-- Generate XQL from structured parameters instead of requiring arbitrary text.
-- Allow natural-language input only through an approved translator and policy
-  validator.
-- Require explicit approval or higher role for broad/raw XQL.
-- Redact or drop fields that the caller's role should not see.
-
-Example role policy:
-
-| Role | Allowed Capability |
-| --- | --- |
-| SOC Tier 1 | Search selected endpoint/security datasets, short lookback |
-| Threat Hunter | Broader XQL search, longer lookback, more datasets |
-| Incident Responder | Endpoint/case actions plus search |
-| Admin | Raw XQL and administrative tools |
-
-## Forking Recommendation
-
-Proceed with this fork as the base for the XSIAM MCP gateway. Do not base the
-gateway on the separate `cortex-xsiam-sdk-mcp-tools` project; that project is
-for Demisto content development and SDK operations, not governed XSIAM log and
-security operations access.
-
-The first implementation milestone should be:
-
-1. Add request identity model.
-2. Add direct Entra identity verification for HTTP mode.
-3. Add policy engine and tool metadata.
-4. Add credential broker for role-scoped XSIAM API keys.
-5. Add safe `search_logs` wrapper.
-6. Add optional Portkey/LiteLLM-style gateway identity-forwarding validation.
-7. Complete FastMCP 3 compatibility work.
+- Add field-level output policy for sensitive fields.
+- Add streaming XQL result retrieval for controlled large investigations.
+- Add XQL concurrency limits per tenant and principal.
+- Add curated dataset catalog support for production tenants.
+- Add live smoke tests for the target tenant using non-sensitive datasets and
+  synthetic or approved security events.

@@ -8,6 +8,8 @@ from config.config import get_config
 from entities.MCPContext import MCPContext
 from pkg.client import PAPIClient
 from pkg.util import get_papi_auth_headers, get_papi_url
+from usecase.credential_broker import select_xsiam_credentials
+from usecase.identity import resolve_mcp_context
 
 logger = logging.getLogger(__name__)
 
@@ -78,13 +80,22 @@ async def get_fetcher(ctx: Context) -> Fetcher:
     config = get_config()
     url = get_papi_url(config.papi_url_env_key)
     lifespan: MCPContext = ctx.request_context.lifespan_context
-    api_key = lifespan.auth_headers.get("Authorization")
-    xdr_id = lifespan.auth_headers.get("X-XDR-AUTH-ID")
+    principal = resolve_mcp_context(ctx)
+    selection = select_xsiam_credentials(principal, lifespan.auth_headers)
+    api_key = selection.auth_headers.get("Authorization")
+    xdr_id = selection.auth_headers.get("X-XDR-AUTH-ID")
     if not (api_key and xdr_id):
         api_key = config.papi_auth_header_key
         xdr_id = config.papi_auth_id_key
 
-    logger.info(f"Creating new fetcher for auth ID {xdr_id}")
+    logger.info("Creating new fetcher with credential profile %s", selection.profile_name)
+    ctx.set_state(
+        "xsiam_credential_profile",
+        {
+            "profile_name": selection.profile_name,
+            "matched_group": selection.matched_group,
+        },
+    )
     fetcher = Fetcher(url, api_key, xdr_id)
     ctx.set_state("fetcher", fetcher)
     return fetcher

@@ -3,9 +3,10 @@
 ## Overview
 
 Cortex XSIAM MCP Gateway is a FastMCP server that exposes Cortex XSIAM
-capabilities to MCP clients. The current implementation runs tools locally with
-a configured XSIAM API key. The target production architecture adds identity and
-authorization controls before any XSIAM API call.
+capabilities to MCP clients. The current implementation supports local stdio
+development and centrally hosted HTTP deployments with incoming identity,
+tool policy, dataset policy, audit logging, and optional role-scoped XSIAM
+credential selection.
 
 An AI gateway such as Portkey or LiteLLM is optional. Teams can deploy this MCP
 server directly behind Entra ID token validation, or place it behind an AI
@@ -34,7 +35,12 @@ flowchart LR
 | `src/usecase/builtin_components/` | Python tool modules. |
 | `src/usecase/builtin_components/openapi/` | OpenAPI fragments converted into MCP tools. |
 | `src/usecase/fetcher.py` | Calls XSIAM public APIs. |
-| `src/usecase/xql_builder.py` | Builds safe structured XQL and conservative experimental NL-to-XQL templates. |
+| `src/usecase/identity.py` | Validates Entra/gateway identity and maps claims into `MCPContext`. |
+| `src/service/cortex_mcp/identity_middleware.py` | Enforces incoming HTTP identity validation. |
+| `src/usecase/tool_policy.py` | Enforces group/app-role to MCP tool allowlists. |
+| `src/service/cortex_mcp/tool_policy_middleware.py` | Applies tool policy to every MCP tool invocation. |
+| `src/usecase/credential_broker.py` | Selects pre-provisioned XSIAM credential profiles by group/app role. |
+| `src/usecase/xql_builder.py` | Builds safe structured XQL from validated dataset, field, filter, and limit inputs. |
 | `src/usecase/xql_discovery.py` | Normalizes dataset metadata and infers compact field catalogs from bounded XQL samples. |
 | `src/usecase/log_policy.py` | Enforces dataset allowlists for log search and privileged raw XQL groups. |
 | `src/usecase/audit.py` | Builds audit events and optionally exports them to Cortex XSIAM. |
@@ -43,14 +49,17 @@ flowchart LR
 
 ## Current Request Flow
 
-1. MCP client calls a tool.
-2. Audit middleware emits a start event.
-3. Tool uses the lifespan `MCPContext`.
-4. Tool-specific policy runs where implemented.
-5. `Fetcher` builds XSIAM API headers.
-6. XSIAM API is called with the configured API key.
-7. Audit middleware emits success, denied, or error outcome.
-8. Tool returns JSON to the MCP client.
+1. HTTP identity middleware validates an Entra bearer token or trusted gateway
+   assertion when HTTP identity mode is enabled.
+2. MCP client calls a tool.
+3. Audit middleware emits a start event.
+4. Tool policy middleware checks `TOOL_ACCESS_POLICY`.
+5. Tool-specific policy runs, including dataset and raw-XQL checks.
+6. Credential broker selects a pre-provisioned XSIAM credential profile when
+   enabled.
+7. `Fetcher` calls the XSIAM API.
+8. Audit middleware emits success, denied, or error outcome.
+9. Tool returns JSON to the MCP client.
 
 ## Agent Log Search Flow
 
@@ -86,6 +95,7 @@ flowchart LR
 - Prefer structured query parameters for agent workflows.
 - Keep schema discovery compact and progressive.
 - Treat raw XQL as privileged.
-- Keep server-side natural-language translation experimental and conservative.
+- Keep plain-English interpretation in Claude Code or another MCP client agent;
+  validate structured calls on the server.
 - Avoid one broad XSIAM API key for all users.
 - Preserve exact XSIAM data; do not invent security findings.

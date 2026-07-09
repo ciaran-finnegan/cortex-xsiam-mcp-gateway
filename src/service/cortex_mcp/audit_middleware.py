@@ -8,6 +8,12 @@ from fastmcp.tools.tool import ToolResult
 from config.config import get_config
 from entities.MCPContext import MCPContext
 from usecase.audit import create_tool_audit_event, emit_audit_event, now_monotonic
+from usecase.identity import (
+    IdentityAuthenticationError,
+    default_mcp_context,
+    resolve_mcp_context,
+)
+from usecase.log_policy import ToolAuthorizationError
 
 
 class ToolAuditMiddleware(Middleware):
@@ -42,7 +48,7 @@ class ToolAuditMiddleware(Middleware):
                 create_tool_audit_event(
                     tool_name=tool_name,
                     phase="end",
-                    outcome="error",
+                    outcome=_infer_exception_outcome(e),
                     principal=principal,
                     arguments=arguments,
                     duration_ms=(now_monotonic() - started) * 1000,
@@ -59,21 +65,17 @@ class ToolAuditMiddleware(Middleware):
                 principal=principal,
                 arguments=arguments,
                 duration_ms=(now_monotonic() - started) * 1000,
-                result_summary=_summarize_tool_result(result),
+                result_summary=_summarize_tool_result(result, context.fastmcp_context),
             )
         )
         return result
 
 
 def _get_principal(context: MiddlewareContext[Any]) -> MCPContext:
-    request_context = context.fastmcp_context.request_context if context.fastmcp_context else None
-    lifespan_context = getattr(request_context, "lifespan_context", None)
-    if isinstance(lifespan_context, MCPContext):
-        return lifespan_context
-
-    config = get_config()
-    groups = tuple(group.strip() for group in config.log_search_default_groups.split(",") if group.strip())
-    return MCPContext(auth_headers={}, principal_id=config.log_search_default_principal_id, groups=groups)
+    try:
+        return resolve_mcp_context(context.fastmcp_context)
+    except IdentityAuthenticationError:
+        return default_mcp_context()
 
 
 def _infer_outcome(result: ToolResult) -> str:
@@ -89,9 +91,19 @@ def _infer_outcome(result: ToolResult) -> str:
     return "success"
 
 
-def _summarize_tool_result(result: ToolResult) -> dict[str, Any]:
+def _infer_exception_outcome(error: Exception) -> str:
+    if isinstance(error, (IdentityAuthenticationError, ToolAuthorizationError)):
+        return "denied"
+    return "error"
+
+
+def _summarize_tool_result(result: ToolResult, fastmcp_context: Any | None = None) -> dict[str, Any]:
     payload = _extract_json_payload(result)
     summary: dict[str, Any] = {"content_blocks": len(result.content)}
+    if fastmcp_context is not None:
+        credential_profile = fastmcp_context.get_state("xsiam_credential_profile")
+        if isinstance(credential_profile, dict):
+            summary["xsiam_credential_profile"] = credential_profile
     if payload:
         summary["success"] = payload.get("success")
         if "query_id" in payload:

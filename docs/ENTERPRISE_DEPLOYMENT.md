@@ -23,10 +23,10 @@ flowchart TB
 
   subgraph MCPPlane["MCP service plane"]
     MCP["Cortex XSIAM MCP Gateway"]
-    Auth["Token or trusted-claim validation<br/>planned alpha blocker"]
+    Auth["Token or trusted-claim validation"]
     Policy["Tool and dataset policy"]
     Audit["Audit middleware"]
-    Broker["Role-to-credential broker<br/>planned alpha blocker"]
+    Broker["Role-to-credential broker<br/>pre-provisioned profiles"]
   end
 
   subgraph Cortex["Cortex XSIAM"]
@@ -52,7 +52,7 @@ flowchart TB
 
 ## Direct Mode
 
-Direct mode is the simplest enterprise shape once Entra validation is complete:
+Direct mode is the simplest enterprise shape:
 
 1. User authenticates with Entra ID.
 2. MCP client sends a bearer token to the HTTP MCP endpoint.
@@ -77,6 +77,8 @@ Gateway mode must still be verifiable:
   gateway, not from arbitrary client headers.
 - The MCP gateway must still apply its own tool, dataset, credential, and audit
   policy.
+- The forwarding contract must be signed with `MCP_GATEWAY_SHARED_SECRET` and
+  bounded by `MCP_GATEWAY_MAX_CLOCK_SKEW_SECONDS`.
 
 ## Deployment Requirements
 
@@ -94,10 +96,9 @@ Minimum production requirements before broad rollout:
 
 ## Current Alpha Limitations
 
-- Entra token validation is not implemented yet.
-- Optional gateway identity-forwarding validation is not implemented yet.
-- The credential broker is not implemented yet.
-- Tool-level authorization is complete only for log search and raw XQL.
+- Live tenant validation is still required before production rollout.
+- Field-level output redaction is not implemented yet.
+- Streaming XQL result retrieval is not implemented yet.
+- FastMCP 3 compatibility work is still pending.
 - Local development defaults still exist and must not be used as production
   authorization.
-

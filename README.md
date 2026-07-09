@@ -12,9 +12,10 @@ API key.
 
 This project is a community fork and hardening track for Palo Alto Networks'
 Cortex MCP server. It keeps the useful Cortex/XSIAM tool surface, then adds the
-enterprise controls needed for multi-user agent access: dataset-scoped log
-search, raw XQL restrictions, structured audit events, optional forwarding into
-Cortex XSIAM, and a roadmap for Entra-backed identity and role enforcement.
+enterprise controls needed for multi-user agent access: Entra-backed identity,
+optional trusted gateway identity forwarding, tool policy, dataset-scoped log
+search, raw XQL restrictions, role-scoped credential selection, structured
+audit events, and optional forwarding into Cortex XSIAM.
 
 Portkey, LiteLLM, and similar AI gateways are supported deployment patterns, not
 mandatory dependencies. Use one when it is already your enterprise AI control
@@ -28,7 +29,8 @@ Release line: `v0.1.0-alpha.1`.
 
 This is alpha software. It is appropriate for design review, lab validation, and
 controlled pilot work. It is not ready for unrestricted enterprise production
-exposure until the alpha blockers in [Roadmap](docs/ROADMAP.md) are complete.
+exposure until the remaining alpha blockers in [Roadmap](docs/ROADMAP.md) are
+complete and validated in your tenant.
 
 Implemented in this fork:
 
@@ -37,10 +39,14 @@ Implemented in this fork:
 - XQL execution and result polling.
 - Agent-oriented log search guidance, dataset discovery, and XQL-backed field
   discovery.
-- `search_logs` for raw XQL, structured filters, and an experimental
-  natural-language fallback.
+- `search_logs` for structured filters and privileged analyst-authored raw XQL.
 - Dataset allowlist enforcement for `search_logs`.
 - Privileged-group restriction for the legacy `execute_xql_query` tool.
+- Entra ID JWT validation for HTTP transport.
+- Optional HMAC-signed trusted gateway identity forwarding for Portkey,
+  LiteLLM, and similar gateways.
+- Tool-level policy for every MCP tool.
+- Role/group-scoped XSIAM credential selection from pre-provisioned profiles.
 - Structured audit logging for every MCP tool invocation.
 - Optional audit export to a Cortex XSIAM HTTP Log Collector.
 - XSIAM tools for cases, issues, tenant info, assets, endpoints,
@@ -50,12 +56,10 @@ Implemented in this fork:
 
 Alpha blockers:
 
-- Entra ID token validation for HTTP transport.
-- Optional trusted identity-forwarding validation for Portkey, LiteLLM, and
-  similar gateways.
-- Tool-level policy for every MCP tool beyond the current log-search and raw
-  XQL controls.
-- Role-to-XSIAM-credential brokering.
+- Live enterprise validation of Entra, gateway, tool policy, dataset policy,
+  and credential broker configurations.
+- Field-level output redaction.
+- Streaming XQL result retrieval for large investigations.
 - FastMCP 3 compatibility work to remove vulnerable FastMCP 2.x transitive
   dependency paths.
 
@@ -74,7 +78,7 @@ flowchart LR
   MCP["Cortex XSIAM MCP Gateway<br/>central service"]
   Policy["Policy engine<br/>tools, roles, datasets"]
   Audit["Audit pipeline<br/>local JSON + optional XSIAM ingest"]
-  Broker["Credential broker<br/>planned"]
+  Broker["Credential broker<br/>role-scoped profiles"]
   XSIAM["Cortex XSIAM APIs"]
   SIEM["Cortex XSIAM SIEM dataset"]
 
@@ -94,11 +98,10 @@ flowchart LR
 Two deployment modes are supported by design:
 
 - Direct mode: the MCP client authenticates with Entra ID and calls this server.
-  The server validates Entra tokens and applies policy. Token validation is an
-  alpha blocker, not complete today.
+  The server validates Entra tokens and applies policy.
 - Gateway mode: an optional AI gateway authenticates the user and forwards
   verifiable identity claims. The MCP server must validate that forwarding
-  contract before trusting the claims. This is also an alpha blocker.
+  contract before trusting the claims.
 
 Local deployment is only for development, demos, and isolated trusted analyst
 workflows. A local-per-user MCP process with broad API credentials is not the
@@ -131,30 +134,30 @@ but it leaves several enterprise questions outside the default design:
 - How are agent actions auditable back to a human principal?
 - How can audit events be sent into Cortex XSIAM as SIEM data?
 
-This fork addresses the first layer of those gaps now and tracks the rest as
-alpha blockers.
+This fork addresses the first layer of those gaps now and tracks deeper
+production hardening in the roadmap.
 
 ## Core Tools
 
 | Tool | Purpose | Current control |
 | --- | --- | --- |
-| `get_log_search_guidance` | Return compact instructions for LLM agents using XSIAM log search. | Audited. |
-| `list_log_datasets` | Discover datasets the current principal is allowed to query. | Dataset allowlist policy, capped output. |
-| `discover_log_fields` | Run a bounded XQL sample against one allowed dataset and return observed fields. | Dataset allowlist policy, capped output, no sample values. |
-| `search_logs` | Search XSIAM logs using raw XQL, structured filters, or experimental natural-language templates. | Dataset allowlist policy. |
-| `execute_xql_query` | Execute analyst-authored raw XQL. | Restricted to `RAW_XQL_PRIVILEGED_GROUPS`. |
-| `get_xql_query_quota` | Retrieve XQL query quota usage. | Audited. |
-| `get_issues` | Search XSIAM issues/alerts. | Audited; tool-level authorization pending. |
-| `get_cases` | Search XSIAM cases/incidents. | Audited; tool-level authorization pending. |
-| `get_tenant_info` | Retrieve tenant/license information. | Audited; tool-level authorization pending. |
-| `get_assets`, `get_asset_by_id` | Retrieve asset inventory data. | Audited; tool-level authorization pending. |
-| `get_filtered_endpoints` | Retrieve endpoint data. | Audited; tool-level authorization pending. |
-| `get_vulnerabilities` | Retrieve vulnerability data. | Audited; tool-level authorization pending. |
-| `get_assessment_profile_results` | Retrieve assessment profile results. | Audited; tool-level authorization pending. |
+| `get_log_search_guidance` | Return compact instructions for LLM agents using XSIAM log search. | Tool policy and audit. |
+| `list_log_datasets` | Discover datasets the current principal is allowed to query. | Tool policy, dataset allowlist policy, capped output. |
+| `discover_log_fields` | Run a bounded XQL sample against one allowed dataset and return observed fields. | Tool policy, dataset allowlist policy, capped output, no sample values. |
+| `search_logs` | Search XSIAM logs using structured filters, or privileged analyst-authored raw XQL. | Tool policy, dataset allowlist policy; raw XQL requires privileged groups. |
+| `execute_xql_query` | Execute analyst-authored raw XQL. | Tool policy plus `RAW_XQL_PRIVILEGED_GROUPS`. |
+| `get_xql_query_quota` | Retrieve XQL query quota usage. | Tool policy and audit. |
+| `get_issues` | Search XSIAM issues/alerts. | Tool policy and audit. |
+| `get_cases` | Search XSIAM cases/incidents. | Tool policy and audit. |
+| `get_tenant_info` | Retrieve tenant/license information. | Tool policy and audit. |
+| `get_assets`, `get_asset_by_id` | Retrieve asset inventory data. | Tool policy and audit. |
+| `get_filtered_endpoints` | Retrieve endpoint data. | Tool policy and audit. |
+| `get_vulnerabilities` | Retrieve vulnerability data. | Tool policy and audit. |
+| `get_assessment_profile_results` | Retrieve assessment profile results. | Tool policy and audit. |
 
 ## Log Search
 
-### Agent-Driven Plain English
+### Claude Code Or Codex Agent Workflow
 
 The primary enterprise path is agent-driven:
 
@@ -166,10 +169,13 @@ The primary enterprise path is agent-driven:
 5. The agent calls `search_logs` with explicit `dataset`, `filters`, `fields`,
    `timeframe`, and a low `limit`.
 
-This keeps natural-language reasoning in the client/agent while keeping the MCP
-server focused on policy, compact discovery, XQL execution, and audit logging.
+This keeps plain-English reasoning in Claude Code, Codex, or another MCP client
+agent while keeping the MCP server focused on policy, compact discovery, XQL
+execution, and audit logging. The server does not accept natural-language log
+queries.
 
-See [Agent Log Search](docs/AGENT_LOG_SEARCH.md).
+See [Agent Log Search](docs/AGENT_LOG_SEARCH.md) and
+[Claude Code/Codex Log Search Testing](docs/CLAUDE_CODE_LOG_SEARCH_TESTING.md).
 
 ### Raw XQL
 
@@ -183,7 +189,9 @@ Use `query` for advanced analysts who already know XQL:
 ```
 
 The explicit `dataset` parameter is required for deterministic dataset policy
-checks. Do not infer authorization by trying to parse arbitrary XQL.
+checks. Do not infer authorization by trying to parse arbitrary XQL. Raw XQL is
+restricted to `RAW_XQL_PRIVILEGED_GROUPS`; routine Claude Code/Codex workflows
+should use structured search arguments instead.
 
 ### Structured Search
 
@@ -201,27 +209,6 @@ Use `dataset`, `filters`, `fields`, and `limit` for routine agent workflows:
 }
 ```
 
-### Experimental Natural Language Fallback
-
-`natural_language_query` exists for simple common SOC patterns, but it is not
-the preferred enterprise path. LLM agents should normally translate user intent
-into structured `search_logs` arguments after using discovery tools.
-
-```json
-{
-  "dataset": "xdr_data",
-  "natural_language_query": "failed login for user alice on host laptop-01 from 192.0.2.10 in the last 24 hours",
-  "limit": 50
-}
-```
-
-The fallback translator is intentionally conservative. It handles common terms
-such as failed login/authentication, severity, username, host, IPv4 address, and
-relative windows like `last 24 hours`. Ambiguous prompts are refused rather than
-converted into speculative XQL.
-
-See [Natural Language XQL](docs/NATURAL_LANGUAGE_XQL.md).
-
 ## Dataset Authorization
 
 Configure dataset access with `LOG_SEARCH_DATASET_POLICY`.
@@ -238,24 +225,43 @@ Configure dataset access with `LOG_SEARCH_DATASET_POLICY`.
 - `Tier1` can query only `xdr_data`.
 - `CloudTeam` can query `xdr_data` and `cloud_audit_logs`.
 
-Until incoming identity is implemented, development deployments can set default
-groups:
+For local development and stdio-only testing, default groups can be configured:
 
 ```bash
 export LOG_SEARCH_DEFAULT_PRINCIPAL_ID="dev-analyst@example.com"
 export LOG_SEARCH_DEFAULT_GROUPS="Security"
 ```
 
-Production groups must come from verified identity claims, not development
-defaults.
+Production HTTP deployments should use `MCP_IDENTITY_AUTH_MODE=entra`,
+`gateway`, or `entra_or_gateway`; groups must come from verified identity
+claims, not development defaults.
+
+## Incoming Identity And Tool Policy
+
+HTTP deployments can validate identity in two ways:
+
+- `MCP_IDENTITY_AUTH_MODE=entra`: validate an Entra-issued bearer JWT using the
+  configured issuer, audience, and JWKS.
+- `MCP_IDENTITY_AUTH_MODE=gateway`: validate HMAC-signed identity headers from a
+  trusted AI gateway.
+- `MCP_IDENTITY_AUTH_MODE=entra_or_gateway`: accept either validated path.
+
+Tool access is controlled with `TOOL_ACCESS_POLICY`, a JSON mapping from Entra
+group IDs, app roles, or trusted gateway groups to allowed tool names. Use `*`
+only for high-trust admin/security groups.
+
+XSIAM credentials are not dynamically provisioned per user. When
+`XSIAM_CREDENTIAL_BROKER_ENABLED=true`, the gateway selects from
+pre-provisioned least-privilege API key profiles by group/role. The public
+configuration references environment variable names for each credential; the
+secret values stay in your secret manager or local environment.
 
 ## Audit Logging
 
 Every MCP tool invocation emits structured JSON audit events. Events include the
 human principal known to the server, groups, tool name, transport, outcome,
 duration, argument names, dataset, query hash, and XSIAM API key ID hash. Raw
-XQL and natural-language prompts are hashed by default and can be logged only by
-explicit opt-in.
+Raw XQL is hashed by default and can be logged only by explicit opt-in.
 
 ```mermaid
 sequenceDiagram
