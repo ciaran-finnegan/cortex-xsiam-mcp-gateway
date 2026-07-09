@@ -1,0 +1,45 @@
+name: Dependency Alert Report
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 8 * * 1"
+
+permissions:
+  contents: read
+  security-events: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarize open Dependabot alerts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${REPOSITORY}/dependabot/alerts?state=open&per_page=100" > alerts.json
+
+          {
+            echo "## Open Dependabot Alerts"
+            echo
+            jq -r '
+              if length == 0 then
+                "No open Dependabot alerts."
+              else
+                group_by(.security_vulnerability.package.name) |
+                map({
+                  package: .[0].security_vulnerability.package.name,
+                  ecosystem: .[0].security_vulnerability.package.ecosystem,
+                  count: length,
+                  max_severity: (map(.security_advisory.severity) | unique | join(", ")),
+                  first_fixed: (map(.security_vulnerability.first_patched_version.identifier // "none") | unique | join(", "))
+                }) |
+                (["| Package | Ecosystem | Alerts | Severities | First fixed versions |", "| --- | --- | ---: | --- | --- |"] +
+                map("| \(.package) | \(.ecosystem) | \(.count) | \(.max_severity) | \(.first_fixed) |")) |
+                .[]
+              end
+            ' alerts.json
+          } >> "$GITHUB_STEP_SUMMARY"

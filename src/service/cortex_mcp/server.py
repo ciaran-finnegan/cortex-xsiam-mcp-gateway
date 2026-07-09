@@ -8,6 +8,7 @@ from starlette.responses import JSONResponse
 
 from config.config import get_config
 from entities.MCPContext import MCPContext
+from service.cortex_mcp.audit_middleware import ToolAuditMiddleware
 
 logger = logging.getLogger("Cortex MCP")
 
@@ -77,6 +78,7 @@ def create_mcp_server(api_key: str | None = None, api_key_id: str | None = None)
 
     mcp = FastMCP(
         name="Cortex MCP Server",
+        middleware=[ToolAuditMiddleware()],
         lifespan=lifespan,
     )
 

@@ -2,10 +2,13 @@
 
 ## Short Answer
 
-This MCP server can be used to search XSIAM logs in principle because it has an
-`execute_xql_query` tool that calls the XSIAM XQL query APIs. It is not yet a
-governed enterprise log-search MCP. Today it exposes a raw XQL execution path
-behind one shared API key.
+This MCP server can be used to search XSIAM logs. It has a safer `search_logs`
+tool for dataset-scoped log search and a legacy `execute_xql_query` tool for
+privileged raw XQL.
+
+It is not yet a complete governed enterprise log-search MCP because incoming
+Entra identity validation, trusted gateway claim validation, and role-scoped
+XSIAM credential brokering are still alpha blockers.
 
 For the Entra ID and XSIAM role-based access goal, this server is a reasonable
 base to fork and refactor, but the authorization layer must be added before it
@@ -35,6 +38,10 @@ Log search has an initial dataset policy hook:
   Development/default principal until incoming identity is wired in.
 - `LOG_SEARCH_DEFAULT_GROUPS`
   Comma-separated development/default groups until incoming identity is wired in.
+- `RAW_XQL_PRIVILEGED_GROUPS`
+  Comma-separated groups allowed to invoke `execute_xql_query`.
+- `AUDIT_LOG_*`
+  Structured audit logging and optional Cortex XSIAM HTTP Log Collector export.
 
 Example:
 
@@ -58,7 +65,8 @@ Python-implemented tools:
 
 - `get_cases`: searches XSIAM cases/incidents.
 - `get_issues`: searches XSIAM issues/alerts.
-- `execute_xql_query`: runs an arbitrary XQL query and polls for results.
+- `execute_xql_query`: runs an arbitrary XQL query and polls for results. This
+  is restricted to `RAW_XQL_PRIVILEGED_GROUPS`.
 - `search_logs`: searches logs using raw XQL, structured parameters, or a
   conservative natural-language template translator.
 - `get_xql_query_quota`: retrieves XQL query quota usage.
@@ -85,19 +93,15 @@ CLI commands:
 
 ## Log Search Capability
 
-The current raw log search path is `execute_xql_query`.
+The preferred log search path is `search_logs`.
 
-That means users can search logs if all of the following are true:
+Users can search logs if all of the following are true:
 
 - The XSIAM API key has XQL/query permissions.
-- The user knows the relevant dataset names and fields.
+- The requested dataset is allowed for the caller's groups.
 - The query stays within practical time and result limits.
-- The current shared API key is acceptable for the access being performed.
-
-This is useful for a small trusted admin/developer setup. It is not sufficient
-for a multi-user MCP where users should only see what their XSIAM role permits.
-
-The first safer wrapper is now `search_logs`.
+- The current shared API key is acceptable until credential brokering is
+  implemented.
 
 It supports three modes:
 
@@ -115,6 +119,9 @@ Before execution, `search_logs` checks the requested `dataset` against the
 caller's groups. Security-team users can be granted `*`; other groups can be
 limited to specific datasets. Raw XQL also requires the caller to provide the
 intended `dataset` parameter so the policy decision is deterministic.
+
+The legacy `execute_xql_query` path does not parse datasets from arbitrary XQL,
+so it is restricted to privileged groups.
 
 ## XSIAM XQL API Review
 
@@ -154,9 +161,10 @@ The current server has these gaps:
   identity, whether direct Entra validation or optional gateway-forwarded
   claims, plus broader XQL guardrails.
 - No per-role XSIAM API key selection.
-- No audit trail tying an MCP request to an Entra user.
-- `execute_xql_query` remains a raw XQL path and should be restricted to
-  security-team/admin users when tool policy is implemented.
+- Audit trail currently ties MCP requests to the principal in `MCPContext`;
+  Entra-backed user identity is still pending.
+- `execute_xql_query` remains a raw XQL path and is restricted to
+  security-team/admin groups.
 
 The raw XQL tool is powerful, so it should be treated as a privileged capability
 until those controls exist.
@@ -176,10 +184,11 @@ Recommended flow:
 6. MCP server calls XSIAM.
 7. MCP server logs the user, role, tool, dataset/API endpoint, decision, and
    credential profile used.
+8. MCP server exports audit events to Cortex XSIAM or another durable sink.
 
 ## Recommended Log Search Refactor
 
-Keep `execute_xql_query`, but restrict it to high-trust roles.
+Keep `execute_xql_query` restricted to high-trust roles.
 
 Continue hardening the safer first-class tool:
 
@@ -219,5 +228,5 @@ The first implementation milestone should be:
 3. Add policy engine and tool metadata.
 4. Add credential broker for role-scoped XSIAM API keys.
 5. Add safe `search_logs` wrapper.
-6. Restrict raw `execute_xql_query` to privileged roles.
-7. Add optional Portkey/LiteLLM-style gateway identity-forwarding validation.
+6. Add optional Portkey/LiteLLM-style gateway identity-forwarding validation.
+7. Complete FastMCP 3 compatibility work.

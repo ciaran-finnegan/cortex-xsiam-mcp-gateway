@@ -4,6 +4,19 @@ This project follows a lightweight changelog format until stable releases begin.
 
 ## Unreleased
 
+- Added enterprise-first README with deployment diagrams, alpha limitations,
+  and comparison with the current Palo Alto Cortex MCP deployment model.
+- Added framework-level audit middleware for every MCP tool invocation.
+- Added optional Cortex XSIAM HTTP Log Collector export for audit events.
+- Restricted `execute_xql_query` to configured privileged groups.
+- Added dependency remediation, release process, enterprise deployment, audit,
+  and AI review documentation.
+- Added review configuration scaffolding for Codex, Claude, CodeRabbit, and
+  GitHub Copilot.
+- Added Dependabot auto-merge and release workflows.
+
+## 0.1.0-alpha.1 - 2026-07-09
+
 - Created public fork hardening track for Cortex XSIAM MCP Gateway.
 - Added `search_logs` with raw XQL, structured filters, and conservative
   natural-language translation.

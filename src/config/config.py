@@ -38,6 +38,32 @@ class Settings(BaseSettings):
         '{"Security": ["*"], "SOC": ["xdr_data"], "Tier1": ["xdr_data"]}',
         validation_alias="LOG_SEARCH_DATASET_POLICY",
     )
+    raw_xql_privileged_groups: str = Field(
+        "Security,Admin",
+        validation_alias="RAW_XQL_PRIVILEGED_GROUPS",
+    )
+
+    # --- Audit Settings ---
+    audit_log_enabled: bool = Field(True, validation_alias="AUDIT_LOG_ENABLED")
+    audit_log_emit_start_events: bool = Field(True, validation_alias="AUDIT_LOG_EMIT_START_EVENTS")
+    audit_log_include_query_text: bool = Field(False, validation_alias="AUDIT_LOG_INCLUDE_QUERY_TEXT")
+    audit_log_fail_closed: bool = Field(False, validation_alias="AUDIT_LOG_FAIL_CLOSED")
+    audit_log_xsiam_http_collector_enabled: bool = Field(
+        False,
+        validation_alias="AUDIT_LOG_XSIAM_HTTP_COLLECTOR_ENABLED",
+    )
+    audit_log_xsiam_http_collector_url: str = Field(
+        "",
+        validation_alias="AUDIT_LOG_XSIAM_HTTP_COLLECTOR_URL",
+    )
+    audit_log_xsiam_http_collector_api_key: str = Field(
+        "",
+        validation_alias="AUDIT_LOG_XSIAM_HTTP_COLLECTOR_API_KEY",
+    )
+    audit_log_xsiam_http_collector_timeout_seconds: int = Field(
+        10,
+        validation_alias="AUDIT_LOG_XSIAM_HTTP_COLLECTOR_TIMEOUT_SECONDS",
+    )
 
     # This configuration tells Pydantic to:
     # 1. Load variables from a file named '.env' (for local development).

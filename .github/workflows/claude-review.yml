@@ -1,0 +1,43 @@
+name: Claude Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  claude-review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - name: Skip when ANTHROPIC_API_KEY is unavailable
+        if: ${{ env.ANTHROPIC_API_KEY == '' }}
+        run: echo "ANTHROPIC_API_KEY is not configured; skipping Claude review."
+
+      - name: Checkout pull request
+        if: ${{ env.ANTHROPIC_API_KEY != '' }}
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run Claude review
+        if: ${{ env.ANTHROPIC_API_KEY != '' }}
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
+          prompt: |
+            Review this pull request as a security-focused maintainer for a Cortex XSIAM MCP gateway.
+            Focus on authn/authz bypasses, dataset policy bypasses, raw XQL exposure, audit logging omissions,
+            unsafe dependency changes, secret leakage, prompt-injection risk, and missing tests.
+            Keep findings concise and actionable. Do not request cosmetic-only changes.
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

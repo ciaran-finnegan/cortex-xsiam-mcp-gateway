@@ -17,6 +17,7 @@ from entities.llm_config import LLM_FORMATTING_BASE_INSTRUCTIONS
 from pkg.util import create_response, read_resource
 from usecase.base_module import BaseModule
 from usecase.fetcher import get_fetcher
+from usecase.log_policy import ToolAuthorizationError, ensure_raw_xql_authorized
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,7 @@ async def execute_xql_query(ctx: Context,
     }
 
     try:
+        ensure_raw_xql_authorized(ctx.request_context.lifespan_context)
         fetcher = await get_fetcher(ctx)
         # Start the XQL query
         response_data = await fetcher.send_request("/xql/start_xql_query/", data=payload)
@@ -290,6 +292,9 @@ async def execute_xql_query(ctx: Context,
 
     except (PAPIConnectionError, PAPIAuthenticationError, PAPIServerError, PAPIClientRequestError, PAPIResponseError, PAPIClientError) as e:
         logger.exception(f"PAPI error while executing XQL query: {e}")
+        return create_response(data={"error": str(e)}, is_error=True)
+    except ToolAuthorizationError as e:
+        logger.info("Raw XQL authorization denied: %s", e)
         return create_response(data={"error": str(e)}, is_error=True)
     except Exception as e:
         logger.exception(f"Failed to execute XQL query: {e}")
