@@ -10,7 +10,7 @@ packages = [
 
 [tool.poetry.dependencies]
 python = ">=3.12,<3.14"
-fastapi = "0.122.0"
+fastapi = "0.139.0"
 uvicorn = { version = "^0.38.0", extras = ["standard"] }
 types-requests = "^2.32.0.20250515"
 requests = "^2.32.3"
