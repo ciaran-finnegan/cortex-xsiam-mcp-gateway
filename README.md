@@ -35,8 +35,10 @@ Implemented in this fork:
 - FastMCP server with `stdio` and `streamable-http` transports.
 - XSIAM API key based server-to-XSIAM authentication.
 - XQL execution and result polling.
-- `search_logs` for raw XQL, structured filters, and conservative
-  natural-language query translation.
+- Agent-oriented log search guidance, dataset discovery, and XQL-backed field
+  discovery.
+- `search_logs` for raw XQL, structured filters, and an experimental
+  natural-language fallback.
 - Dataset allowlist enforcement for `search_logs`.
 - Privileged-group restriction for the legacy `execute_xql_query` tool.
 - Structured audit logging for every MCP tool invocation.
@@ -136,7 +138,10 @@ alpha blockers.
 
 | Tool | Purpose | Current control |
 | --- | --- | --- |
-| `search_logs` | Search XSIAM logs using raw XQL, structured filters, or safe natural-language templates. | Dataset allowlist policy. |
+| `get_log_search_guidance` | Return compact instructions for LLM agents using XSIAM log search. | Audited. |
+| `list_log_datasets` | Discover datasets the current principal is allowed to query. | Dataset allowlist policy, capped output. |
+| `discover_log_fields` | Run a bounded XQL sample against one allowed dataset and return observed fields. | Dataset allowlist policy, capped output, no sample values. |
+| `search_logs` | Search XSIAM logs using raw XQL, structured filters, or experimental natural-language templates. | Dataset allowlist policy. |
 | `execute_xql_query` | Execute analyst-authored raw XQL. | Restricted to `RAW_XQL_PRIVILEGED_GROUPS`. |
 | `get_xql_query_quota` | Retrieve XQL query quota usage. | Audited. |
 | `get_issues` | Search XSIAM issues/alerts. | Audited; tool-level authorization pending. |
@@ -148,6 +153,23 @@ alpha blockers.
 | `get_assessment_profile_results` | Retrieve assessment profile results. | Audited; tool-level authorization pending. |
 
 ## Log Search
+
+### Agent-Driven Plain English
+
+The primary enterprise path is agent-driven:
+
+1. The user asks a plain-English question.
+2. The LLM agent calls `get_log_search_guidance`.
+3. The agent calls `list_log_datasets` to find allowed candidate datasets.
+4. The agent calls `discover_log_fields` for one candidate dataset to learn
+   observed field names and types from a bounded XQL sample.
+5. The agent calls `search_logs` with explicit `dataset`, `filters`, `fields`,
+   `timeframe`, and a low `limit`.
+
+This keeps natural-language reasoning in the client/agent while keeping the MCP
+server focused on policy, compact discovery, XQL execution, and audit logging.
+
+See [Agent Log Search](docs/AGENT_LOG_SEARCH.md).
 
 ### Raw XQL
 
@@ -179,9 +201,11 @@ Use `dataset`, `filters`, `fields`, and `limit` for routine agent workflows:
 }
 ```
 
-### Natural Language
+### Experimental Natural Language Fallback
 
-Use `natural_language_query` for common SOC patterns:
+`natural_language_query` exists for simple common SOC patterns, but it is not
+the preferred enterprise path. LLM agents should normally translate user intent
+into structured `search_logs` arguments after using discovery tools.
 
 ```json
 {
@@ -191,7 +215,7 @@ Use `natural_language_query` for common SOC patterns:
 }
 ```
 
-The current translator is intentionally conservative. It handles common terms
+The fallback translator is intentionally conservative. It handles common terms
 such as failed login/authentication, severity, username, host, IPv4 address, and
 relative windows like `last 24 hours`. Ambiguous prompts are refused rather than
 converted into speculative XQL.

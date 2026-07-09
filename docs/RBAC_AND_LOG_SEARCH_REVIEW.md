@@ -67,8 +67,14 @@ Python-implemented tools:
 - `get_issues`: searches XSIAM issues/alerts.
 - `execute_xql_query`: runs an arbitrary XQL query and polls for results. This
   is restricted to `RAW_XQL_PRIVILEGED_GROUPS`.
+- `get_log_search_guidance`: returns compact agent instructions for XSIAM log
+  search.
+- `list_log_datasets`: returns policy-allowed datasets using XSIAM dataset
+  discovery where available.
+- `discover_log_fields`: runs a bounded XQL sample against one allowed dataset
+  and returns observed field metadata, not event data.
 - `search_logs`: searches logs using raw XQL, structured parameters, or a
-  conservative natural-language template translator.
+  conservative experimental natural-language template translator.
 - `get_xql_query_quota`: retrieves XQL query quota usage.
 
 OpenAPI-generated tools:
@@ -103,17 +109,23 @@ Users can search logs if all of the following are true:
 - The current shared API key is acceptable until credential brokering is
   implemented.
 
-It supports three modes:
+The intended agent workflow is:
+
+1. Agent translates the user's plain-English request into an investigation plan.
+2. Agent discovers allowed datasets with `list_log_datasets`.
+3. Agent discovers observed field names with `discover_log_fields`.
+4. Agent calls `search_logs` with structured parameters and a low limit.
+
+`search_logs` supports three modes:
 
 - Raw XQL through `query`.
 - Structured XQL generation through `dataset`, `filters`, `fields`, and `limit`.
-- Conservative natural-language translation through `natural_language_query`.
+- Experimental conservative natural-language fallback through
+  `natural_language_query`.
 
-The natural-language path is intentionally template-based. It handles common
-SOC searches such as failed login/authentication searches, severity terms,
-usernames, hosts, and IPv4 addresses. It refuses ambiguous prompts rather than
-inventing a query. A production natural-language-to-XQL capability should use an
-approved LLM translation service plus policy checks before execution.
+The natural-language path is intentionally template-based and is not the primary
+enterprise design. The LLM agent should normally produce structured tool
+arguments after using discovery tools.
 
 Before execution, `search_logs` checks the requested `dataset` against the
 caller's groups. Security-team users can be granted `*`; other groups can be
@@ -138,6 +150,10 @@ The XSIAM API supports the log-search use case through these endpoints:
   Retrieves larger result sets with a stream ID returned by the query API.
 - `POST /public_api/v1/xql/get_quota`
   Retrieves XQL query quota usage.
+- `POST /public_api/v1/xql/get_datasets`
+  Retrieves datasets and dataset properties. Field discovery is handled with
+  bounded XQL samples because fields can vary by dataset, parser, integration,
+  and time range.
 
 The API documentation states that XSIAM allows up to four API queries in
 parallel for this query family, so the MCP server should eventually add
@@ -149,6 +165,7 @@ Sources:
 - https://docs-cortex.paloaltonetworks.com/r/Cortex-XSIAM-REST-API/Get-XQL-query-results
 - https://docs-cortex.paloaltonetworks.com/r/Cortex-XSIAM-REST-API/Get-XQL-query-results-Stream
 - https://docs-cortex.paloaltonetworks.com/r/Cortex-XSIAM-REST-API/Get-XQL-query-Quota
+- https://docs-cortex.paloaltonetworks.com/r/Cortex-XSIAM-REST-API/Get-all-datasets
 
 ## Why It Is Not Yet Enough
 
@@ -194,8 +211,12 @@ Continue hardening the safer first-class tool:
 
 `search_logs(dataset, time_range, filters, fields, limit)`
 
-The wrapper should:
+The discovery and search tools should:
 
+- Help the agent discover allowed datasets and observed fields progressively.
+- Cap discovery output so the MCP server does not dump tenant schema into model
+  context.
+- Avoid returning sample event values during field discovery.
 - Enforce allowed datasets by role.
 - Enforce max lookback windows by role.
 - Enforce max result limits by role.

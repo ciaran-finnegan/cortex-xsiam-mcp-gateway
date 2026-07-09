@@ -1,9 +1,25 @@
-# Natural Language To XQL
+# Natural Language And XQL
 
-## Current Approach
+## Recommended Approach
+
+For enterprise MCP use, the LLM agent should translate the user's
+plain-English request into structured MCP calls. The MCP server should provide
+agent instructions, dataset discovery, field discovery, policy enforcement, XQL
+execution, and audit logging.
+
+Use this flow instead of broad server-side natural-language translation:
+
+1. Agent calls `get_log_search_guidance`.
+2. Agent calls `list_log_datasets`.
+3. Agent calls `discover_log_fields`.
+4. Agent calls `search_logs` with explicit structured filters.
+
+See [Agent Log Search](AGENT_LOG_SEARCH.md).
+
+## Experimental Fallback
 
 The current natural-language-to-XQL implementation is intentionally conservative
-and template-based.
+and template-based. It is a fallback, not the preferred enterprise path.
 
 It can translate common SOC requests such as:
 
@@ -48,7 +64,7 @@ dataset = xdr_data
 The relative time window is sent through the XSIAM query API `timeframe`
 parameter rather than embedded in XQL.
 
-## Production LLM Translation Requirements
+## If Server-Side LLM Translation Is Added Later
 
 Before adding broad LLM-backed translation:
 
@@ -61,7 +77,7 @@ Before adding broad LLM-backed translation:
 - provide a dry-run mode for analyst review;
 - add tests for known risky prompt patterns.
 
-## Recommended Flow
+## Server-Side Translation Flow
 
 1. User provides natural language.
 2. Translator returns structured intent and candidate XQL.

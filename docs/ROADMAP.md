@@ -10,6 +10,8 @@
 - [x] Add structured audit logging for every MCP tool invocation.
 - [x] Add optional Cortex XSIAM HTTP Log Collector export for audit events.
 - [x] Restrict `execute_xql_query` to security/admin roles.
+- [x] Add compact agent guidance, allowed dataset discovery, and XQL-backed
+      field discovery for log-search agents.
 - [x] Document enterprise deployment architecture and current upstream MCP
       limitations.
 - [x] Add alpha release process documentation.
@@ -26,7 +28,7 @@
 
 - [ ] Add role-to-XSIAM-credential broker.
 - [ ] Add field-level output redaction.
-- [ ] Add dataset catalogue discovery/configuration.
+- [ ] Add cached/curated dataset catalogue configuration for production tenants.
 - [ ] Add streaming XQL result retrieval.
 - [ ] Add policy tests for common enterprise roles.
 - [ ] Add deployment examples for container platforms.
