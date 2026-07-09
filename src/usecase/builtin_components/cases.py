@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Annotated, Optional
+from typing import Annotated
 
 from fastmcp import Context, FastMCP
 from pydantic import Field
@@ -36,10 +36,10 @@ async def get_cases_response() -> str:
 
 
 async def get_cases(ctx: Context,
-                    filters: Annotated[Optional[list[dict]], Field(description="Filters list to get the cases by. Leave empty go get all cases")] = None,
+                    filters: Annotated[list[dict] | None, Field(description="Filters list to get the cases by. Leave empty go get all cases")] = None,
                     search_from: Annotated[int, Field(description="Marker for pagination starting point", default=0)] = 0,
                     search_to: Annotated[int, Field(description="Marker for pagination ending point, max 100", default=30)] = 30,
-                    sort: Annotated[Optional[dict], Field(description="Dictionary of field and keyword to sort by. By default the sort is defined as creation_time, desc")] = None,
+                    sort: Annotated[dict | None, Field(description="Dictionary of field and keyword to sort by. By default the sort is defined as creation_time, desc")] = None,
                     ) -> str:
     """
     Retrieves a list of cases or incidents from the Cortex platform.

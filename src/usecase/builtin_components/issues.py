@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Annotated, Optional
+from typing import Annotated
 
 from fastmcp import Context, FastMCP
 from pydantic import Field
@@ -35,10 +35,10 @@ async def get_issues_response() -> str:
         return create_response(data={"error": str(e)}, is_error=True)
 
 async def get_issues(ctx: Context,
-                    filters: Annotated[Optional[list[dict]], Field(description="Filters list to get the issues by. Leave empty go get all issues")] = None,
+                    filters: Annotated[list[dict] | None, Field(description="Filters list to get the issues by. Leave empty go get all issues")] = None,
                     search_from: Annotated[int, Field(description="Marker for pagination starting point", default=0)] = 0,
                     search_to: Annotated[int, Field(description="Marker for pagination ending point", default=30)] = 30,
-                    sort: Annotated[Optional[dict], Field(description="Dictionary of field and keyword to sort by. By default the sort is defined as observation time, desc")] = None,
+                    sort: Annotated[dict | None, Field(description="Dictionary of field and keyword to sort by. By default the sort is defined as observation time, desc")] = None,
                     ) -> str:
     """
     Retrieves a list of issues or alerts from the Cortex platform.

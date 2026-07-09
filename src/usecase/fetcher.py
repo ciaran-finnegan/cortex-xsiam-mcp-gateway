@@ -1,7 +1,6 @@
 import io
 import logging
 import os
-from typing import Optional
 
 from fastmcp import Context
 
@@ -30,7 +29,7 @@ class Fetcher:
         self.api_key = api_key
         self.api_key_id = api_key_id
 
-    async def send_request(self, path: str, method: str = "POST", data: Optional[dict | str] = None, headers: Optional[dict] = None, omit_papi_prefix: bool = False, stream: bool = False) -> dict | io.BytesIO:
+    async def send_request(self, path: str, method: str = "POST", data: dict | str | None = None, headers: dict | None = None, omit_papi_prefix: bool = False, stream: bool = False) -> dict | io.BytesIO:
         """
         Send an HTTP request to the public API.
 

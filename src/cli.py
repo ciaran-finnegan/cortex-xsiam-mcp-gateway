@@ -10,7 +10,6 @@ import sys
 import tempfile
 import time
 import zipfile
-from typing import Optional
 
 import requests
 
@@ -253,7 +252,7 @@ def extract_remote_tools(zip_path: str) -> tuple[str, str]:
     return temp_extract_dir, extracted_remote_tools_path
 
 
-def backup_existing_remote_tools(target_path: str) -> Optional[str]:
+def backup_existing_remote_tools(target_path: str) -> str | None:
     """
     Creates a backup of the existing remote_tools directory.
 
@@ -272,7 +271,7 @@ def backup_existing_remote_tools(target_path: str) -> Optional[str]:
     return backup_path
 
 
-def replace_remote_tools(extracted_path: str, target_path: str, backup_path: Optional[str] = None):
+def replace_remote_tools(extracted_path: str, target_path: str, backup_path: str | None = None):
     """
     Replaces the target remote_tools directory with the extracted one.
 
@@ -326,7 +325,7 @@ def show_updated_contents(target_path: str):
         logger.error("[Python] Error: 'ls' or 'dir' command not found. Are they in your PATH?")
 
 
-def cleanup_temp_files(temp_zip_path: Optional[str] = None, temp_extract_dir: Optional[str] = None):
+def cleanup_temp_files(temp_zip_path: str | None = None, temp_extract_dir: str | None = None):
     """
     Cleans up temporary files and directories.
 
@@ -371,8 +370,8 @@ async def update_tools(args: argparse.Namespace):
 
     logger.info("[Python] cortex tools directory detected. Commencing update...")
 
-    temp_zip_path: Optional[str] = None
-    temp_extract_dir: Optional[str] = None
+    temp_zip_path: str | None = None
+    temp_extract_dir: str | None = None
 
     try:
         # Download the update package
@@ -382,7 +381,7 @@ async def update_tools(args: argparse.Namespace):
         temp_extract_dir, extracted_remote_tools_path = extract_remote_tools(temp_zip_path)
 
         # Backup existing remote_tools directory
-        backup_path: Optional[str] = backup_existing_remote_tools(target_remote_tools_path)
+        backup_path: str | None = backup_existing_remote_tools(target_remote_tools_path)
 
         # Replace with new remote_tools directory
         replace_remote_tools(extracted_remote_tools_path, target_remote_tools_path, backup_path)

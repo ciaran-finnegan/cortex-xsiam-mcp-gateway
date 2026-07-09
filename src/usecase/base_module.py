@@ -1,6 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
-from typing import Callable
+from collections.abc import Callable
 
 from fastmcp import FastMCP
 from fastmcp.resources import Resource

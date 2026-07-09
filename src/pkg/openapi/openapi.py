@@ -1,7 +1,7 @@
 import logging
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 
@@ -36,7 +36,7 @@ def deep_merge(source: dict[str, Any], destination: dict[str, Any]) -> dict[str,
     return destination
 
 
-def bundle_specs(template_file: Path, *specs_dirs: Path) -> Optional[dict[str, Any]]:
+def bundle_specs(template_file: Path, *specs_dirs: Path) -> dict[str, Any] | None:
     """
     Loads a main template, walks directories of specs, merges them,
     and returns a single bundled OpenAPI specification.

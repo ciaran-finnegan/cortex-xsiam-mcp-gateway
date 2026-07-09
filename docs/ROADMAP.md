@@ -12,6 +12,8 @@
 - [ ] Add tool-level policy for every MCP tool.
 - [ ] Restrict `execute_xql_query` to security/admin roles.
 - [ ] Add audit logging.
+- [ ] Complete FastMCP 3 compatibility work to remove the unpatched transitive
+      `diskcache` dependency carried by FastMCP 2.x.
 
 ## Beta
 

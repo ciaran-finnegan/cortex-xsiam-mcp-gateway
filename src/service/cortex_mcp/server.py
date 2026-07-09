@@ -1,7 +1,6 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Optional
 
 from fastmcp import FastMCP
 from starlette.requests import Request
@@ -13,7 +12,7 @@ from entities.MCPContext import MCPContext
 logger = logging.getLogger("Cortex MCP")
 
 
-def create_mcp_lifespan(api_key: Optional[str] = None, api_key_id: Optional[str] = None):
+def create_mcp_lifespan(api_key: str | None = None, api_key_id: str | None = None):
     """
     Factory function to create mcp_lifespan with injected dependencies.
 
@@ -63,7 +62,7 @@ def create_mcp_lifespan(api_key: Optional[str] = None, api_key_id: Optional[str]
 
 
 # Create MCP server with injected dependencies
-def create_mcp_server(api_key: Optional[str] = None, api_key_id: Optional[str] = None) -> FastMCP:
+def create_mcp_server(api_key: str | None = None, api_key_id: str | None = None) -> FastMCP:
     """
     Create FastMCP server with injected dependencies.
 
