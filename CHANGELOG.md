@@ -4,6 +4,10 @@ This project follows a lightweight changelog format until stable releases begin.
 
 ## Unreleased
 
+- Added compact agent log-search guidance, allowed dataset discovery, and
+  XQL-backed field discovery tools for LLM agents.
+- Repositioned `natural_language_query` as an experimental fallback rather than
+  the primary enterprise log-search path.
 - Added enterprise-first README with deployment diagrams, alpha limitations,
   and comparison with the current Palo Alto Cortex MCP deployment model.
 - Added framework-level audit middleware for every MCP tool invocation.

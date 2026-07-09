@@ -34,7 +34,8 @@ flowchart LR
 | `src/usecase/builtin_components/` | Python tool modules. |
 | `src/usecase/builtin_components/openapi/` | OpenAPI fragments converted into MCP tools. |
 | `src/usecase/fetcher.py` | Calls XSIAM public APIs. |
-| `src/usecase/xql_builder.py` | Builds safe structured XQL and conservative NL-to-XQL templates. |
+| `src/usecase/xql_builder.py` | Builds safe structured XQL and conservative experimental NL-to-XQL templates. |
+| `src/usecase/xql_discovery.py` | Normalizes dataset metadata and infers compact field catalogs from bounded XQL samples. |
 | `src/usecase/log_policy.py` | Enforces dataset allowlists for log search and privileged raw XQL groups. |
 | `src/usecase/audit.py` | Builds audit events and optionally exports them to Cortex XSIAM. |
 | `src/service/cortex_mcp/audit_middleware.py` | Emits audit events for every MCP tool invocation. |
@@ -51,15 +52,18 @@ flowchart LR
 7. Audit middleware emits success, denied, or error outcome.
 8. Tool returns JSON to the MCP client.
 
-## `search_logs` Request Flow
+## Agent Log Search Flow
 
-1. User provides raw XQL, structured filters, or a natural-language query.
-2. Natural-language input is converted only if it matches safe templates.
-3. Structured input is converted to XQL.
-4. The requested dataset is checked against `LOG_SEARCH_DATASET_POLICY`.
-5. The server starts an XQL query.
-6. The server polls for results.
-7. Results and policy metadata are returned.
+1. User gives the LLM agent a plain-English investigation request.
+2. Agent calls `get_log_search_guidance` for compact rules.
+3. Agent calls `list_log_datasets` to discover allowed datasets.
+4. Agent calls `discover_log_fields` for one dataset. The server runs a bounded
+   XQL sample and returns capped field metadata, not sample event values.
+5. Agent calls `search_logs` with explicit structured parameters.
+6. The requested dataset is checked against `LOG_SEARCH_DATASET_POLICY`.
+7. The server starts an XQL query.
+8. The server polls for results.
+9. Results and policy metadata are returned.
 
 ## Target Production Flow
 
@@ -80,7 +84,8 @@ flowchart LR
 
 - Fail closed when identity or authorization is uncertain.
 - Prefer structured query parameters for agent workflows.
+- Keep schema discovery compact and progressive.
 - Treat raw XQL as privileged.
-- Keep natural-language translation explainable and reviewable.
+- Keep server-side natural-language translation experimental and conservative.
 - Avoid one broad XSIAM API key for all users.
 - Preserve exact XSIAM data; do not invent security findings.
