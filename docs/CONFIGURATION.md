@@ -34,7 +34,7 @@ export LOG_SEARCH_DATASET_POLICY='{
 }'
 ```
 
-For local development before Entra/Portkey identity is wired in:
+For local development before incoming identity is wired in:
 
 ```bash
 export LOG_SEARCH_DEFAULT_PRINCIPAL_ID="dev-analyst@example.com"
@@ -61,3 +61,6 @@ LOG_SEARCH_DEFAULT_GROUPS=Security
 - Use separate credentials for development and production tenants.
 - Use role-scoped XSIAM API keys once credential brokering is implemented.
 - Do not expose HTTP transport without incoming authentication.
+- An AI gateway such as Portkey or LiteLLM is optional. Use one when it is part
+  of your enterprise AI control plane; otherwise validate Entra ID tokens
+  directly in the MCP server.

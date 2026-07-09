@@ -9,9 +9,11 @@ agent access to XQL log search, issues, cases, endpoints, assets, and related
 XSIAM APIs.
 
 This project is a fork and hardening track for the Cortex MCP server. The target
-architecture is an enterprise MCP gateway where users authenticate through
-Microsoft Entra ID, optionally via Portkey, and XSIAM API access is constrained
-by the user's security role.
+architecture is an enterprise MCP server where users authenticate through
+Microsoft Entra ID and XSIAM API access is constrained by the user's security
+role. Teams that already centralize AI traffic through a gateway such as
+Portkey or LiteLLM should be able to place that gateway in front of this server,
+but that gateway is optional and is not required for every deployment.
 
 ## Status
 
@@ -32,7 +34,9 @@ Implemented:
 
 Planned:
 
-- Entra ID / Portkey incoming identity verification.
+- Entra ID incoming identity verification for direct MCP deployments.
+- Optional gateway identity-forwarding validation for deployments that use
+  Portkey, LiteLLM, or similar AI gateways.
 - Role-to-dataset and role-to-credential mapping from real user claims.
 - Per-role least-privilege XSIAM API credential selection.
 - Tool-level authorization for all tools, including raw XQL.
@@ -137,16 +141,35 @@ Example:
 - `Tier1` can query only `xdr_data`.
 - `CloudTeam` can query `xdr_data` and `cloud_audit_logs`.
 
-Until Entra/Portkey incoming identity is implemented, local development can set
-default groups:
+Until incoming identity is implemented, local development can set default
+groups:
 
 ```bash
 export LOG_SEARCH_DEFAULT_PRINCIPAL_ID="dev-analyst@example.com"
 export LOG_SEARCH_DEFAULT_GROUPS="Security"
 ```
 
-In production, groups must come from verified Entra/Portkey identity claims, not
-from development defaults.
+In production, groups must come from verified identity claims, not from
+development defaults. In a direct deployment, this means claims validated from
+Entra ID by the MCP server. In a gateway deployment, Portkey, LiteLLM, or a
+similar gateway may authenticate the user and forward trusted identity claims,
+but the MCP server still needs a way to validate that forwarding contract.
+
+## Optional AI Gateway Deployment
+
+Portkey, LiteLLM, and similar AI gateways are supported architecture patterns,
+not mandatory dependencies.
+
+Use a gateway when you need centralized model routing, usage controls, prompt
+logging, policy enforcement, or a standard place to attach enterprise identity
+for many AI applications. In that model, the gateway can authenticate users,
+forward signed or otherwise verifiable identity claims, and route MCP traffic to
+this server.
+
+Skip the gateway when your MCP client can authenticate directly with Entra ID
+and call this server without shared AI gateway infrastructure. In that model,
+the MCP server validates the Entra token itself and applies the same tool,
+dataset, credential, and audit policies.
 
 ## Configuration
 
@@ -216,8 +239,10 @@ docker run --rm -i --env-file .env cortex-xsiam-mcp-gateway
 
 The intended production security model is:
 
-1. User authenticates through Entra ID, directly or via Portkey.
-2. MCP server validates identity and extracts stable claims.
+1. User authenticates through Entra ID, either directly to the MCP server or
+   through an optional AI gateway such as Portkey or LiteLLM.
+2. MCP server validates identity directly, or validates trusted claims forwarded
+   by the optional gateway, and extracts stable claims.
 3. Groups/app roles are mapped to MCP roles.
 4. Tool and dataset policy is evaluated before execution.
 5. The server selects a least-privilege XSIAM API credential for the role.

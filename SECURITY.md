@@ -50,7 +50,8 @@ In scope:
 - unauthorized XSIAM dataset access;
 - bypassing `search_logs` dataset policy;
 - leaking XSIAM API keys, auth IDs, or query results;
-- incoming identity spoofing once Entra/Portkey auth is implemented;
+- incoming identity spoofing once Entra auth or optional gateway identity
+  forwarding is implemented;
 - unsafe natural-language-to-XQL translation that expands access;
 - command injection, path traversal, SSRF, or deserialization issues;
 - container or CI secrets exposure.
@@ -70,8 +71,10 @@ server-to-XSIAM requests. `search_logs` has dataset-level policy enforcement,
 but the raw `execute_xql_query` tool should be restricted to security/admin
 roles before production exposure.
 
-Incoming Entra ID / Portkey identity verification and per-role XSIAM credential
-selection are planned but not complete.
+Incoming Entra ID verification and per-role XSIAM credential selection are
+planned but not complete. Optional identity forwarding from AI gateways such as
+Portkey or LiteLLM is also planned for deployments that use those gateways, but
+it is not required for direct MCP deployments.
 
 ## Safe Operations Guidance
 

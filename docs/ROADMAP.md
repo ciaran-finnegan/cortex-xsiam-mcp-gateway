@@ -8,7 +8,8 @@
 - [x] Add conservative natural-language-to-XQL templates.
 - [x] Add CI, CodeQL, Dependency Review, Dependabot, and Scorecard.
 - [ ] Add Entra ID token validation for HTTP transport.
-- [ ] Add Portkey identity-forwarding validation.
+- [ ] Add optional AI gateway identity-forwarding validation for Portkey,
+      LiteLLM, and similar gateways.
 - [ ] Add tool-level policy for every MCP tool.
 - [ ] Restrict `execute_xql_query` to security/admin roles.
 - [ ] Add audit logging.
@@ -29,5 +30,6 @@
 - [ ] Publish signed releases.
 - [ ] Add semantic versioning.
 - [ ] Add upgrade/migration documentation.
-- [ ] Add reference architecture for Portkey and Entra.
+- [ ] Add reference architectures for direct Entra deployments and optional
+      Portkey/LiteLLM gateway deployments.
 - [ ] Add security review checklist.

@@ -3,7 +3,9 @@
 ## Current State
 
 The current implementation authenticates to XSIAM with a configured API key and
-API key ID. Incoming MCP users are not yet authenticated by Entra ID or Portkey.
+API key ID. Incoming MCP users are not yet authenticated by Entra ID. Optional
+AI gateway identity forwarding, such as Portkey or LiteLLM, is also not yet
+implemented.
 
 `search_logs` enforces dataset allowlists using groups from `MCPContext`. In
 development, these groups come from environment defaults. In production, they
@@ -11,11 +13,23 @@ must come from verified identity claims.
 
 ## Target State
 
+The target security model supports two deployment modes:
+
+- Direct mode: the MCP server validates Entra ID tokens from the MCP client.
+- Gateway mode: an optional AI gateway such as Portkey or LiteLLM validates the
+  user, routes the request, and forwards identity claims that the MCP server can
+  verify.
+
+Gateway mode is useful for organizations that already centralize AI traffic, but
+it is not required for teams that can connect MCP clients directly to this
+server.
+
 ```mermaid
 sequenceDiagram
   actor User
   participant Client as MCP Client
   participant Entra as Entra ID
+  participant AIGateway as Optional AI Gateway
   participant Gateway as MCP Gateway
   participant Policy as Policy Engine
   participant XSIAM as Cortex XSIAM
@@ -23,8 +37,13 @@ sequenceDiagram
   User->>Client: Start investigation
   Client->>Entra: Authenticate
   Entra-->>Client: Token
-  Client->>Gateway: Tool call + token
-  Gateway->>Gateway: Validate token
+  alt Direct MCP deployment
+    Client->>Gateway: Tool call + Entra token
+  else Optional AI gateway deployment
+    Client->>AIGateway: Tool call + Entra token
+    AIGateway->>Gateway: Tool call + verifiable identity claims
+  end
+  Gateway->>Gateway: Validate token or gateway claims
   Gateway->>Policy: Authorize tool and dataset
   Policy-->>Gateway: Allow/deny + credential profile
   Gateway->>XSIAM: API call with least-privilege key
@@ -60,7 +79,9 @@ Example:
 
 ## Known Gaps
 
-- Incoming Entra/Portkey authentication is not implemented.
+- Incoming Entra authentication is not implemented.
+- Optional Portkey/LiteLLM-style gateway identity forwarding is not
+  implemented.
 - Per-role XSIAM credential selection is not implemented.
 - `execute_xql_query` bypasses dataset policy and must be restricted before
   production exposure.
