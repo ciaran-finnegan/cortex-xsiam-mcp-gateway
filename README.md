@@ -4,77 +4,150 @@
 [![CodeQL](https://github.com/ciaran-finnegan/cortex-xsiam-mcp-gateway/actions/workflows/codeql.yml/badge.svg)](https://github.com/ciaran-finnegan/cortex-xsiam-mcp-gateway/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://github.com/ciaran-finnegan/cortex-xsiam-mcp-gateway/actions/workflows/scorecard.yml/badge.svg)](https://github.com/ciaran-finnegan/cortex-xsiam-mcp-gateway/actions/workflows/scorecard.yml)
 
-An MCP server for Cortex XSIAM security operations, with a focus on governed
-agent access to XQL log search, issues, cases, endpoints, assets, and related
-XSIAM APIs.
+An enterprise-oriented MCP gateway for Cortex XSIAM security operations. The
+goal is a centrally deployed MCP service where users authenticate through
+Microsoft Entra ID, agents can search logs and investigation data, and every
+tool call is governed by policy and audit logging rather than by a shared local
+API key.
 
-This project is a fork and hardening track for the Cortex MCP server. The target
-architecture is an enterprise MCP server where users authenticate through
-Microsoft Entra ID and XSIAM API access is constrained by the user's security
-role. Teams that already centralize AI traffic through a gateway such as
-Portkey or LiteLLM should be able to place that gateway in front of this server,
-but that gateway is optional and is not required for every deployment.
+This project is a community fork and hardening track for Palo Alto Networks'
+Cortex MCP server. It keeps the useful Cortex/XSIAM tool surface, then adds the
+enterprise controls needed for multi-user agent access: dataset-scoped log
+search, raw XQL restrictions, structured audit events, optional forwarding into
+Cortex XSIAM, and a roadmap for Entra-backed identity and role enforcement.
 
-## Status
+Portkey, LiteLLM, and similar AI gateways are supported deployment patterns, not
+mandatory dependencies. Use one when it is already your enterprise AI control
+plane for model routing, identity forwarding, prompt logging, or usage policy.
+Skip it when MCP clients can authenticate directly to this service with Entra
+ID.
 
-Alpha. The current server is useful for local and trusted analyst workflows, but
-it is not yet ready for unrestricted multi-user production exposure.
+## Alpha Status
 
-Implemented:
+Release line: `v0.1.0-alpha.1`.
+
+This is alpha software. It is appropriate for design review, lab validation, and
+controlled pilot work. It is not ready for unrestricted enterprise production
+exposure until the alpha blockers in [Roadmap](docs/ROADMAP.md) are complete.
+
+Implemented in this fork:
 
 - FastMCP server with `stdio` and `streamable-http` transports.
 - XSIAM API key based server-to-XSIAM authentication.
 - XQL execution and result polling.
-- `search_logs` tool for raw XQL, structured filters, and conservative
+- `search_logs` for raw XQL, structured filters, and conservative
   natural-language query translation.
 - Dataset allowlist enforcement for `search_logs`.
+- Privileged-group restriction for the legacy `execute_xql_query` tool.
+- Structured audit logging for every MCP tool invocation.
+- Optional audit export to a Cortex XSIAM HTTP Log Collector.
 - XSIAM tools for cases, issues, tenant info, assets, endpoints,
   vulnerabilities, and assessment profile results.
-- CI, CodeQL, dependency review, Dependabot, and OpenSSF Scorecard workflows.
+- CI, CodeQL, Dependency Review, Dependabot, OpenSSF Scorecard, and AI review
+  configuration scaffolding.
 
-Planned:
+Alpha blockers:
 
-- Entra ID incoming identity verification for direct MCP deployments.
-- Optional gateway identity-forwarding validation for deployments that use
-  Portkey, LiteLLM, or similar AI gateways.
-- Role-to-dataset and role-to-credential mapping from real user claims.
-- Per-role least-privilege XSIAM API credential selection.
-- Tool-level authorization for all tools, including raw XQL.
-- Audit logs tying every MCP call to a human principal.
-- Streaming support for large XQL result sets.
+- Entra ID token validation for HTTP transport.
+- Optional trusted identity-forwarding validation for Portkey, LiteLLM, and
+  similar gateways.
+- Tool-level policy for every MCP tool beyond the current log-search and raw
+  XQL controls.
+- Role-to-XSIAM-credential brokering.
+- FastMCP 3 compatibility work to remove vulnerable FastMCP 2.x transitive
+  dependency paths.
 
-## Why This Exists
+## Enterprise Architecture
 
-Security teams want agents to help with XSIAM investigations, but unrestricted
-agent access to a broad XSIAM API key is not acceptable. Analysts may be allowed
-to query only specific datasets, while members of the security team may be
-allowed to query every dataset.
+The intended production shape is a centrally hosted MCP service. Analysts and
+agents connect to one controlled endpoint rather than each user running a local
+server with broad XSIAM credentials.
 
-This project provides a path toward:
+```mermaid
+flowchart LR
+  User["Human user"]
+  Client["MCP client or agent"]
+  Entra["Microsoft Entra ID"]
+  Gateway["Optional AI gateway<br/>Portkey, LiteLLM, etc."]
+  MCP["Cortex XSIAM MCP Gateway<br/>central service"]
+  Policy["Policy engine<br/>tools, roles, datasets"]
+  Audit["Audit pipeline<br/>local JSON + optional XSIAM ingest"]
+  Broker["Credential broker<br/>planned"]
+  XSIAM["Cortex XSIAM APIs"]
+  SIEM["Cortex XSIAM SIEM dataset"]
 
-- natural-language security investigation workflows;
-- deterministic XQL execution for advanced analysts;
-- dataset allowlists for non-security users;
-- role-scoped access using Entra groups/app roles;
-- least-privilege downstream XSIAM credentials;
-- auditable agent activity.
+  User --> Client
+  Client --> Entra
+  Client --> Gateway
+  Client --> MCP
+  Gateway --> MCP
+  MCP --> Policy
+  MCP --> Audit
+  Audit --> SIEM
+  Policy --> Broker
+  Broker --> XSIAM
+  MCP --> XSIAM
+```
+
+Two deployment modes are supported by design:
+
+- Direct mode: the MCP client authenticates with Entra ID and calls this server.
+  The server validates Entra tokens and applies policy. Token validation is an
+  alpha blocker, not complete today.
+- Gateway mode: an optional AI gateway authenticates the user and forwards
+  verifiable identity claims. The MCP server must validate that forwarding
+  contract before trusting the claims. This is also an alpha blocker.
+
+Local deployment is only for development, demos, and isolated trusted analyst
+workflows. A local-per-user MCP process with broad API credentials is not the
+enterprise target because it weakens central identity, audit, policy, and
+credential control.
+
+See [Enterprise Deployment](docs/ENTERPRISE_DEPLOYMENT.md) and
+[Security Model](docs/SECURITY_MODEL.md).
+
+## Why Not Just The Current Palo Alto MCP Server?
+
+Palo Alto publishes an official
+[Cortex MCP server overview](https://docs-cortex.paloaltonetworks.com/r/Cortex-XSIAM/Cortex-XSIAM-3.x-Documentation/Cortex-MCP-server-overview)
+and introduced the project in
+[Introducing the Cortex MCP Server](https://www.paloaltonetworks.com/blog/security-operations/introducing-the-cortex-mcp-server/).
+Those materials describe a flexible MCP server that can be used with clients
+such as Claude Desktop and can query or retrieve Cortex issues, cases, assets,
+endpoints, compliance results, and tenant metadata.
+
+Based on the current public docs and the forked codebase, the official server is
+best understood as a local or trusted-client enablement path. That is useful,
+but it leaves several enterprise questions outside the default design:
+
+- How are many users authenticated to one shared MCP service?
+- How are Entra groups or app roles mapped to XSIAM roles?
+- How does a non-security user get limited to approved datasets?
+- How is raw XQL restricted to security/admin roles?
+- How does the server avoid every user needing a personally managed XSIAM API
+  key?
+- How are agent actions auditable back to a human principal?
+- How can audit events be sent into Cortex XSIAM as SIEM data?
+
+This fork addresses the first layer of those gaps now and tracks the rest as
+alpha blockers.
 
 ## Core Tools
 
-| Tool | Purpose |
-| --- | --- |
-| `search_logs` | Search XSIAM logs using raw XQL, structured filters, or safe natural-language templates. |
-| `execute_xql_query` | Execute analyst-authored raw XQL. This should be restricted to security/admin roles before production use. |
-| `get_xql_query_quota` | Retrieve XQL query quota usage. |
-| `get_issues` | Search XSIAM issues/alerts. |
-| `get_cases` | Search XSIAM cases/incidents. |
-| `get_tenant_info` | Retrieve tenant/license information. |
-| `get_assets`, `get_asset_by_id` | Retrieve asset inventory data. |
-| `get_filtered_endpoints` | Retrieve endpoint data. |
-| `get_vulnerabilities` | Retrieve vulnerability data. |
-| `get_assessment_profile_results` | Retrieve assessment profile results. |
+| Tool | Purpose | Current control |
+| --- | --- | --- |
+| `search_logs` | Search XSIAM logs using raw XQL, structured filters, or safe natural-language templates. | Dataset allowlist policy. |
+| `execute_xql_query` | Execute analyst-authored raw XQL. | Restricted to `RAW_XQL_PRIVILEGED_GROUPS`. |
+| `get_xql_query_quota` | Retrieve XQL query quota usage. | Audited. |
+| `get_issues` | Search XSIAM issues/alerts. | Audited; tool-level authorization pending. |
+| `get_cases` | Search XSIAM cases/incidents. | Audited; tool-level authorization pending. |
+| `get_tenant_info` | Retrieve tenant/license information. | Audited; tool-level authorization pending. |
+| `get_assets`, `get_asset_by_id` | Retrieve asset inventory data. | Audited; tool-level authorization pending. |
+| `get_filtered_endpoints` | Retrieve endpoint data. | Audited; tool-level authorization pending. |
+| `get_vulnerabilities` | Retrieve vulnerability data. | Audited; tool-level authorization pending. |
+| `get_assessment_profile_results` | Retrieve assessment profile results. | Audited; tool-level authorization pending. |
 
-## Log Search Modes
+## Log Search
 
 ### Raw XQL
 
@@ -123,11 +196,11 @@ such as failed login/authentication, severity, username, host, IPv4 address, and
 relative windows like `last 24 hours`. Ambiguous prompts are refused rather than
 converted into speculative XQL.
 
+See [Natural Language XQL](docs/NATURAL_LANGUAGE_XQL.md).
+
 ## Dataset Authorization
 
 Configure dataset access with `LOG_SEARCH_DATASET_POLICY`.
-
-Example:
 
 ```json
 {
@@ -141,7 +214,7 @@ Example:
 - `Tier1` can query only `xdr_data`.
 - `CloudTeam` can query `xdr_data` and `cloud_audit_logs`.
 
-Until incoming identity is implemented, local development can set default
+Until incoming identity is implemented, development deployments can set default
 groups:
 
 ```bash
@@ -149,27 +222,47 @@ export LOG_SEARCH_DEFAULT_PRINCIPAL_ID="dev-analyst@example.com"
 export LOG_SEARCH_DEFAULT_GROUPS="Security"
 ```
 
-In production, groups must come from verified identity claims, not from
-development defaults. In a direct deployment, this means claims validated from
-Entra ID by the MCP server. In a gateway deployment, Portkey, LiteLLM, or a
-similar gateway may authenticate the user and forward trusted identity claims,
-but the MCP server still needs a way to validate that forwarding contract.
+Production groups must come from verified identity claims, not development
+defaults.
 
-## Optional AI Gateway Deployment
+## Audit Logging
 
-Portkey, LiteLLM, and similar AI gateways are supported architecture patterns,
-not mandatory dependencies.
+Every MCP tool invocation emits structured JSON audit events. Events include the
+human principal known to the server, groups, tool name, transport, outcome,
+duration, argument names, dataset, query hash, and XSIAM API key ID hash. Raw
+XQL and natural-language prompts are hashed by default and can be logged only by
+explicit opt-in.
 
-Use a gateway when you need centralized model routing, usage controls, prompt
-logging, policy enforcement, or a standard place to attach enterprise identity
-for many AI applications. In that model, the gateway can authenticate users,
-forward signed or otherwise verifiable identity claims, and route MCP traffic to
-this server.
+```mermaid
+sequenceDiagram
+  participant Client as "MCP client or agent"
+  participant MCP as "MCP Gateway"
+  participant Policy as "Policy checks"
+  participant XSIAM as "Cortex XSIAM APIs"
+  participant Collector as "XSIAM HTTP Log Collector"
 
-Skip the gateway when your MCP client can authenticate directly with Entra ID
-and call this server without shared AI gateway infrastructure. In that model,
-the MCP server validates the Entra token itself and applies the same tool,
-dataset, credential, and audit policies.
+  Client->>MCP: "tools/call"
+  MCP->>Collector: "audit start event"
+  MCP->>Policy: "authorize tool and dataset"
+  alt "allowed"
+    Policy-->>MCP: "allow"
+    MCP->>XSIAM: "API request"
+    XSIAM-->>MCP: "API response"
+    MCP->>Collector: "audit success event"
+    MCP-->>Client: "tool result"
+  else "denied"
+    Policy-->>MCP: "deny"
+    MCP->>Collector: "audit denied event"
+    MCP-->>Client: "policy error"
+  end
+```
+
+Optional Cortex XSIAM SIEM integration uses an XSIAM HTTP Log Collector. Palo
+Alto documents HTTP collectors as a way to receive third-party logs in JSON,
+Raw, CEF, or LEEF format at `/logs/v1/event`; see
+[Set up an HTTP log collector to receive logs](https://docs-cortex.paloaltonetworks.com/r/Cortex-XSIAM/Cortex-XSIAM-3.x-Documentation/Set-up-an-HTTP-log-collector-to-receive-logs).
+
+See [Audit Logging](docs/AUDIT_LOGGING.md).
 
 ## Configuration
 
@@ -181,20 +274,76 @@ export CORTEX_MCP_PAPI_AUTH_HEADER="your-api-key"
 export CORTEX_MCP_PAPI_AUTH_ID="your-api-key-id"
 ```
 
-Optional:
+Common optional settings:
 
 ```bash
-export MCP_TRANSPORT="stdio"                    # stdio or streamable-http
+export MCP_TRANSPORT="streamable-http"
 export MCP_HOST="0.0.0.0"
 export MCP_PORT="8080"
 export MCP_PATH="/api/v1/stream/mcp"
 export LOG_SEARCH_DATASET_POLICY='{"Security":["*"],"Tier1":["xdr_data"]}'
-export LOG_SEARCH_DEFAULT_GROUPS="Security"     # development only
+export RAW_XQL_PRIVILEGED_GROUPS="Security,Admin"
 ```
 
-See [Configuration](docs/CONFIGURATION.md) for full details.
+Audit export to Cortex XSIAM:
+
+```bash
+export AUDIT_LOG_ENABLED="true"
+export AUDIT_LOG_XSIAM_HTTP_COLLECTOR_ENABLED="true"
+export AUDIT_LOG_XSIAM_HTTP_COLLECTOR_URL="https://api-your-xsiam-tenant.example/logs/v1/event"
+export AUDIT_LOG_XSIAM_HTTP_COLLECTOR_API_KEY="collector-api-key"
+```
+
+See [Configuration](docs/CONFIGURATION.md).
+
+## Dependency And Security Automation
+
+Dependabot is the primary dependency update system for this repository.
+Renovate is not enabled in the repo. Running both without a clear split would
+create duplicate PRs and noisy dependency policy. If Renovate is adopted later,
+it should replace Dependabot or be scoped to a Renovate-only feature that
+Dependabot does not support.
+
+The repository includes:
+
+- CI on Python 3.12 and 3.13.
+- CodeQL analysis.
+- Dependency Review with high-severity blocking.
+- Dependabot version/security updates.
+- Dependabot workflow to enable auto-merge for passing patch/minor updates,
+  subject to branch protection.
+- OpenSSF Scorecard.
+- Security policy and private vulnerability reporting guidance.
+
+Current known dependency issue: the FastMCP 2.x line carries Dependabot alerts
+that require FastMCP 3.x compatibility work. A direct upgrade has already shown
+breaking import/runtime changes, so this is tracked as an alpha blocker rather
+than hidden as a simple version bump.
+
+See [Dependency Remediation](docs/DEPENDENCY_REMEDIATION.md).
+
+## AI Review Automation
+
+The repo contains review instructions/configuration for four review paths:
+
+- Codex: `AGENTS.md` plus a GitHub Actions workflow that runs when
+  `OPENAI_API_KEY` is configured.
+- Claude: `CLAUDE.md`, `REVIEW.md`, and a workflow that runs when
+  `ANTHROPIC_API_KEY` is configured.
+- CodeRabbit: `.coderabbit.yaml`.
+- GitHub Copilot: `.github/copilot-instructions.md` and path-specific review
+  instructions.
+
+These integrations still require the relevant GitHub app, repository setting,
+or secret to be enabled in GitHub. The workflow files skip safely when secrets
+are not present.
+
+See [AI Review](docs/AI_REVIEW.md).
 
 ## Local Development
+
+Local execution is for development and isolated testing only. It is not the
+recommended enterprise deployment model.
 
 Requirements:
 
@@ -216,16 +365,13 @@ poetry run pytest
 poetry run ruff check src tests
 ```
 
-`mypy src` is a hardening target but is not yet a required gate because the
-fork still carries inherited typing debt.
-
-Run the MCP server:
+Run the MCP server locally:
 
 ```bash
 poetry run python src/main.py
 ```
 
-For Claude Desktop or Cursor, configure the MCP client to execute
+For Claude Desktop or Cursor development, configure the MCP client to execute
 `poetry run python src/main.py` or run the Docker image.
 
 ## Docker
@@ -235,39 +381,11 @@ docker build -t cortex-xsiam-mcp-gateway .
 docker run --rm -i --env-file .env cortex-xsiam-mcp-gateway
 ```
 
-## Security Model
+## Releases
 
-The intended production security model is:
-
-1. User authenticates through Entra ID, either directly to the MCP server or
-   through an optional AI gateway such as Portkey or LiteLLM.
-2. MCP server validates identity directly, or validates trusted claims forwarded
-   by the optional gateway, and extracts stable claims.
-3. Groups/app roles are mapped to MCP roles.
-4. Tool and dataset policy is evaluated before execution.
-5. The server selects a least-privilege XSIAM API credential for the role.
-6. The XSIAM API call is made.
-7. The request, decision, user, tool, dataset, and credential profile are logged.
-
-See [Security Model](docs/SECURITY_MODEL.md).
-
-## Repository Security
-
-This repository includes:
-
-- GitHub Actions CI.
-- CodeQL analysis.
-- Dependency Review.
-- Dependabot updates.
-- OpenSSF Scorecard.
-- Security policy and private vulnerability reporting guidance.
-
-Maintainers should also enable GitHub repository settings for:
-
-- private vulnerability reporting;
-- Dependabot alerts and security updates;
-- secret scanning;
-- branch protection for `main`.
+The first release line is `v0.1.0-alpha.1`. Alpha releases are expected to be
+pre-production and may include breaking changes before beta. See
+[Release Process](docs/RELEASES.md) and [Changelog](CHANGELOG.md).
 
 ## Licensing
 

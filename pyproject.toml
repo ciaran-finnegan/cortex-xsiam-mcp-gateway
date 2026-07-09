@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "CortexMCP"
-version = "1.0.1"
+version = "0.1.0a1"
 description = ""
 authors = []
 readme = "README.md"

@@ -5,6 +5,13 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    groups:
+      python-patch-minor:
+        update-types:
+          - patch
+          - minor
+        patterns:
+          - "*"
     labels:
       - dependencies
       - python
@@ -14,6 +21,13 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    groups:
+      github-actions-patch-minor:
+        update-types:
+          - patch
+          - minor
+        patterns:
+          - "*"
     labels:
       - dependencies
       - github-actions

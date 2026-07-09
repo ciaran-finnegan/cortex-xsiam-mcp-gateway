@@ -35,16 +35,21 @@ flowchart LR
 | `src/usecase/builtin_components/openapi/` | OpenAPI fragments converted into MCP tools. |
 | `src/usecase/fetcher.py` | Calls XSIAM public APIs. |
 | `src/usecase/xql_builder.py` | Builds safe structured XQL and conservative NL-to-XQL templates. |
-| `src/usecase/log_policy.py` | Enforces dataset allowlists for log search. |
+| `src/usecase/log_policy.py` | Enforces dataset allowlists for log search and privileged raw XQL groups. |
+| `src/usecase/audit.py` | Builds audit events and optionally exports them to Cortex XSIAM. |
+| `src/service/cortex_mcp/audit_middleware.py` | Emits audit events for every MCP tool invocation. |
 | `src/entities/MCPContext.py` | Holds auth headers and principal metadata. |
 
 ## Current Request Flow
 
 1. MCP client calls a tool.
-2. Tool uses the lifespan `MCPContext`.
-3. `Fetcher` builds XSIAM API headers.
-4. XSIAM API is called with the configured API key.
-5. Tool returns JSON to the MCP client.
+2. Audit middleware emits a start event.
+3. Tool uses the lifespan `MCPContext`.
+4. Tool-specific policy runs where implemented.
+5. `Fetcher` builds XSIAM API headers.
+6. XSIAM API is called with the configured API key.
+7. Audit middleware emits success, denied, or error outcome.
+8. Tool returns JSON to the MCP client.
 
 ## `search_logs` Request Flow
 
@@ -69,6 +74,7 @@ flowchart LR
 7. Credential broker selects a least-privilege XSIAM API key.
 8. XSIAM request is executed.
 9. Audit event records principal, role, tool, dataset, decision, and credential profile.
+10. Audit event is forwarded to Cortex XSIAM or another durable sink.
 
 ## Design Principles
 

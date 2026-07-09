@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+
+reviews:
+  profile: "assertive"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  review_details: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_instructions:
+    - path: "src/**"
+      instructions: >
+        Review for authentication, authorization, audit logging, unsafe XQL execution,
+        secret handling, and error handling defects. Require tests for policy and audit changes.
+    - path: ".github/workflows/**"
+      instructions: >
+        Review GitHub token permissions, secret exposure, pull_request safety, and whether
+        third-party actions are necessary and pinned or versioned appropriately.
+    - path: "docs/**"
+      instructions: >
+        Check that security limitations are explicit and that local development is not presented
+        as the enterprise production deployment model.
+
+chat:
+  auto_reply: true

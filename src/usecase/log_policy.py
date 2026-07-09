@@ -14,6 +14,10 @@ class DatasetAuthorizationError(PermissionError):
     """Raised when a principal is not allowed to query a dataset."""
 
 
+class ToolAuthorizationError(PermissionError):
+    """Raised when a principal is not allowed to invoke a privileged tool."""
+
+
 @dataclass(frozen=True)
 class DatasetPolicyDecision:
     allowed: bool
@@ -49,6 +53,10 @@ def _parse_dataset_policy(raw_policy: str) -> dict[str, tuple[str, ...]]:
 
 def get_dataset_policy() -> dict[str, tuple[str, ...]]:
     return _parse_dataset_policy(get_config().log_search_dataset_policy)
+
+
+def get_raw_xql_privileged_groups() -> tuple[str, ...]:
+    return tuple(group.strip() for group in get_config().raw_xql_privileged_groups.split(",") if group.strip())
 
 
 def authorize_dataset(context: MCPContext, dataset: str) -> DatasetPolicyDecision:
@@ -93,3 +101,20 @@ def ensure_dataset_authorized(context: MCPContext, dataset: str) -> DatasetPolic
             f"Principal {decision.principal_id} is not allowed to query dataset {dataset}"
         )
     return decision
+
+
+def ensure_raw_xql_authorized(context: MCPContext) -> None:
+    privileged_groups = get_raw_xql_privileged_groups()
+    if any(group in privileged_groups for group in context.groups):
+        return
+
+    logger.info(
+        "Denied raw XQL execution for principal %s; principal groups: %s; privileged groups: %s",
+        context.principal_id,
+        ", ".join(context.groups) or "<none>",
+        ", ".join(privileged_groups) or "<none>",
+    )
+    raise ToolAuthorizationError(
+        f"Principal {context.principal_id} is not allowed to invoke execute_xql_query; "
+        f"requires one of: {', '.join(privileged_groups) or '<none>'}"
+    )

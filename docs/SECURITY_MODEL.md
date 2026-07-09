@@ -7,9 +7,13 @@ API key ID. Incoming MCP users are not yet authenticated by Entra ID. Optional
 AI gateway identity forwarding, such as Portkey or LiteLLM, is also not yet
 implemented.
 
-`search_logs` enforces dataset allowlists using groups from `MCPContext`. In
-development, these groups come from environment defaults. In production, they
-must come from verified identity claims.
+`search_logs` enforces dataset allowlists using groups from `MCPContext`.
+`execute_xql_query` is restricted to privileged groups. Every MCP tool call is
+audited through middleware, with optional export to a Cortex XSIAM HTTP Log
+Collector.
+
+In development, groups come from environment defaults. In production, they must
+come from verified identity claims.
 
 ## Target State
 
@@ -56,11 +60,11 @@ sequenceDiagram
 | Layer | Purpose |
 | --- | --- |
 | Identity | Verify the human or service calling MCP. |
-| Tool policy | Decide which tools can be invoked. |
+| Tool policy | Decide which tools can be invoked. Implemented for raw XQL only. |
 | Dataset policy | Decide which XSIAM datasets can be queried. |
 | Credential policy | Select the least-privilege XSIAM API credential. |
 | Output policy | Redact or suppress fields not allowed for the caller. |
-| Audit | Record every decision and execution. |
+| Audit | Record every tool invocation and policy outcome. |
 
 ## Dataset Policy
 
@@ -77,16 +81,23 @@ Example:
 
 `Security` can query all datasets. `Tier1` can query only `xdr_data`.
 
+## Audit Logging
+
+Tool invocation audit is implemented. It records principal, groups, tool,
+outcome, dataset, argument hashes, duration, and XSIAM API key ID hash. Cortex
+XSIAM SIEM export is supported through an HTTP Log Collector.
+
+Raw XQL and natural-language prompts are hashed by default. Full query logging
+requires `AUDIT_LOG_INCLUDE_QUERY_TEXT=true`.
+
 ## Known Gaps
 
 - Incoming Entra authentication is not implemented.
 - Optional Portkey/LiteLLM-style gateway identity forwarding is not
   implemented.
 - Per-role XSIAM credential selection is not implemented.
-- `execute_xql_query` bypasses dataset policy and must be restricted before
-  production exposure.
+- Tool-level authorization is not implemented for every tool.
 - Output redaction is not implemented.
-- Audit logging is not complete.
 - Large result streaming is not implemented.
 
 ## Threat Model Summary
@@ -98,7 +109,7 @@ Primary risks:
 - malicious or overbroad natural-language-to-XQL translation;
 - leakage of query results to unauthorized users;
 - prompt injection causing unsafe tool use;
-- missing audit trails.
+- incomplete tool-level authorization.
 
 Core mitigations:
 
