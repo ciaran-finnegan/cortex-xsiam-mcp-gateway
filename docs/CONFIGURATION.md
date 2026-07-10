@@ -19,7 +19,8 @@ Do not commit `.env` files.
 | `MCP_HOST` | `0.0.0.0` | Host for HTTP transport. |
 | `MCP_PORT` | `8080` | Port for HTTP transport. |
 | `MCP_PATH` | `/api/v1/stream/mcp` | HTTP MCP path. |
-| `LOG_LEVEL` | `DEBUG` | Python log level. |
+| `MCP_ALLOW_UNAUTHENTICATED_HTTP` | `false` | Explicit isolated-test override. HTTP startup otherwise fails when identity mode is `none`. |
+| `LOG_LEVEL` | `INFO` | Python log level. |
 
 ## Dataset Policy
 
@@ -45,16 +46,20 @@ Do not use default groups as a production authorization mechanism.
 
 ## Raw XQL Privilege
 
-`execute_xql_query` and caller-supplied raw XQL through `search_logs(query=...)`
-are restricted to groups listed in `RAW_XQL_PRIVILEGED_GROUPS`.
+`execute_xql_query` is restricted to groups listed in
+`RAW_XQL_PRIVILEGED_GROUPS`. It additionally requires that dataset policy grant
+the principal `*`, because raw XQL can contain joins and subqueries that cannot
+be authorized from one caller-declared dataset.
 
 ```bash
 export RAW_XQL_PRIVILEGED_GROUPS="Security,Admin"
 ```
 
-Use this legacy raw XQL tool only for high-trust roles. Prefer `search_logs`
-for routine agent workflows because it requires an explicit dataset and applies
-dataset policy.
+Use this raw XQL tool only for high-trust roles. Every raw query must end with a
+numeric `| limit N` stage; the server clamps that stage to
+`DATASET_QUERY_MAX_ROWS` before execution. Prefer `query_dataset` for routine
+agent workflows because it requires an explicit dataset and compiles only
+allowlisted query operations.
 
 ## Incoming Identity
 
@@ -79,6 +84,7 @@ headers:
 | `MCP_GATEWAY_SHARED_SECRET` | empty | HMAC secret shared only between the trusted gateway and this MCP service. |
 | `MCP_GATEWAY_ALLOWED_ISSUERS` | empty | Optional comma-separated gateway issuer allowlist such as `portkey,litellm`. |
 | `MCP_GATEWAY_MAX_CLOCK_SKEW_SECONDS` | `300` | Maximum age/skew for signed gateway assertions. |
+| `MCP_GATEWAY_NONCE_CACHE_SIZE` | `10000` | Maximum in-memory replay entries for signed assertions. Saturation fails closed until entries expire. Use shared replay state before running multiple replicas. |
 
 The gateway signature covers issuer, principal, groups, roles, timestamp, and
 nonce. Do not deploy gateway mode unless the MCP service is reachable only from
@@ -93,8 +99,12 @@ export TOOL_ACCESS_POLICY='{
   "Security": ["*"],
   "Tier1": [
     "get_log_search_guidance",
+    "get_dataset_query_guidance",
+    "get_xql_help",
     "list_log_datasets",
     "discover_log_fields",
+    "query_dataset",
+    "continue_dataset_query",
     "search_logs",
     "get_xql_query_quota",
     "get_cases",
@@ -104,7 +114,28 @@ export TOOL_ACCESS_POLICY='{
 ```
 
 Tool policy is enforced for every MCP tool invocation. Dataset policy still
-runs inside log-search tools.
+runs inside discovery and query tools.
+
+## Structured Dataset Query Limits
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `DATASET_QUERY_MAX_ROWS` | `100` | Maximum rows or aggregate groups returned by one call; valid range 1-1000. Continuation pages reserve one XSIAM result slot for lookahead, so their effective maximum is 999. |
+| `DATASET_QUERY_MAX_FIELDS` | `25` | Maximum projected fields. Unrequested fields are removed server-side. |
+| `DATASET_QUERY_MAX_FILTERS` | `20` | Maximum typed filters. |
+| `DATASET_QUERY_MAX_METRICS` | `8` | Maximum aggregate metrics. |
+| `DATASET_QUERY_MAX_GROUP_FIELDS` | `5` | Maximum aggregate grouping fields. |
+| `DATASET_QUERY_MAX_RESPONSE_BYTES` | `65536` | Approximate serialized row budget. |
+| `DATASET_QUERY_MAX_CELL_CHARS` | `2048` | Maximum string length per result cell. |
+| `DATASET_QUERY_MAX_TIMEFRAME_MS` | `2592000000` | Maximum relative/absolute timeframe span; default 30 days. |
+| `DATASET_QUERY_CURSOR_SECRET` | empty | Secret used to encrypt and authenticate continuation cursors. Required for continuation. |
+| `DATASET_QUERY_CURSOR_TTL_SECONDS` | `900` | Cursor validity period. |
+| `XQL_MAX_CONCURRENT_QUERIES` | `4` | Process-level XQL concurrency, hard-capped at XSIAM's four-query limit. |
+| `XQL_MAX_QUERY_CHARS` | `32768` | Maximum compiled or privileged raw XQL length. |
+
+Cursor state is bound to principal, tenant, auth source, groups, query plan, and
+the current dataset-policy hash. A policy or identity change invalidates the
+cursor, and policy is checked again on continuation.
 
 ## XSIAM Credential Broker
 
@@ -116,21 +147,23 @@ variable names:
 export XSIAM_CREDENTIAL_BROKER_ENABLED=true
 export XSIAM_CREDENTIAL_PROFILES='{
   "Tier1": {
+    "priority": 10,
     "profile_name": "tier1-readonly",
-    "api_key_env": "XSIAM_TIER1_API_KEY",
-    "api_key_id_env": "XSIAM_TIER1_API_KEY_ID"
+    "api_key_env": "XSIAM_T1_KEY",
+    "api_key_id_env": "XSIAM_T1_KEY_ID"
   },
   "Security": {
     "profile_name": "security-analyst",
-    "api_key_env": "XSIAM_SECURITY_API_KEY",
-    "api_key_id_env": "XSIAM_SECURITY_API_KEY_ID"
+    "api_key_env": "XSIAM_SEC_KEY",
+    "api_key_id_env": "XSIAM_SEC_KEY_ID"
   }
 }'
 ```
 
 Store the actual API key values in your secret manager or local environment.
 If the broker is enabled and no profile matches the verified principal, tool
-execution fails closed.
+execution fails closed. When several groups match, the lowest numeric
+`priority` wins; group claim order is not trusted as authorization policy.
 
 ## Audit Logging
 
@@ -154,10 +187,14 @@ approved. Query hashes are logged by default.
 CORTEX_MCP_PAPI_URL=https://api-your-xsiam-tenant.example
 CORTEX_MCP_PAPI_AUTH_HEADER=replace-me
 CORTEX_MCP_PAPI_AUTH_ID=replace-me
-MCP_TRANSPORT=stdio
+MCP_TRANSPORT=streamable-http
+MCP_IDENTITY_AUTH_MODE=entra
+ENTRA_TENANT_ID=replace-with-tenant-id
+ENTRA_AUDIENCE=api://your-mcp-app-registration
 LOG_SEARCH_DATASET_POLICY={"Security":["*"],"Tier1":["xdr_data"]}
-LOG_SEARCH_DEFAULT_GROUPS=Security
+TOOL_ACCESS_POLICY={"Security":["*"],"Tier1":["get_dataset_query_guidance","list_log_datasets","discover_log_fields","query_dataset","continue_dataset_query"]}
 RAW_XQL_PRIVILEGED_GROUPS=Security,Admin
+DATASET_QUERY_CURSOR_SECRET=replace-with-a-long-random-secret
 AUDIT_LOG_ENABLED=true
 AUDIT_LOG_XSIAM_HTTP_COLLECTOR_ENABLED=false
 ```

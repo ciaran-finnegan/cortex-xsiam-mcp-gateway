@@ -78,3 +78,18 @@ def test_audit_event_hashes_xsiam_api_key_id():
 
     assert event["xsiam"]["api_key_id_sha256"] != "sensitive-key-id"
     assert len(event["xsiam"]["api_key_id_sha256"]) == 64
+
+
+def test_audit_event_hashes_error_text_instead_of_logging_it():
+    event = create_tool_audit_event(
+        tool_name="query_dataset",
+        phase="end",
+        outcome="error",
+        principal=MCPContext(auth_headers={}, principal_id="analyst@example.com", groups=("Security",)),
+        arguments={"dataset": "sample"},
+        error=RuntimeError('upstream echoed filter user_name = "sensitive-user"'),
+    )
+
+    assert "sensitive-user" not in str(event)
+    assert event["error"]["type"] == "RuntimeError"
+    assert len(event["error"]["message_sha256"]) == 64

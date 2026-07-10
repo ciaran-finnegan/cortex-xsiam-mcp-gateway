@@ -8,6 +8,11 @@ from fastmcp.tools.tool import ToolResult
 from config.config import get_config
 from entities.MCPContext import MCPContext
 from usecase.audit import create_tool_audit_event, emit_audit_event, now_monotonic
+from usecase.credential_broker import (
+    clear_current_credential_selection,
+    get_current_credential_selection,
+    reset_current_credential_selection,
+)
 from usecase.identity import (
     IdentityAuthenticationError,
     default_mcp_context,
@@ -28,47 +33,55 @@ class ToolAuditMiddleware(Middleware):
         principal = _get_principal(context)
         tool_name = context.message.name
         arguments = context.message.arguments or {}
+        selection_token = clear_current_credential_selection()
 
-        if config.audit_log_emit_start_events:
-            await emit_audit_event(
-                create_tool_audit_event(
-                    tool_name=tool_name,
-                    phase="start",
-                    outcome="started",
-                    principal=principal,
-                    arguments=arguments,
-                )
-            )
-
-        started = now_monotonic()
         try:
-            result = await call_next(context=context)
-        except Exception as e:
+            if config.audit_log_emit_start_events:
+                await emit_audit_event(
+                    create_tool_audit_event(
+                        tool_name=tool_name,
+                        phase="start",
+                        outcome="started",
+                        principal=principal,
+                        arguments=arguments,
+                    )
+                )
+
+            started = now_monotonic()
+            try:
+                result = await call_next(context=context)
+            except Exception as e:
+                selection = get_current_credential_selection()
+                await emit_audit_event(
+                    create_tool_audit_event(
+                        tool_name=tool_name,
+                        phase="end",
+                        outcome=_infer_exception_outcome(e),
+                        principal=principal,
+                        arguments=arguments,
+                        duration_ms=(now_monotonic() - started) * 1000,
+                        error=e,
+                        credential_summary=_credential_summary(selection),
+                    )
+                )
+                raise
+
+            selection = get_current_credential_selection()
             await emit_audit_event(
                 create_tool_audit_event(
                     tool_name=tool_name,
                     phase="end",
-                    outcome=_infer_exception_outcome(e),
+                    outcome=_infer_outcome(result),
                     principal=principal,
                     arguments=arguments,
                     duration_ms=(now_monotonic() - started) * 1000,
-                    error=e,
+                    result_summary=_summarize_tool_result(result, context.fastmcp_context),
+                    credential_summary=_credential_summary(selection),
                 )
             )
-            raise
-
-        await emit_audit_event(
-            create_tool_audit_event(
-                tool_name=tool_name,
-                phase="end",
-                outcome=_infer_outcome(result),
-                principal=principal,
-                arguments=arguments,
-                duration_ms=(now_monotonic() - started) * 1000,
-                result_summary=_summarize_tool_result(result, context.fastmcp_context),
-            )
-        )
-        return result
+            return result
+        finally:
+            reset_current_credential_selection(selection_token)
 
 
 def _get_principal(context: MiddlewareContext[Any]) -> MCPContext:
@@ -128,3 +141,13 @@ def _extract_json_payload(result: ToolResult) -> dict[str, Any] | None:
         if isinstance(parsed, dict):
             return parsed
     return None
+
+
+def _credential_summary(selection) -> dict[str, Any] | None:
+    if selection is None:
+        return None
+    return {
+        "profile_name": selection.profile_name,
+        "matched_group": selection.matched_group,
+        "api_key_id_sha256": selection.api_key_id_sha256,
+    }

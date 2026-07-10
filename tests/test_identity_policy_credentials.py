@@ -3,7 +3,8 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from authlib.jose import JsonWebToken
+from joserfc import jwt
+from joserfc.jwk import OctKey
 from starlette.datastructures import Headers
 
 from entities.MCPContext import MCPContext
@@ -22,8 +23,7 @@ from usecase.tool_policy import ensure_tool_authorized
 
 
 def _token(claims: dict, secret: str = "unit-test-secret") -> str:
-    encoded = JsonWebToken(["HS256"]).encode({"alg": "HS256"}, claims, secret)
-    return encoded.decode()
+    return jwt.encode({"alg": "HS256"}, claims, OctKey.import_key(secret))
 
 
 def _fallback_context():
@@ -263,7 +263,9 @@ async def test_fetcher_records_selected_credential_profile_for_audit(monkeypatch
     assert state["xsiam_credential_profile"] == {
         "profile_name": "tier1-readonly",
         "matched_group": "Tier1",
+        "api_key_id_sha256": state["xsiam_credential_profile"]["api_key_id_sha256"],
     }
+    assert len(state["xsiam_credential_profile"]["api_key_id_sha256"]) == 64
 
 
 @pytest.mark.asyncio

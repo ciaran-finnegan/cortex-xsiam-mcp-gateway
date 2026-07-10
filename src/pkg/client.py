@@ -18,7 +18,14 @@ logger = logging.getLogger(__name__)
 
 
 class PAPIClient(httpx.AsyncClient):
-    def __init__(self, base_url: str, headers: dict[str, str], timeout: int = 30, **kwargs):
+    def __init__(
+        self,
+        base_url: str,
+        headers: dict[str, str],
+        timeout: int = 30,
+        resolve_credentials_per_request: bool = False,
+        **kwargs,
+    ):
         """
         Initialize PAPIClient as an AsyncClient.
 
@@ -32,12 +39,14 @@ class PAPIClient(httpx.AsyncClient):
         if 'timeout' not in kwargs:
             kwargs['timeout'] = timeout
 
+        self._base_auth_headers = dict(headers)
+        self._resolve_credentials_per_request = resolve_credentials_per_request
         super().__init__(base_url=base_url, headers=headers, **kwargs)
 
 
     def _get_default_headers(self) -> httpx.Headers:
         """Get default headers with authentication."""
-        headers = self.headers
+        headers = httpx.Headers(self._resolved_auth_headers())
         headers.update({
             'Content-Type': 'application/json',
             'X-IS-MCP': "true"
@@ -46,7 +55,7 @@ class PAPIClient(httpx.AsyncClient):
 
     def _get_download_default_headers(self) -> httpx.Headers:
         """Get default headers with authentication."""
-        headers = self.headers
+        headers = httpx.Headers(self._resolved_auth_headers())
         headers.update({
             'Content-Type': 'application/zip',
         })
@@ -162,34 +171,55 @@ class PAPIClient(httpx.AsyncClient):
             logger.error(err_msg)
             raise PAPIResponseError(err_msg)
 
-        # Handle different HTTP status codes more specifically
+        # Upstream error bodies can echo queries, filters, or tenant data. Keep
+        # exception and log messages metadata-only so tool handlers cannot leak them.
         if response.status_code == 401:
-            err_msg = f'Authentication failed for request to {url}: {response.text}'
+            err_msg = _status_error_message('Authentication failed', url, response.status_code)
             logger.error(err_msg)
             raise PAPIAuthenticationError(err_msg)
         elif response.status_code == 403:
-            err_msg = f'Authorization failed for request to {url}: {response.text}'
+            err_msg = _status_error_message('Authorization failed', url, response.status_code)
             logger.error(err_msg)
             raise PAPIAuthenticationError(err_msg)
         elif 400 <= response.status_code < 500:
-            err_msg = f'Client error for request to {url}: {response.text} [{response.status_code}]'
+            err_msg = _status_error_message('Client error', url, response.status_code)
             logger.error(err_msg)
             raise PAPIClientRequestError(err_msg)
         elif 500 <= response.status_code < 600:
-            err_msg = f'Server error for request to {url}: {response.text} [{response.status_code}]'
+            err_msg = _status_error_message('Server error', url, response.status_code)
             logger.error(err_msg)
             raise PAPIServerError(err_msg)
         elif response.status_code < 200 or response.status_code >= 300:
-            err_msg = f'Unexpected response code for request to {url}: {response.text} [{response.status_code}]'
+            err_msg = _status_error_message('Unexpected response code', url, response.status_code)
             logger.error(err_msg)
             raise PAPIResponseError(err_msg)
 
         try:
             return response.json()
-        except json.JSONDecodeError as e:
+        except ValueError as e:
             err_msg = f'Invalid JSON response from server for request to {url}: {e}'
             logger.error(err_msg)
             raise PAPIResponseError(err_msg) from e
+
+    def _resolved_auth_headers(self) -> dict[str, str]:
+        if not self._resolve_credentials_per_request:
+            return dict(self._base_auth_headers)
+
+        from fastmcp.server.dependencies import get_access_token
+
+        from entities.MCPContext import MCPContext
+        from usecase.credential_broker import select_xsiam_credentials
+        from usecase.identity import mcp_context_from_access_token, parse_csv
+
+        config = get_config()
+        fallback = MCPContext(
+            auth_headers=dict(self._base_auth_headers),
+            principal_id=config.log_search_default_principal_id,
+            groups=parse_csv(config.log_search_default_groups),
+        )
+        access_token = get_access_token()
+        principal = mcp_context_from_access_token(access_token, fallback) if access_token else fallback
+        return dict(select_xsiam_credentials(principal, self._base_auth_headers).auth_headers)
 
     async def stream(self, method: str, url: str,
             *,
@@ -248,44 +278,25 @@ class PAPIClient(httpx.AsyncClient):
                     content=content,
                     follow_redirects=True) as response:
 
-                # Helper function to safely get response content for error messages
-                async def get_response_content() -> str:
-                    try:
-                        # For streaming responses, we need to read the content
-                        content_bytes = b""
-                        async for res_chunk in response.aiter_bytes():
-                            content_bytes += res_chunk
-                            # Limit content size for error messages (first 1000 chars)
-                            if len(content_bytes) > get_config().http_response_error_message_max_size:
-                                break
-                        return content_bytes.decode('utf-8', errors='ignore')
-                    except Exception:
-                        return f"Unable to read response content (status: {response.status_code})"
-
                 # Handle different HTTP status codes using the same pattern as request()
                 if response.status_code == 401:
-                    response_text = await get_response_content()
-                    err_msg = f'Authentication failed for request to {url}: {response_text}'
+                    err_msg = _status_error_message('Authentication failed', url, response.status_code)
                     logger.error(err_msg)
                     raise PAPIAuthenticationError(err_msg)
                 elif response.status_code == 403:
-                    response_text = await get_response_content()
-                    err_msg = f'Authorization failed for request to {url}: {response_text}'
+                    err_msg = _status_error_message('Authorization failed', url, response.status_code)
                     logger.error(err_msg)
                     raise PAPIAuthenticationError(err_msg)
                 elif 400 <= response.status_code < 500:
-                    response_text = await get_response_content()
-                    err_msg = f'Client error for request to {url}: {response_text} [{response.status_code}]'
+                    err_msg = _status_error_message('Client error', url, response.status_code)
                     logger.error(err_msg)
                     raise PAPIClientRequestError(err_msg)
                 elif 500 <= response.status_code < 600:
-                    response_text = await get_response_content()
-                    err_msg = f'Server error for request to {url}: {response_text} [{response.status_code}]'
+                    err_msg = _status_error_message('Server error', url, response.status_code)
                     logger.error(err_msg)
                     raise PAPIServerError(err_msg)
                 elif response.status_code < 200 or response.status_code >= 300:
-                    response_text = await get_response_content()
-                    err_msg = f'Unexpected response code for request to {url}: {response_text} [{response.status_code}]'
+                    err_msg = _status_error_message('Unexpected response code', url, response.status_code)
                     logger.error(err_msg)
                     raise PAPIResponseError(err_msg)
 
@@ -325,3 +336,7 @@ class PAPIClient(httpx.AsyncClient):
         # This is crucial so that other libraries (like zipfile) can read it from the start.
         zip_buffer.seek(0)
         return zip_buffer
+
+
+def _status_error_message(category: str, url: str, status_code: int) -> str:
+    return f'{category} for request to {url} [status={status_code}]'

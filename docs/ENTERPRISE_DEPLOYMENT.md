@@ -79,6 +79,12 @@ Gateway mode must still be verifiable:
   policy.
 - The forwarding contract must be signed with `MCP_GATEWAY_SHARED_SECRET` and
   bounded by `MCP_GATEWAY_MAX_CLOCK_SKEW_SECONDS`.
+- Each signed assertion must carry a unique nonce. The current replay cache is
+  process-local, so multi-replica deployments need shared replay protection or
+  gateway affinity until a distributed cache is implemented.
+
+Portkey, LiteLLM, or another AI gateway is not required for direct mode. It
+does not replace MCP-side authorization in gateway mode.
 
 ## Deployment Requirements
 
@@ -93,12 +99,16 @@ Minimum production requirements before broad rollout:
 - Audit logs exported to a durable system, preferably Cortex XSIAM.
 - Secrets stored in a managed secret store.
 - Separate XSIAM credentials per environment.
+- A stable `DATASET_QUERY_CURSOR_SECRET` stored in the managed secret store.
+- A load-balancing design that accounts for process-local query concurrency and
+  replay state when more than one replica is used.
 
 ## Current Alpha Limitations
 
 - Live tenant validation is still required before production rollout.
 - Field-level output redaction is not implemented yet.
 - Streaming XQL result retrieval is not implemented yet.
-- FastMCP 3 compatibility work is still pending.
+- The in-memory gateway nonce cache, query semaphore, and cursor state assumptions
+  require shared backing controls for horizontally scaled replicas.
 - Local development defaults still exist and must not be used as production
   authorization.

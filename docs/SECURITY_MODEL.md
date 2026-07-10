@@ -11,11 +11,11 @@ JWT validation, HMAC-signed trusted gateway identity forwarding, or either path
 when `MCP_IDENTITY_AUTH_MODE=entra_or_gateway`.
 
 Every MCP tool invocation is checked against `TOOL_ACCESS_POLICY`.
-`search_logs` also enforces dataset allowlists using verified groups/app roles
-from `MCPContext`. `execute_xql_query` and caller-supplied raw XQL through
-`search_logs(query=...)` are restricted to privileged groups. Every MCP tool
-call is audited through middleware, with optional export to a Cortex XSIAM HTTP
-Log Collector.
+`query_dataset`, `search_logs`, and discovery tools enforce dataset allowlists
+using verified groups/app roles from `MCPContext`. `execute_xql_query` requires
+both a privileged group and an all-datasets policy grant. Every MCP tool call is
+audited through middleware, with optional export to a Cortex XSIAM HTTP Log
+Collector.
 
 In local stdio development, groups can come from environment defaults. In
 production HTTP deployments, groups must come from verified identity claims.
@@ -68,12 +68,13 @@ sequenceDiagram
 | Tool policy | Decide which tools can be invoked. |
 | Dataset policy | Decide which XSIAM datasets can be queried. |
 | Credential policy | Select a pre-provisioned least-privilege XSIAM API credential. |
-| Output policy | Redact or suppress fields not allowed for the caller. |
+| Output controls | Suppress unrequested fields and enforce row, field, cell, and byte budgets. Field-level role policy is a future layer. |
 | Audit | Record every tool invocation and policy outcome. |
 
 ## Dataset Policy
 
-Dataset policy is implemented for `search_logs`.
+Dataset policy is checked before dataset discovery, field sampling, typed query
+compilation/execution, continuation, and compatibility `search_logs` calls.
 
 Example:
 
@@ -85,6 +86,33 @@ Example:
 ```
 
 `Security` can query all datasets. `Tier1` can query only `xdr_data`.
+
+Typed queries still require one explicit dataset even for principals with `*`.
+Raw XQL is not parsed for authorization; instead it is limited to principals
+that already have both raw-XQL privilege and `*` dataset access. Every raw
+query must end with a numeric limit stage, which is clamped before submission
+so synchronous and polled result paths share the same row bound.
+
+## Query And Result Controls
+
+`query_dataset` compiles allowlisted operators and aggregate functions rather
+than accepting an XQL string. It enforces:
+
+- explicit row projections;
+- server caps for filters, metrics, grouping, fields, rows, cell length,
+  response bytes, and timeframe;
+- a process-level semaphore hard-capped at four concurrent XQL queries;
+- timeout-bounded polling;
+- removal of any columns XSIAM returns outside the requested projection;
+- metadata-only upstream HTTP and XQL failure errors so XSIAM response bodies
+  and query error details cannot echo queries, filters, or tenant data into MCP
+  responses or logs;
+- untrusted-data provenance on returned rows.
+
+Continuation uses an encrypted keyset cursor instead of an offset. The cursor
+contains no plaintext plan, is time-limited, and is bound to principal, tenant,
+auth source, groups, and dataset-policy hash. Dataset authorization is checked
+again on every continuation call.
 
 ## Audit Logging
 
@@ -104,7 +132,8 @@ execution fails closed.
 
 ## Known Gaps
 
-- Output redaction is not implemented.
+- Field-level role-based redaction is not implemented; output projection and
+  size minimization are implemented.
 - Large result streaming is not implemented.
 - Live enterprise validation is still required for each tenant-specific Entra,
   gateway, dataset, tool, credential, and audit-export configuration.
@@ -119,6 +148,9 @@ Primary risks:
 - leakage of query results to unauthorized users;
 - prompt injection causing unsafe tool use;
 - credential profile misconfiguration.
+- replay of trusted-gateway assertions;
+- cursor reuse after identity or policy changes;
+- oversized or unbounded XQL result retrieval.
 
 Core mitigations:
 
@@ -128,5 +160,8 @@ Core mitigations:
 - require explicit dataset declarations;
 - use least-privilege API keys;
 - log all authorization decisions;
+- reject replayed gateway nonces;
+- bind continuation to identity and policy state;
+- bound query concurrency and all client-visible results;
 - keep plain-English interpretation in the client agent and validate structured
   calls on the server.

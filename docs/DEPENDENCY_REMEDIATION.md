@@ -21,25 +21,27 @@ replace Dependabot or be scoped to a Renovate-only use case.
 | OpenSSF Scorecard | Enabled. |
 | Release workflow | Tags create prerelease/stable GitHub releases. |
 
-## Known Alerts
+## FastMCP 3 Remediation
 
-The current open alerts are concentrated in:
+The runtime is now pinned to FastMCP `3.4.x`. The migration:
 
-- `fastmcp`: fixed upstream in FastMCP 3.x, but FastMCP 3 introduces breaking
-  import/runtime changes for this fork.
-- `diskcache`: transitive dependency carried by the FastMCP 2.x line; no direct
-  fixed version is available from the current dependency path.
+- updated FastMCP tool construction and server mounting APIs;
+- revalidated middleware, resources, OpenAPI-generated tools, and full server
+  initialization;
+- resolves `py-key-value-aio` 0.4.x without the FastMCP 2.x `diskcache` path;
+- has a regression test that initializes all built-in and OpenAPI tools;
+- passes the unit/security/schema suite on both supported Python runtimes,
+  Python 3.12 and 3.13.
 
-The remediation path is therefore not a blind version bump. The project needs a
-FastMCP 3 migration branch that:
+The lockfile is the source of truth for resolved packages. This check must stay
+empty:
 
-1. Updates imports and middleware usage for FastMCP 3.
-2. Revalidates OpenAPI tool generation.
-3. Revalidates `stdio` and `streamable-http` transports.
-4. Reruns XQL tool tests.
-5. Confirms Dependabot alerts close after the upgrade.
+```bash
+rg '^name = "diskcache"' poetry.lock
+```
 
 Tracking issue: [#26](https://github.com/ciaran-finnegan/cortex-xsiam-mcp-gateway/issues/26).
+It can be closed after the merged lockfile is rescanned by Dependabot.
 
 ## Pull Request Handling
 
@@ -61,5 +63,5 @@ Security dependency review should prioritize:
 - Keep Dependabot enabled.
 - Close or ignore Renovate onboarding PRs unless the project intentionally
   switches to Renovate.
-- Track FastMCP 3 migration as an alpha blocker.
+- Keep FastMCP 3 initialization and MCP schema tests in the required CI suite.
 - Do not suppress Dependabot alerts without a documented compensating control.

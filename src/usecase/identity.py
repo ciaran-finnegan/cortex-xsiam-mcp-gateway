@@ -1,7 +1,9 @@
 import hmac
 import time
+from collections import OrderedDict
 from functools import lru_cache
 from hashlib import sha256
+from threading import Lock
 from typing import Any
 
 from fastmcp.server.auth.auth import AccessToken
@@ -13,6 +15,8 @@ from config.config import get_config
 from entities.MCPContext import MCPContext
 
 VALID_IDENTITY_AUTH_MODES = {"none", "entra", "gateway", "entra_or_gateway"}
+_gateway_nonces: OrderedDict[tuple[str, str, str], int] = OrderedDict()
+_gateway_nonce_lock = Lock()
 
 class IdentityAuthenticationError(PermissionError):
     """Raised when incoming MCP identity cannot be verified."""
@@ -126,6 +130,7 @@ def verify_gateway_headers(headers: Headers) -> AccessToken:
     )
     if not hmac.compare_digest(expected, signature):
         raise IdentityAuthenticationError("Gateway identity signature is invalid")
+    _consume_gateway_nonce(issuer, principal, nonce, timestamp)
 
     groups = parse_csv(groups_raw)
     roles = parse_csv(roles_raw)
@@ -158,6 +163,23 @@ def gateway_signature(
 ) -> str:
     canonical = "\n".join([issuer, principal, groups, roles, timestamp, nonce])
     return hmac.new(secret.encode(), canonical.encode(), sha256).hexdigest()
+
+
+def _consume_gateway_nonce(issuer: str, principal: str, nonce: str, timestamp: int) -> None:
+    config = get_config()
+    now = int(time.time())
+    key = (issuer, principal, nonce)
+    expiry = timestamp + config.gateway_max_clock_skew_seconds
+    with _gateway_nonce_lock:
+        expired = [cache_key for cache_key, cache_expiry in _gateway_nonces.items() if cache_expiry < now]
+        for cache_key in expired:
+            _gateway_nonces.pop(cache_key, None)
+        if key in _gateway_nonces:
+            raise IdentityAuthenticationError("Gateway identity assertion nonce has already been used")
+        max_size = max(config.gateway_nonce_cache_size, 1)
+        if len(_gateway_nonces) >= max_size:
+            raise IdentityAuthenticationError("Gateway identity assertion replay cache is full")
+        _gateway_nonces[key] = expiry
 
 
 def mcp_context_from_access_token(access_token: AccessToken, fallback: MCPContext) -> MCPContext:

@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     mcp_host: str = Field("0.0.0.0", validation_alias="MCP_HOST")
     mcp_port: int = Field(8080, validation_alias="MCP_PORT")
     mcp_path: str = Field("/api/v1/stream/mcp", validation_alias="MCP_PATH")
+    allow_unauthenticated_http: bool = Field(
+        False,
+        validation_alias="MCP_ALLOW_UNAUTHENTICATED_HTTP",
+    )
     elicitation_enabled: bool = Field(False, validation_alias="MCP_ELICITATION_ENABLED")
     write_tools_enabled: bool = Field(False, validation_alias="MCP_WRITE_TOOLS_ENABLED")
     isolate_endpoint_tool_enabled: bool = Field(False, validation_alias="MCP_ISOLATE_ENDPOINT_TOOL_ENABLED")
@@ -29,7 +33,7 @@ class Settings(BaseSettings):
 
     # --- Log Settings ---
     log_enable_uvicorn_access_logs: bool = Field(True, validation_alias="LOG_ENABLE_UVICORN_ACCESS_LOGS")
-    log_level: str = Field("DEBUG", validation_alias="LOG_LEVEL")
+    log_level: str = Field("INFO", validation_alias="LOG_LEVEL")
 
     # --- Log Search Authorization Settings ---
     log_search_default_principal_id: str = Field("service-account", validation_alias="LOG_SEARCH_DEFAULT_PRINCIPAL_ID")
@@ -46,8 +50,10 @@ class Settings(BaseSettings):
         (
             '{"Admin":["*"],"Security":["*"],'
             '"SOC":["get_log_search_guidance","list_log_datasets","discover_log_fields","search_logs",'
+            '"get_dataset_query_guidance","get_xql_help","query_dataset","continue_dataset_query",'
             '"get_xql_query_quota","get_cases","get_issues"],'
             '"Tier1":["get_log_search_guidance","list_log_datasets","discover_log_fields","search_logs",'
+            '"get_dataset_query_guidance","get_xql_help","query_dataset","continue_dataset_query",'
             '"get_xql_query_quota","get_cases","get_issues"]}'
         ),
         validation_alias="TOOL_ACCESS_POLICY",
@@ -75,6 +81,11 @@ class Settings(BaseSettings):
     gateway_max_clock_skew_seconds: int = Field(
         300,
         validation_alias="MCP_GATEWAY_MAX_CLOCK_SKEW_SECONDS",
+    )
+    gateway_nonce_cache_size: int = Field(
+        10000,
+        ge=1,
+        validation_alias="MCP_GATEWAY_NONCE_CACHE_SIZE",
     )
     gateway_principal_header: str = Field(
         "X-MCP-Gateway-Principal",
@@ -113,6 +124,46 @@ class Settings(BaseSettings):
     xsiam_credential_profiles: str = Field(
         "{}",
         validation_alias="XSIAM_CREDENTIAL_PROFILES",
+    )
+
+    # --- Structured Dataset Query Settings ---
+    dataset_query_max_rows: int = Field(
+        100,
+        ge=1,
+        le=1000,
+        validation_alias="DATASET_QUERY_MAX_ROWS",
+    )
+    dataset_query_max_fields: int = Field(25, validation_alias="DATASET_QUERY_MAX_FIELDS")
+    dataset_query_max_filters: int = Field(20, validation_alias="DATASET_QUERY_MAX_FILTERS")
+    dataset_query_max_metrics: int = Field(8, validation_alias="DATASET_QUERY_MAX_METRICS")
+    dataset_query_max_group_fields: int = Field(5, validation_alias="DATASET_QUERY_MAX_GROUP_FIELDS")
+    dataset_query_max_response_bytes: int = Field(
+        65536,
+        validation_alias="DATASET_QUERY_MAX_RESPONSE_BYTES",
+    )
+    dataset_query_max_cell_chars: int = Field(
+        2048,
+        validation_alias="DATASET_QUERY_MAX_CELL_CHARS",
+    )
+    dataset_query_max_timeframe_ms: int = Field(
+        2592000000,
+        validation_alias="DATASET_QUERY_MAX_TIMEFRAME_MS",
+    )
+    dataset_query_cursor_secret: str = Field(
+        "",
+        validation_alias="DATASET_QUERY_CURSOR_SECRET",
+    )
+    dataset_query_cursor_ttl_seconds: int = Field(
+        900,
+        validation_alias="DATASET_QUERY_CURSOR_TTL_SECONDS",
+    )
+    xql_max_concurrent_queries: int = Field(
+        4,
+        validation_alias="XQL_MAX_CONCURRENT_QUERIES",
+    )
+    xql_max_query_chars: int = Field(
+        32768,
+        validation_alias="XQL_MAX_QUERY_CHARS",
     )
 
     # --- Audit Settings ---

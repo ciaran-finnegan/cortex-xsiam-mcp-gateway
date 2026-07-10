@@ -39,8 +39,9 @@ async def test_guidance_tells_agent_to_use_structured_calls():
     assert guidance["plain_english_handling"]["owner"].startswith("Claude Code, Codex")
     assert "list_log_datasets" in guidance["tools"]
     assert "discover_log_fields" in guidance["tools"]
+    assert "query_dataset" in guidance["tools"]
     assert "search_logs" in guidance["tools"]
-    assert "structured search_logs arguments" in " ".join(guidance["rules"])
+    assert "structured query_dataset arguments" in " ".join(guidance["rules"])
 
 
 @pytest.mark.asyncio
@@ -164,7 +165,14 @@ async def test_claude_code_structured_search_denies_unallowed_dataset_before_exe
     monkeypatch.setattr(get_config(), "log_search_dataset_policy", '{"Tier1":["auth_logs"]}')
     monkeypatch.setattr(logs, "_run_xql_query", fail_if_executed)
 
-    response = _response(await logs.search_logs(_ctx(), dataset="secret_admin_logs", dry_run=False))
+    response = _response(
+        await logs.search_logs(
+            _ctx(),
+            dataset="secret_admin_logs",
+            fields=["event_id"],
+            dry_run=False,
+        )
+    )
 
     assert response["success"] == "false"
     assert response["executed"] is False
@@ -188,24 +196,49 @@ async def test_discover_log_fields_denies_unallowed_dataset_before_sampling(monk
 
 
 @pytest.mark.asyncio
-async def test_search_logs_raw_query_requires_privileged_group(monkeypatch):
+async def test_search_logs_has_no_raw_query_or_tenant_parameters():
+    signature = inspect.signature(logs.search_logs)
+
+    assert "query" not in signature.parameters
+    assert "tenants" not in signature.parameters
+    assert signature.parameters["dataset"].default is inspect.Parameter.empty
+    assert signature.parameters["fields"].default is inspect.Parameter.empty
+
+
+@pytest.mark.asyncio
+async def test_search_logs_compatibility_path_projects_and_bounds_upstream_rows(monkeypatch):
     from config.config import get_config
 
-    async def fail_if_executed(*args, **kwargs):
-        raise AssertionError("raw XQL must not execute for unprivileged users")
+    monkeypatch.setattr(get_config(), "log_search_dataset_policy", '{"Tier1":["auth_logs"]}')
+    monkeypatch.setattr(get_config(), "dataset_query_max_rows", 2)
 
-    monkeypatch.setattr(get_config(), "log_search_dataset_policy", '{"Tier1":["auth_logs"],"Security":["*"]}')
-    monkeypatch.setattr(get_config(), "raw_xql_privileged_groups", "Security,Admin")
-    monkeypatch.setattr(logs, "_run_xql_query", fail_if_executed)
+    async def fake_run(ctx, query, limit, **kwargs):
+        assert query.endswith("| fields event_id | limit 2")
+        assert limit == 2
+        return {
+            "query_id": "query-1",
+            "reply": {
+                "status": "SUCCESS",
+                "results": {
+                    "data": [
+                        {"event_id": "1", "unrequested": "hidden"},
+                        {"event_id": "2", "unrequested": "hidden"},
+                    ]
+                },
+            },
+        }
 
+    monkeypatch.setattr(logs, "_run_xql_query", fake_run)
     response = _response(
         await logs.search_logs(
-            _ctx(groups=("Tier1",)),
+            _ctx(),
             dataset="auth_logs",
-            query="dataset = auth_logs | limit 10",
+            fields=["event_id"],
+            limit=500,
         )
     )
 
-    assert response["success"] == "false"
-    assert response["executed"] is False
-    assert "not allowed to invoke execute_xql_query" in response["error"]
+    assert response["success"] == "true"
+    assert response["returned"] == 2
+    assert response["rows"] == [{"event_id": "1"}, {"event_id": "2"}]
+    assert "reply" not in response
