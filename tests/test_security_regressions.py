@@ -138,7 +138,6 @@ def test_credential_broker_uses_explicit_priority_not_claim_order(monkeypatch):
 
     assert selection.matched_group == "RestrictedReader"
     assert selection.auth_headers["Authorization"] == "restricted-key"
-    assert len(selection.api_key_id_sha256) == 64
 
 
 @pytest.mark.asyncio
@@ -264,8 +263,8 @@ async def test_audit_end_event_records_actual_selected_credential(monkeypatch):
 
     end_event = next(event for event in events if event["phase"] == "end")
     assert end_event["xsiam"]["profile_name"] == "default"
-    assert end_event["xsiam"]["api_key_id_sha256"] != "selected-id"
-    assert len(end_event["xsiam"]["api_key_id_sha256"]) == 64
+    assert end_event["xsiam"]["matched_group"] is None
+    assert "selected-id" not in str(end_event)
 
 
 @pytest.mark.asyncio
@@ -294,7 +293,7 @@ async def test_audit_context_is_restored_when_fail_closed_start_export_fails(mon
             await audit_middleware.ToolAuditMiddleware().on_call_tool(middleware_context, call_next)
         selection = audit_middleware.get_current_credential_selection()
         assert selection is not None
-        assert selection.api_key_id_sha256 != "outer-id"
+        assert selection.profile_name == "default"
     finally:
         reset_current_credential_selection(outer_token)
 

@@ -297,8 +297,8 @@ secret values stay in your secret manager or local environment.
 
 Every MCP tool invocation emits structured JSON audit events. Events include the
 human principal known to the server, groups, tool name, transport, outcome,
-duration, argument names, dataset, query hash, and XSIAM API key ID hash. Raw
-XQL is hashed by default and can be logged only by explicit opt-in.
+duration, argument names, dataset, query hash, and selected XSIAM credential
+profile. Raw XQL is hashed by default and can be logged only by explicit opt-in.
 
 ```mermaid
 sequenceDiagram

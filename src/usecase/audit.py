@@ -96,7 +96,6 @@ def create_tool_audit_event(
     credential_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     config = get_config()
-    credential_id = principal.auth_headers.get("X-XDR-AUTH-ID", "")
     event: dict[str, Any] = {
         "schema_version": "1.0",
         "event_type": "cortex_xsiam_mcp.tool_invocation",
@@ -115,8 +114,6 @@ def create_tool_audit_event(
     }
     if credential_summary:
         event["xsiam"] = credential_summary
-    elif credential_id:
-        event["xsiam"] = {"api_key_id_sha256": _hash_text(str(credential_id))}
     if duration_ms is not None:
         event["duration_ms"] = round(duration_ms, 3)
     if error is not None:

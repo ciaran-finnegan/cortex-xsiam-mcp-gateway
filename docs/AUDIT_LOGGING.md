@@ -29,7 +29,8 @@ Important fields:
 | `request.argument_hash` | SHA-256 hash of the redacted argument object. |
 | `request.dataset` | Dataset when present. |
 | `request.query_sha256` | SHA-256 hash of raw XQL when present. |
-| `xsiam.api_key_id_sha256` | SHA-256 hash of the XSIAM API key ID in use. |
+| `xsiam.profile_name` | Configured nonsecret name of the XSIAM credential profile selected for the request. |
+| `xsiam.matched_group` | Verified group that selected the credential profile, when profile brokering is enabled. |
 | `error.message_sha256` | SHA-256 of exception text; raw exception messages are not emitted. |
 
 Raw XQL is not logged by default because it can contain sensitive indicators,

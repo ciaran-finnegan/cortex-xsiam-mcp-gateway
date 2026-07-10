@@ -117,8 +117,9 @@ again on every continuation call.
 ## Audit Logging
 
 Tool invocation audit is implemented. It records principal, groups, tool,
-outcome, dataset, argument hashes, duration, and XSIAM API key ID hash. Cortex
-XSIAM SIEM export is supported through an HTTP Log Collector.
+outcome, dataset, argument hashes, duration, and the selected nonsecret XSIAM
+credential profile. Cortex XSIAM SIEM export is supported through an HTTP Log
+Collector.
 
 Raw XQL is hashed by default. Full query logging requires
 `AUDIT_LOG_INCLUDE_QUERY_TEXT=true`.

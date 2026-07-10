@@ -96,7 +96,6 @@ async def get_fetcher(ctx: Context) -> Fetcher:
         {
             "profile_name": selection.profile_name,
             "matched_group": selection.matched_group,
-            "api_key_id_sha256": selection.api_key_id_sha256,
         },
     )
     fetcher = Fetcher(url, api_key, xdr_id)

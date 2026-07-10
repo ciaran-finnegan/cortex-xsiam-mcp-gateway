@@ -263,9 +263,7 @@ async def test_fetcher_records_selected_credential_profile_for_audit(monkeypatch
     assert state["xsiam_credential_profile"] == {
         "profile_name": "tier1-readonly",
         "matched_group": "Tier1",
-        "api_key_id_sha256": state["xsiam_credential_profile"]["api_key_id_sha256"],
     }
-    assert len(state["xsiam_credential_profile"]["api_key_id_sha256"]) == 64
 
 
 @pytest.mark.asyncio

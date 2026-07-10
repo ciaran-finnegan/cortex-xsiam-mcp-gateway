@@ -2,7 +2,6 @@ import json
 import os
 from contextvars import ContextVar
 from dataclasses import dataclass
-from hashlib import sha256
 
 from config.config import get_config
 from entities.MCPContext import MCPContext
@@ -17,7 +16,6 @@ class CredentialSelection:
     auth_headers: dict[str, str]
     profile_name: str
     matched_group: str | None
-    api_key_id_sha256: str
 
 
 _current_selection: ContextVar[CredentialSelection | None] = ContextVar(
@@ -33,7 +31,6 @@ def select_xsiam_credentials(context: MCPContext, fallback_headers: dict[str, st
             fallback_headers,
             "default",
             None,
-            _key_id_hash(fallback_headers),
         ))
 
     profiles = _parse_profiles(config.xsiam_credential_profiles)
@@ -54,7 +51,6 @@ def select_xsiam_credentials(context: MCPContext, fallback_headers: dict[str, st
             {"Authorization": api_key, "X-XDR-AUTH-ID": api_key_id},
             str(profile.get("profile_name", group)),
             group,
-            sha256(api_key_id.encode()).hexdigest(),
         ))
 
     raise CredentialBrokerError(f"No XSIAM credential profile matches principal {context.principal_id}")
@@ -75,11 +71,6 @@ def reset_current_credential_selection(token) -> None:
 def _record_selection(selection: CredentialSelection) -> CredentialSelection:
     _current_selection.set(selection)
     return selection
-
-
-def _key_id_hash(headers: dict[str, str]) -> str:
-    key_id = headers.get("X-XDR-AUTH-ID", "")
-    return sha256(key_id.encode()).hexdigest() if key_id else ""
 
 
 def _parse_profiles(raw_profiles: str) -> dict[str, dict[str, str | int]]:

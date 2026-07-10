@@ -149,5 +149,4 @@ def _credential_summary(selection) -> dict[str, Any] | None:
     return {
         "profile_name": selection.profile_name,
         "matched_group": selection.matched_group,
-        "api_key_id_sha256": selection.api_key_id_sha256,
     }
