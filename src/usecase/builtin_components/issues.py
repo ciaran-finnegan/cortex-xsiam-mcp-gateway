@@ -5,6 +5,7 @@ from typing import Annotated
 from fastmcp import Context, FastMCP
 from pydantic import Field
 
+from config.config import get_config
 from entities.exceptions import (
     PAPIAuthenticationError,
     PAPIClientError,
@@ -18,7 +19,17 @@ from pkg.util import create_response, read_resource
 from usecase.base_module import BaseModule
 from usecase.fetcher import get_fetcher
 from usecase.identity import resolve_mcp_context
-from usecase.log_policy import ToolAuthorizationError, ensure_raw_xql_authorized
+from usecase.log_policy import (
+    ALL_DATASETS,
+    DatasetAuthorizationError,
+    ToolAuthorizationError,
+    ensure_dataset_authorized,
+    ensure_raw_xql_authorized,
+)
+from usecase.xql_builder import enforce_terminal_xql_limit
+from usecase.xql_discovery import extract_xql_rows
+from usecase.xql_executor import run_xql_query
+from usecase.xql_results import bound_result_rows, result_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -107,8 +118,10 @@ async def get_issues(ctx: Context,
 
 
 async def execute_xql_query(ctx: Context,
-                            query: Annotated[str, Field(description="The XQL query string to execute")],
+                            query: Annotated[str, Field(description="Privileged XQL ending with a numeric '| limit N' stage")],
                             timeout: Annotated[int, Field(description="Query timeout in seconds", default=60)] = 60,
+                            result_limit: Annotated[int, Field(description="Maximum returned rows, capped by server policy", default=100)] = 100,
+                            timeframe: Annotated[dict | None, Field(description="Optional XSIAM API relative or absolute timeframe")] = None,
                             ) -> str:
     """
     Execute an XQL (Extended Query Language) query to search for issues, events, or other data in Cortex XSIAM.
@@ -129,173 +142,42 @@ async def execute_xql_query(ctx: Context,
     Returns:
         JSON response containing query results.
     """
-    payload = {
-        "request_data": {
-            "query": query,
-            "timeout": timeout,
-        }
-    }
-
     try:
-        ensure_raw_xql_authorized(resolve_mcp_context(ctx))
-        fetcher = await get_fetcher(ctx)
-        # Start the XQL query
-        response_data = await fetcher.send_request("/xql/start_xql_query/", data=payload)
-        logger.debug(f"XQL start query response: {response_data}")
-
-        # Check if we got a query ID (async query) or results (sync query)
-        if "reply" not in response_data:
-            return create_response(data={"error": "Unexpected response format from XQL API: missing 'reply' field"}, is_error=True)
-
-        reply = response_data["reply"]
-
-        # Handle case where reply is a string (query ID) or dict
-        query_id = None
-        if isinstance(reply, str):
-            # Query ID returned as string
-            query_id = reply
-            logger.info(f"XQL query started with query_id: {query_id}")
-        elif isinstance(reply, dict):
-            if "query_id" in reply:
-                # Query ID in nested dict
-                query_id = reply["query_id"]
-                logger.info(f"XQL query started with query_id: {query_id}")
-            elif "status" in reply and reply.get("status") == "SUCCESS":
-                # Synchronous response with results already available
-                logger.info("XQL query completed synchronously")
-                response_data["_metadata"] = {
-                    "formatting_instructions": LLM_FORMATTING_BASE_INSTRUCTIONS,
-                }
-                return create_response(data=response_data)
-            else:
-                # Unknown dict format, might be results directly
-                logger.warning(f"Unexpected reply format (dict without query_id or status): {reply}")
-                response_data["_metadata"] = {
-                    "formatting_instructions": LLM_FORMATTING_BASE_INSTRUCTIONS,
-                }
-                return create_response(data=response_data)
-
-        # If we have a query_id, we need to poll for results
-        if not query_id:
-            # No query ID and not synchronous results - treat as synchronous response
-            logger.info("No query_id found, treating as synchronous response")
-            response_data["_metadata"] = {
-                "formatting_instructions": LLM_FORMATTING_BASE_INSTRUCTIONS,
+        context = resolve_mcp_context(ctx)
+        ensure_raw_xql_authorized(context)
+        # Raw XQL can reference joins or subqueries, so it is available only to
+        # principals whose dataset policy grants all datasets.
+        ensure_dataset_authorized(context, ALL_DATASETS)
+        safe_limit = min(max(int(result_limit), 1), get_config().dataset_query_max_rows)
+        bounded_query = enforce_terminal_xql_limit(query, safe_limit)
+        response_data = await run_xql_query(
+            ctx,
+            bounded_query,
+            safe_limit,
+            timeframe=timeframe,
+            timeout_seconds=timeout,
+        )
+        if response_data.get("error"):
+            return create_response(data=response_data, is_error=True)
+        rows, truncation = bound_result_rows(extract_xql_rows(response_data)[:safe_limit])
+        return create_response(
+            data={
+                "rows": rows,
+                "returned": len(rows),
+                "query_id": response_data.get("query_id"),
+                "xsiam": result_metadata(response_data),
+                "truncation": truncation,
             }
-            return create_response(data=response_data)
-
-        # Poll for results
-        import asyncio
-        get_results_payload = {
-            "request_data": {
-                "query_id": query_id,
-            }
-        }
-
-        max_attempts = 60  # Maximum polling attempts (60 seconds with 1 second intervals)
-        attempt = 0
-
-        logger.info(f"Starting to poll for XQL query results (query_id: {query_id})")
-
-        while attempt < max_attempts:
-            await asyncio.sleep(1)  # Wait 1 second between polls
-            attempt += 1
-            logger.debug(f"Polling attempt {attempt}/{max_attempts} for query_id: {query_id}")
-
-            try:
-                result_response = await fetcher.send_request("/xql/get_query_results/", data=get_results_payload)
-                logger.debug(f"Poll response (attempt {attempt}): {result_response}")
-
-                if "reply" not in result_response:
-                    logger.warning(f"No 'reply' field in poll response: {result_response}")
-                    # Check if results are directly in response
-                    if "data" in result_response or "results" in result_response:
-                        result_response["_metadata"] = {
-                            "formatting_instructions": LLM_FORMATTING_BASE_INSTRUCTIONS,
-                        }
-                        return create_response(data=result_response)
-                    continue  # Try again
-
-                result_reply = result_response["reply"]
-
-                # Handle different response formats
-                if isinstance(result_reply, dict):
-                    status = result_reply.get("status", "PENDING")
-                    logger.debug(f"Query status: {status}")
-
-                    # Check if we have results data even if status isn't SUCCESS yet
-                    # Also check for empty result sets (0 results is still a valid completion)
-                    has_results = (
-                        "data" in result_reply or
-                        "results" in result_reply or
-                        "data" in result_response or
-                        "results" in result_response or
-                        "number_of_results" in result_reply or
-                        "result_count" in result_reply or
-                        "total_count" in result_reply or
-                        result_reply.get("number_of_results", -1) >= 0 or
-                        result_reply.get("result_count", -1) >= 0
-                    )
-
-                    if status == "SUCCESS" or (has_results and status in ["SUCCESS", "COMPLETED", "DONE"]):
-                        # Query completed successfully
-                        logger.info(f"XQL query completed successfully after {attempt} attempts (status: {status})")
-                        result_response["_metadata"] = {
-                            "formatting_instructions": LLM_FORMATTING_BASE_INSTRUCTIONS,
-                        }
-                        return create_response(data=result_response)
-                    elif status == "FAILED" or status == "ERROR":
-                        error_msg = result_reply.get("error_message", result_reply.get("error", "Query failed"))
-                        logger.error(f"XQL query failed: {error_msg}")
-                        return create_response(data={"error": f"XQL query failed: {error_msg}"}, is_error=True)
-                    elif has_results:
-                        # We have results even though status might be PENDING/RUNNING - return them
-                        logger.info(f"XQL query returned results (status: {status}) after {attempt} attempts")
-                        result_response["_metadata"] = {
-                            "formatting_instructions": LLM_FORMATTING_BASE_INSTRUCTIONS,
-                        }
-                        return create_response(data=result_response)
-                    # Otherwise, status is PENDING or RUNNING, continue polling
-                elif isinstance(result_reply, list):
-                    # Results might be directly in a list
-                    logger.info(f"Received results list with {len(result_reply)} items")
-                    result_response["_metadata"] = {
-                        "formatting_instructions": LLM_FORMATTING_BASE_INSTRUCTIONS,
-                    }
-                    return create_response(data=result_response)
-                else:
-                    # Unknown format, log and continue
-                    logger.warning(f"Unexpected result_reply type: {type(result_reply)}, value: {result_reply}")
-                    # Check if we have data elsewhere in the response
-                    if "data" in result_response or "results" in result_response:
-                        result_response["_metadata"] = {
-                            "formatting_instructions": LLM_FORMATTING_BASE_INSTRUCTIONS,
-                        }
-                        return create_response(data=result_response)
-                    # If result_reply is a string and we've polled a few times, might be an error message
-                    if isinstance(result_reply, str) and attempt > 5:
-                        logger.warning(f"Received string response after multiple polls: {result_reply}")
-                        # Might be an error or completion message, return it
-                        result_response["_metadata"] = {
-                            "formatting_instructions": LLM_FORMATTING_BASE_INSTRUCTIONS,
-                        }
-                        return create_response(data=result_response)
-
-            except Exception as poll_error:
-                logger.exception(f"Error during polling attempt {attempt}: {poll_error}")
-                # Continue polling unless it's a critical error
-                if attempt >= max_attempts - 1:
-                    return create_response(data={"error": f"Error polling for results: {str(poll_error)}"}, is_error=True)
-
-        # Timeout waiting for results
-        logger.warning(f"XQL query timed out after {max_attempts} polling attempts")
-        return create_response(data={"error": f"XQL query timed out waiting for results after {max_attempts} attempts"}, is_error=True)
+        )
 
     except (PAPIConnectionError, PAPIAuthenticationError, PAPIServerError, PAPIClientRequestError, PAPIResponseError, PAPIClientError) as e:
         logger.exception(f"PAPI error while executing XQL query: {e}")
         return create_response(data={"error": str(e)}, is_error=True)
     except ToolAuthorizationError as e:
         logger.info("Raw XQL authorization denied: %s", e)
+        return create_response(data={"error": str(e)}, is_error=True)
+    except DatasetAuthorizationError as e:
+        logger.info("Raw XQL dataset authorization denied: %s", e)
         return create_response(data={"error": str(e)}, is_error=True)
     except Exception as e:
         logger.exception(f"Failed to execute XQL query: {e}")

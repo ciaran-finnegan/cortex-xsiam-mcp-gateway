@@ -42,10 +42,10 @@ jobs:
         run: poetry install --no-root
 
       - name: Syntax check
-        run: poetry run python -m compileall -q src tests
+        run: poetry run python -m compileall -f -q src tests scripts
 
       - name: Lint
-        run: poetry run ruff check src tests
+        run: poetry run ruff check src tests scripts
 
       - name: Test
         run: poetry run pytest

@@ -54,12 +54,14 @@ class Fetcher:
             if "/public_api/v1" not in path and "/public_api/v1/" not in path:
                 path = os.path.join("/public_api/v1", path.lstrip("/"))
 
-        headers = get_papi_auth_headers(self.api_key, self.api_key_id)
-        async with PAPIClient(self.url, headers) as client:
+        request_headers = get_papi_auth_headers(self.api_key, self.api_key_id)
+        if headers:
+            request_headers.update(headers)
+        async with PAPIClient(self.url, request_headers) as client:
             if stream:
-                result = await client.stream(method, path, data=data, headers=headers)
+                result = await client.stream(method, path, data=data)
             else:
-                result = await client.request(method, path, json=data, headers=headers)
+                result = await client.request(method, path, json=data)
 
         return result
 

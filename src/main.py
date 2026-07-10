@@ -86,6 +86,8 @@ async def async_main(transport: Transport):
     setup_logging(config)
     logger.info("Starting Cortex MCP Server")
 
+    validate_transport_security(transport)
+
     loop = asyncio.get_running_loop()
 
     # Add signal handlers for SIGINT and SIGTERM for graceful shutdown
@@ -113,6 +115,19 @@ async def async_main(transport: Transport):
         )
 
 
+def validate_transport_security(transport: Transport) -> None:
+    config = get_config()
+    if (
+        transport != "stdio"
+        and config.identity_auth_mode.strip().lower() == "none"
+        and not config.allow_unauthenticated_http
+    ):
+        raise ValueError(
+            "HTTP MCP transport requires verified identity; configure MCP_IDENTITY_AUTH_MODE "
+            "or explicitly set MCP_ALLOW_UNAUTHENTICATED_HTTP=true for isolated testing"
+        )
+
+
 async def initialize_mcp_server(api_key: str, api_key_id: str, papi_url: str) -> FastMCP:
     # Create MCP server instance with authentication
     mcp = create_mcp_server(api_key, api_key_id)
@@ -122,9 +137,15 @@ async def initialize_mcp_server(api_key: str, api_key_id: str, papi_url: str) ->
 
     # Discover mcp components from openapi specs and import them
     spec = bundle_openapi_from_folders()
-    open_api_mcp = FastMCP.from_openapi(spec,
-                                        PAPIClient(get_papi_url(papi_url), get_papi_auth_headers(api_key, api_key_id)))
-    await mcp.import_server(server=open_api_mcp)
+    open_api_mcp = FastMCP.from_openapi(
+        spec,
+        PAPIClient(
+            get_papi_url(papi_url),
+            get_papi_auth_headers(api_key, api_key_id),
+            resolve_credentials_per_request=True,
+        ),
+    )
+    mcp.mount(open_api_mcp)
 
     return mcp
 

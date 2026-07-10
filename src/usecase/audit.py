@@ -93,9 +93,9 @@ def create_tool_audit_event(
     duration_ms: float | None = None,
     error: Exception | str | None = None,
     result_summary: dict[str, Any] | None = None,
+    credential_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     config = get_config()
-    credential_id = principal.auth_headers.get("X-XDR-AUTH-ID", "")
     event: dict[str, Any] = {
         "schema_version": "1.0",
         "event_type": "cortex_xsiam_mcp.tool_invocation",
@@ -112,8 +112,8 @@ def create_tool_audit_event(
         },
         "request": summarize_tool_arguments(tool_name, arguments),
     }
-    if credential_id:
-        event["xsiam"] = {"api_key_id_sha256": _hash_text(str(credential_id))}
+    if credential_summary:
+        event["xsiam"] = credential_summary
     if duration_ms is not None:
         event["duration_ms"] = round(duration_ms, 3)
     if error is not None:
@@ -123,10 +123,14 @@ def create_tool_audit_event(
     return event
 
 
-def _summarize_error(error: Exception | str) -> dict[str, str]:
-    if isinstance(error, Exception):
-        return {"type": type(error).__name__, "message": str(error)}
-    return {"type": "Error", "message": error}
+def _summarize_error(error: Exception | str) -> dict[str, Any]:
+    error_type = type(error).__name__ if isinstance(error, Exception) else "Error"
+    message = str(error)
+    return {
+        "type": error_type,
+        "message_sha256": _hash_text(message),
+        "message_length": len(message),
+    }
 
 
 async def emit_audit_event(event: dict[str, Any]) -> None:

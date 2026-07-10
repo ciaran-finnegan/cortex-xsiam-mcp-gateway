@@ -3,7 +3,8 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from authlib.jose import JsonWebToken
+from joserfc import jwt
+from joserfc.jwk import OctKey
 from starlette.datastructures import Headers
 
 from entities.MCPContext import MCPContext
@@ -22,8 +23,7 @@ from usecase.tool_policy import ensure_tool_authorized
 
 
 def _token(claims: dict, secret: str = "unit-test-secret") -> str:
-    encoded = JsonWebToken(["HS256"]).encode({"alg": "HS256"}, claims, secret)
-    return encoded.decode()
+    return jwt.encode({"alg": "HS256"}, claims, OctKey.import_key(secret))
 
 
 def _fallback_context():

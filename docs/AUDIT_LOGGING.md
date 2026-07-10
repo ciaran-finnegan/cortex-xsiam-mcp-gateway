@@ -29,10 +29,16 @@ Important fields:
 | `request.argument_hash` | SHA-256 hash of the redacted argument object. |
 | `request.dataset` | Dataset when present. |
 | `request.query_sha256` | SHA-256 hash of raw XQL when present. |
-| `xsiam.api_key_id_sha256` | SHA-256 hash of the XSIAM API key ID in use. |
+| `xsiam.profile_name` | Configured nonsecret name of the XSIAM credential profile selected for the request. |
+| `xsiam.matched_group` | Verified group that selected the credential profile, when profile brokering is enabled. |
+| `error.message_sha256` | SHA-256 of exception text; raw exception messages are not emitted. |
 
 Raw XQL is not logged by default because it can contain sensitive indicators,
 user identifiers, hostnames, or investigation content.
+
+The end event uses the credential actually selected during the request, not
+only the server's fallback credential. It records the profile name, matched
+group, and SHA-256 of the API key ID; API key values are never included.
 
 ## Example Event
 
@@ -45,22 +51,22 @@ user identifiers, hostnames, or investigation content.
   "service": "cortex-xsiam-mcp-gateway",
   "phase": "end",
   "outcome": "success",
-  "tool": "search_logs",
+  "tool": "query_dataset",
   "transport": "streamable-http",
   "principal": {
     "id": "analyst@example.com",
     "groups": ["Tier1"]
   },
   "request": {
-    "argument_names": ["dataset", "filters", "limit"],
+    "argument_names": ["dataset", "fields", "filters", "limit", "mode"],
     "argument_hash": "4f0b...",
     "dataset": "xdr_data",
-    "limit": 100,
+    "limit": 25,
     "filter_count": 2,
     "filter_fields": ["event_type", "severity"]
   },
   "result": {
-    "success": "true",
+    "success": true,
     "executed": true,
     "query_id": "123456"
   }

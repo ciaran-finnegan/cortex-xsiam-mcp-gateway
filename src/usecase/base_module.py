@@ -74,7 +74,7 @@ class BaseModule(ABC):
         Example:
             self._add_tool(my_function, "A tool that does something useful")
         """
-        tool = Tool.from_function(fn, description)
+        tool = Tool.from_function(fn, description=description)
         self.mcp.add_tool(tool)
         logger.debug(f"Added tool: {tool.name}")
 

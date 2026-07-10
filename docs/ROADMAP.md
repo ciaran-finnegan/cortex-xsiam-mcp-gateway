@@ -20,13 +20,19 @@
       field discovery for log-search agents.
 - [x] Add agent workflow tests for Claude Code/Codex-style structured log
       searches.
+- [x] Add typed row and aggregate dataset queries for security and non-security
+      XSIAM datasets.
+- [x] Add bounded result projection, byte/cell caps, query timeouts, and an
+      XSIAM-aligned four-query concurrency ceiling.
+- [x] Add encrypted principal/group/policy-bound keyset continuation.
+- [x] Add blind Codex planning evaluation and opt-in live XSIAM workflow tests.
 - [x] Document enterprise deployment architecture and current upstream MCP
       limitations.
 - [x] Add alpha release process documentation.
 - [x] Add AI review configuration for Codex, Claude, CodeRabbit, and Copilot.
 - [ ] Validate Entra, gateway, dataset policy, tool policy, credential broker,
       and audit export against a non-production XSIAM tenant.
-- [ ] Complete FastMCP 3 compatibility work to remove the unpatched transitive
+- [x] Complete FastMCP 3 compatibility work to remove the unpatched transitive
       `diskcache` dependency carried by FastMCP 2.x
       ([#26](https://github.com/ciaran-finnegan/cortex-xsiam-mcp-gateway/issues/26)).
 
@@ -38,6 +44,8 @@
 - [ ] Add policy tests for common enterprise roles.
 - [ ] Add deployment examples for container platforms.
 - [ ] Add XSIAM parser/dashboard content for MCP audit events.
+- [ ] Add distributed query rate limiting and gateway replay/cursor state for
+      horizontally scaled deployments.
 
 ## Stable
 

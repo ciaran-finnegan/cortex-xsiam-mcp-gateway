@@ -4,9 +4,9 @@
 [![CodeQL](https://github.com/ciaran-finnegan/cortex-xsiam-mcp-gateway/actions/workflows/codeql.yml/badge.svg)](https://github.com/ciaran-finnegan/cortex-xsiam-mcp-gateway/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://github.com/ciaran-finnegan/cortex-xsiam-mcp-gateway/actions/workflows/scorecard.yml/badge.svg)](https://github.com/ciaran-finnegan/cortex-xsiam-mcp-gateway/actions/workflows/scorecard.yml)
 
-An enterprise-oriented MCP gateway for Cortex XSIAM security operations. The
-goal is a centrally deployed MCP service where users authenticate through
-Microsoft Entra ID, agents can search logs and investigation data, and every
+An enterprise-oriented MCP gateway for governed access to Cortex XSIAM data.
+The goal is a centrally deployed MCP service where users authenticate through
+Microsoft Entra ID, agents can query security and non-security datasets, and every
 tool call is governed by policy and audit logging rather than by a shared local
 API key.
 
@@ -25,7 +25,7 @@ ID.
 
 ## Alpha Status
 
-Release line: `v0.1.0-alpha.1`.
+Release line: `v0.2.0-alpha.1`.
 
 This is alpha software. It is appropriate for design review, lab validation, and
 controlled pilot work. It is not ready for unrestricted enterprise production
@@ -34,13 +34,16 @@ complete and validated in your tenant.
 
 Implemented in this fork:
 
-- FastMCP server with `stdio` and `streamable-http` transports.
+- FastMCP 3 server with `stdio` and `streamable-http` transports.
 - XSIAM API key based server-to-XSIAM authentication.
 - XQL execution and result polling.
-- Agent-oriented log search guidance, dataset discovery, and XQL-backed field
+- Agent-oriented dataset guidance, policy-filtered discovery, and XQL-backed field
   discovery.
-- `search_logs` for structured filters and privileged analyst-authored raw XQL.
-- Dataset allowlist enforcement for `search_logs`.
+- `query_dataset` for typed row projection, filters, aggregations, top-N, and
+  time-bucketed trends across any policy-allowed XSIAM dataset.
+- Encrypted, principal-bound keyset continuation for bounded row pagination.
+- Server-side row, field, cell, byte, timeframe, and concurrency limits.
+- Dataset allowlist enforcement before discovery, compilation, or execution.
 - Privileged-group restriction for the legacy `execute_xql_query` tool.
 - Entra ID JWT validation for HTTP transport.
 - Optional HMAC-signed trusted gateway identity forwarding for Portkey,
@@ -49,6 +52,9 @@ Implemented in this fork:
 - Role/group-scoped XSIAM credential selection from pre-provisioned profiles.
 - Structured audit logging for every MCP tool invocation.
 - Optional audit export to a Cortex XSIAM HTTP Log Collector.
+- FastMCP 3.4 compatibility with the vulnerable FastMCP 2.x `diskcache`
+  dependency path removed from the lockfile.
+- Unit, security, MCP-schema, blind Codex planning, and opt-in live XSIAM tests.
 - XSIAM tools for cases, issues, tenant info, assets, endpoints,
   vulnerabilities, and assessment profile results.
 - CI, CodeQL, Dependency Review, Dependabot, OpenSSF Scorecard, and AI review
@@ -56,12 +62,11 @@ Implemented in this fork:
 
 Alpha blockers:
 
-- Live enterprise validation of Entra, gateway, tool policy, dataset policy,
-  and credential broker configurations.
+- Tenant-specific validation of Entra, optional gateway, credential broker,
+  and audit collector configurations before each production rollout.
 - Field-level output redaction.
 - Streaming XQL result retrieval for large investigations.
-- FastMCP 3 compatibility work to remove vulnerable FastMCP 2.x transitive
-  dependency paths.
+- Distributed rate limiting and cursor/replay state for multi-replica deployments.
 
 ## Enterprise Architecture
 
@@ -137,15 +142,27 @@ but it leaves several enterprise questions outside the default design:
 This fork addresses the first layer of those gaps now and tracks deeper
 production hardening in the roadmap.
 
+| Enterprise concern | Public upstream material | This gateway |
+| --- | --- | --- |
+| Shared service identity | Client setup and Cortex API credentials are documented; a multi-user Entra authorization model is not described. | Entra JWT validation or signed optional-gateway assertions. |
+| Per-user authorization | Cortex permissions still apply to the API credential used by the server. | MCP tool policy plus explicit dataset policy derived from verified groups/app roles. |
+| Users without XSIAM API keys | Per-user key lifecycle is not solved by the public MCP overview. | Shared service credential or deterministic pre-provisioned role profiles; no dynamic user-key creation required. |
+| Plain-English dataset questions | General MCP tools and XQL access are available. | Progressive dataset/field discovery and a typed query compiler tested with a blind client-agent evaluation. |
+| Result volume and pagination | XQL result APIs expose bounded and streaming retrieval primitives. | Low default limits, byte/cell/field caps, four-query concurrency ceiling, and encrypted keyset cursors. |
+| Human-attributable audit | Cortex API activity can identify the API credential. | Every MCP tool invocation records the verified principal and selected credential profile, with optional XSIAM collector export. |
+
 ## Core Tools
 
 | Tool | Purpose | Current control |
 | --- | --- | --- |
-| `get_log_search_guidance` | Return compact instructions for LLM agents using XSIAM log search. | Tool policy and audit. |
+| `get_dataset_query_guidance` | Return compact instructions for LLM agents querying XSIAM datasets. | Tool policy and audit. |
 | `list_log_datasets` | Discover datasets the current principal is allowed to query. | Tool policy, dataset allowlist policy, capped output. |
 | `discover_log_fields` | Run a bounded XQL sample against one allowed dataset and return observed fields. | Tool policy, dataset allowlist policy, capped output, no sample values. |
-| `search_logs` | Search XSIAM logs using structured filters, or privileged analyst-authored raw XQL. | Tool policy, dataset allowlist policy; raw XQL requires privileged groups. |
-| `execute_xql_query` | Execute analyst-authored raw XQL. | Tool policy plus `RAW_XQL_PRIVILEGED_GROUPS`. |
+| `query_dataset` | Execute a typed row or aggregate plan for one explicit dataset. | Tool policy, dataset policy, compiler allowlists, output budgets. |
+| `continue_dataset_query` | Retrieve one bounded next page using an opaque keyset cursor. | Cursor encryption, principal/group/policy binding, policy recheck. |
+| `get_xql_help` | Return one compact XQL/typed-query recipe to the client agent. | No tenant data; tool policy and audit. |
+| `search_logs` | Compatibility wrapper for simple typed row searches. | Explicit dataset, required fields, dataset policy; no raw query argument. |
+| `execute_xql_query` | Execute analyst-authored raw XQL. | Tool policy, privileged groups, and an all-datasets policy grant. |
 | `get_xql_query_quota` | Retrieve XQL query quota usage. | Tool policy and audit. |
 | `get_issues` | Search XSIAM issues/alerts. | Tool policy and audit. |
 | `get_cases` | Search XSIAM cases/incidents. | Tool policy and audit. |
@@ -155,19 +172,21 @@ production hardening in the roadmap.
 | `get_vulnerabilities` | Retrieve vulnerability data. | Tool policy and audit. |
 | `get_assessment_profile_results` | Retrieve assessment profile results. | Tool policy and audit. |
 
-## Log Search
+## Agent Dataset Queries
 
 ### Claude Code Or Codex Agent Workflow
 
 The primary enterprise path is agent-driven:
 
 1. The user asks a plain-English question.
-2. The LLM agent calls `get_log_search_guidance`.
+2. The LLM agent calls `get_dataset_query_guidance`.
 3. The agent calls `list_log_datasets` to find allowed candidate datasets.
 4. The agent calls `discover_log_fields` for one candidate dataset to learn
    observed field names and types from a bounded XQL sample.
-5. The agent calls `search_logs` with explicit `dataset`, `filters`, `fields`,
-   `timeframe`, and a low `limit`.
+5. The agent calls `query_dataset` with an explicit dataset and either a typed
+   row plan or aggregate plan.
+6. The agent summarizes the bounded result and follows a continuation cursor
+   only when the user actually requests more.
 
 This keeps plain-English reasoning in Claude Code, Codex, or another MCP client
 agent while keeping the MCP server focused on policy, compact discovery, XQL
@@ -179,33 +198,51 @@ See [Agent Log Search](docs/AGENT_LOG_SEARCH.md) and
 
 ### Raw XQL
 
-Use `query` for advanced analysts who already know XQL:
+Raw XQL is an exceptional escape hatch for advanced analysts:
 
 ```json
 {
-  "dataset": "xdr_data",
-  "query": "dataset = xdr_data | filter event_type contains \"authentication\" | limit 100"
+  "query": "dataset = xdr_data | filter event_type contains \"authentication\" | fields event_id, event_type | limit 25",
+  "result_limit": 25,
+  "timeframe": {"relativeTime": 86400000}
 }
 ```
 
-The explicit `dataset` parameter is required for deterministic dataset policy
-checks. Do not infer authorization by trying to parse arbitrary XQL. Raw XQL is
-restricted to `RAW_XQL_PRIVILEGED_GROUPS`; routine Claude Code/Codex workflows
-should use structured search arguments instead.
+Because raw XQL can join or subquery multiple datasets, `execute_xql_query`
+requires both membership in `RAW_XQL_PRIVILEGED_GROUPS` and a `*` dataset grant.
+It also requires a terminal numeric `| limit N` stage, which the server clamps
+to its result policy before submitting the query. Routine Claude Code/Codex
+workflows should use `query_dataset`.
 
 ### Structured Search
 
-Use `dataset`, `filters`, `fields`, and `limit` for routine agent workflows:
+Use rows mode for targeted records:
 
 ```json
 {
   "dataset": "xdr_data",
+  "mode": "rows",
   "filters": [
     {"field": "event_type", "operator": "contains", "value": "authentication"},
     {"field": "severity", "operator": "in", "value": ["high", "critical"]}
   ],
   "fields": ["event_id", "event_type", "severity"],
-  "limit": 100
+  "timeframe": {"relative_ms": 86400000},
+  "limit": 25
+}
+```
+
+Use aggregate mode when the question asks for counts, top values, averages, or
+trends, so raw records do not consume model context unnecessarily:
+
+```json
+{
+  "dataset": "asset_inventory",
+  "mode": "aggregate",
+  "metrics": [{"function": "count", "alias": "total"}],
+  "group_by": ["os_family"],
+  "order_by": [{"field": "total", "direction": "desc"}],
+  "limit": 10
 }
 ```
 
@@ -260,8 +297,8 @@ secret values stay in your secret manager or local environment.
 
 Every MCP tool invocation emits structured JSON audit events. Events include the
 human principal known to the server, groups, tool name, transport, outcome,
-duration, argument names, dataset, query hash, and XSIAM API key ID hash. Raw
-Raw XQL is hashed by default and can be logged only by explicit opt-in.
+duration, argument names, dataset, query hash, and selected XSIAM credential
+profile. Raw XQL is hashed by default and can be logged only by explicit opt-in.
 
 ```mermaid
 sequenceDiagram
@@ -345,10 +382,9 @@ The repository includes:
 - OpenSSF Scorecard.
 - Security policy and private vulnerability reporting guidance.
 
-Current known dependency issue: the FastMCP 2.x line carries Dependabot alerts
-that require FastMCP 3.x compatibility work. A direct upgrade has already shown
-breaking import/runtime changes, so this is tracked as an alpha blocker rather
-than hidden as a simple version bump.
+The runtime is pinned to FastMCP 3.4.x. The lockfile no longer resolves the
+FastMCP 2.x `diskcache` dependency path. Dependency Review remains the merge
+gate for new high-severity dependency changes.
 
 See [Dependency Remediation](docs/DEPENDENCY_REMEDIATION.md).
 
@@ -391,9 +427,17 @@ poetry install
 Run checks:
 
 ```bash
-poetry run pytest
-poetry run ruff check src tests
+poetry run pytest -q
+poetry run ruff check src tests scripts
+poetry run python -m compileall -f -q src tests scripts
+poetry check
 ```
+
+The normal suite uses synthetic data and skips live calls. Opt-in live tests
+require `--run-live` and read credentials only from environment variables;
+blind agent planning tests can be reproduced with
+`scripts/evaluate_agent_plans.py`. See
+[Agent Testing](docs/CLAUDE_CODE_LOG_SEARCH_TESTING.md).
 
 Run the MCP server locally:
 
@@ -408,12 +452,12 @@ For Claude Desktop or Cursor development, configure the MCP client to execute
 
 ```bash
 docker build -t cortex-xsiam-mcp-gateway .
-docker run --rm -i --env-file .env cortex-xsiam-mcp-gateway
+docker run --rm -p 8080:8080 --env-file .env cortex-xsiam-mcp-gateway
 ```
 
 ## Releases
 
-The first release line is `v0.1.0-alpha.1`. Alpha releases are expected to be
+The current release line is `v0.2.0-alpha.1`. Alpha releases are expected to be
 pre-production and may include breaking changes before beta. See
 [Release Process](docs/RELEASES.md) and [Changelog](CHANGELOG.md).
 

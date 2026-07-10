@@ -63,7 +63,7 @@ def test_mcp_server_registers_audit_middleware():
     assert any(isinstance(middleware, ToolAuditMiddleware) for middleware in server.middleware)
 
 
-def test_audit_event_hashes_xsiam_api_key_id():
+def test_audit_event_records_nonsecret_credential_profile_only():
     event = create_tool_audit_event(
         tool_name="get_cases",
         phase="start",
@@ -74,7 +74,23 @@ def test_audit_event_hashes_xsiam_api_key_id():
             groups=("Security",),
         ),
         arguments={},
+        credential_summary={"profile_name": "tier1-readonly", "matched_group": "Tier1"},
     )
 
-    assert event["xsiam"]["api_key_id_sha256"] != "sensitive-key-id"
-    assert len(event["xsiam"]["api_key_id_sha256"]) == 64
+    assert event["xsiam"] == {"profile_name": "tier1-readonly", "matched_group": "Tier1"}
+    assert "sensitive-key-id" not in str(event)
+
+
+def test_audit_event_hashes_error_text_instead_of_logging_it():
+    event = create_tool_audit_event(
+        tool_name="query_dataset",
+        phase="end",
+        outcome="error",
+        principal=MCPContext(auth_headers={}, principal_id="analyst@example.com", groups=("Security",)),
+        arguments={"dataset": "sample"},
+        error=RuntimeError('upstream echoed filter user_name = "sensitive-user"'),
+    )
+
+    assert "sensitive-user" not in str(event)
+    assert event["error"]["type"] == "RuntimeError"
+    assert len(event["error"]["message_sha256"]) == 64

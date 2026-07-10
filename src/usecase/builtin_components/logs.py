@@ -1,10 +1,10 @@
-import asyncio
 import logging
 from typing import Annotated
 
 from fastmcp import Context, FastMCP
 from pydantic import Field
 
+from config.config import get_config
 from entities.exceptions import (
     PAPIAuthenticationError,
     PAPIClientError,
@@ -13,16 +13,13 @@ from entities.exceptions import (
     PAPIResponseError,
     PAPIServerError,
 )
-from entities.llm_config import LLM_FORMATTING_BASE_INSTRUCTIONS
 from pkg.util import create_response
 from usecase.base_module import BaseModule
 from usecase.fetcher import get_fetcher
 from usecase.identity import resolve_mcp_context
 from usecase.log_policy import (
     DatasetAuthorizationError,
-    ToolAuthorizationError,
     ensure_dataset_authorized,
-    ensure_raw_xql_authorized,
 )
 from usecase.xql_builder import (
     MAX_XQL_RESULT_LIMIT,
@@ -43,6 +40,8 @@ from usecase.xql_discovery import (
     normalize_dataset_record,
     policy_dataset_records,
 )
+from usecase.xql_executor import run_xql_query
+from usecase.xql_results import bound_result_rows, result_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -60,40 +59,31 @@ async def get_log_search_guidance() -> str:
                 "Convert the user's plain-English goal into a small investigation plan.",
                 "Call list_log_datasets with name_contains when possible to find allowed candidate datasets.",
                 "Call discover_log_fields for one candidate dataset, using field_name_contains when the user mentioned a likely concept such as user, host, ip, process, or severity.",
-                "Call search_logs with explicit dataset, filters, fields, timeframe, and a low limit.",
+                "Call query_dataset with explicit dataset, fields or metrics, timeframe, and a low limit.",
                 "Refine with another discover_log_fields or search_logs call only when needed.",
             ],
             "rules": [
                 "Do not invent dataset or field names; discover them first.",
-                "Convert plain-English requests into structured search_logs arguments in Claude Code, Codex, or another MCP client agent.",
+                "Convert plain-English requests into structured query_dataset arguments in Claude Code, Codex, or another MCP client agent.",
                 "Request only the fields needed to answer the user.",
                 "Use low limits first and summarize results; do not pull broad result sets by default.",
-                "Use dry_run=true on search_logs when you need to inspect generated XQL before execution.",
+                "Use dry_run=true on query_dataset when you need to inspect generated XQL before execution.",
                 "If a dataset or field is denied or absent, ask the user for a narrower request or use another allowed dataset.",
             ],
             "tools": {
                 "list_log_datasets": "Returns datasets allowed by current dataset policy.",
                 "discover_log_fields": "Samples one allowed dataset with XQL and returns capped observed field metadata, not event data.",
-                "search_logs": "Executes structured log searches with dataset policy enforcement.",
+                "query_dataset": "Preferred typed row and aggregate query tool for any allowed XSIAM dataset.",
+                "continue_dataset_query": "Continues a deterministic row query without offset pagination.",
+                "search_logs": "Compatibility wrapper for simple structured row searches.",
                 "execute_xql_query": "Privileged raw-XQL escape hatch for security/admin roles.",
             },
             "plain_english_handling": {
                 "owner": "Claude Code, Codex, or another MCP client agent",
-                "server_contract": "This MCP server does not accept natural-language log queries. It accepts discovered datasets, discovered fields, structured filters, raw XQL for privileged users, and bounded limits.",
+                "server_contract": "This MCP server does not accept natural-language queries. It accepts discovered datasets, discovered fields, typed row or aggregate plans, privileged raw XQL, and bounded limits.",
             },
         }
     )
-
-
-def _extract_query_id(response_data: dict) -> str | None:
-    reply = response_data.get("reply")
-    if isinstance(reply, str):
-        return reply
-    if isinstance(reply, dict):
-        for key in ("query_id", "id"):
-            if reply.get(key):
-                return str(reply[key])
-    return None
 
 
 def _get_lifespan_context(ctx: Context):
@@ -105,105 +95,45 @@ async def _run_xql_query(
     query: str,
     limit: int,
     timeframe: dict | None = None,
-    tenants: list[str] | None = None,
     poll_interval_seconds: int = 1,
     max_poll_attempts: int = 60,
 ) -> dict:
-    fetcher = await get_fetcher(ctx)
-    request_data = {"query": query}
-
-    if tenants is not None:
-        request_data["tenants"] = tenants
-    if timeframe is not None:
-        request_data["timeframe"] = timeframe
-
-    start_response = await fetcher.send_request("/xql/start_xql_query/", data={"request_data": request_data})
-    query_id = _extract_query_id(start_response)
-
-    if not query_id:
-        return {
-            "query": query,
-            "start_response": start_response,
-            "_metadata": {"formatting_instructions": LLM_FORMATTING_BASE_INSTRUCTIONS},
-        }
-
-    result_payload = {
-        "request_data": {
-            "query_id": query_id,
-            "pending_flag": True,
-            "limit": min(max(int(limit), 1), MAX_XQL_RESULT_LIMIT),
-            "format": "json",
-        }
-    }
-
-    for attempt in range(1, max_poll_attempts + 1):
-        await asyncio.sleep(poll_interval_seconds)
-        result_response = await fetcher.send_request("/xql/get_query_results/", data=result_payload)
-        reply = result_response.get("reply")
-
-        if isinstance(reply, dict):
-            status = str(reply.get("status", "")).upper()
-            if status in {"PENDING", "RUNNING"}:
-                continue
-            if status in {"FAILED", "ERROR"}:
-                return {
-                    "query": query,
-                    "query_id": query_id,
-                    "error": reply.get("error_message", reply.get("error", "XQL query failed")),
-                    "reply": reply,
-                }
-
-        result_response.update(
-            {
-                "query": query,
-                "query_id": query_id,
-                "poll_attempts": attempt,
-                "_metadata": {"formatting_instructions": LLM_FORMATTING_BASE_INSTRUCTIONS},
-            }
-        )
-        return result_response
-
-    return {
-        "query": query,
-        "query_id": query_id,
-        "error": f"XQL query timed out after {max_poll_attempts} polling attempts",
-    }
+    return await run_xql_query(
+        ctx,
+        query,
+        min(max(int(limit), 1), MAX_XQL_RESULT_LIMIT),
+        timeframe=timeframe,
+        poll_interval_seconds=poll_interval_seconds,
+        timeout_seconds=max(max_poll_attempts * max(poll_interval_seconds, 1), 1),
+    )
 
 
 async def search_logs(
     ctx: Context,
-    query: Annotated[
-        str | None,
-        Field(description="Raw XQL query to execute. Use this for precise analyst-authored XQL."),
-    ] = None,
     dataset: Annotated[
         str,
-        Field(description="Dataset to search when building XQL from structured inputs."),
-    ] = "xdr_data",
+        Field(description="Explicit policy-authorized dataset to search."),
+    ],
+    fields: Annotated[
+        list[str],
+        Field(description="Discovered fields to return. Required to keep responses compact across arbitrary datasets."),
+    ],
     filters: Annotated[
         list[dict] | None,
         Field(description="Structured filters: [{'field': 'event_type', 'operator': 'contains', 'value': 'auth'}]."),
-    ] = None,
-    fields: Annotated[
-        list[str] | None,
-        Field(description="Fields to return. Defaults to event_id, event_type, and event_sub_type."),
     ] = None,
     timeframe: Annotated[
         dict | None,
         Field(description="Optional XSIAM API timeframe object, for example {'from': 1598907600000, 'to': 1599080399000}."),
     ] = None,
-    tenants: Annotated[
-        list[str] | None,
-        Field(description="Optional tenant list for the XSIAM query API."),
-    ] = None,
-    limit: Annotated[int, Field(description="Maximum result count. XSIAM get_query_results is capped at 1000.")] = 100,
+    limit: Annotated[int, Field(description="Maximum result count. Prefer query_dataset for aggregates and continuation.")] = 25,
     dry_run: Annotated[
         bool,
         Field(description="When true, return generated XQL without executing it."),
     ] = False,
 ) -> str:
     """
-    Search Cortex XSIAM logs using raw XQL or structured parameters.
+    Compatibility wrapper for a simple structured row search in one XSIAM dataset.
 
     Claude Code, Codex, and other MCP agents should translate plain-English user
     requests into structured arguments after using list_log_datasets and
@@ -211,13 +141,9 @@ async def search_logs(
     """
     try:
         context = _get_lifespan_context(ctx)
-        if query:
-            ensure_raw_xql_authorized(context)
-            xql = query.strip()
-        else:
-            xql = build_structured_xql(dataset, filters, fields, limit)
-
         policy_decision = ensure_dataset_authorized(context, dataset)
+        safe_limit = min(max(int(limit), 1), get_config().dataset_query_max_rows)
+        xql = build_structured_xql(dataset, filters, fields, safe_limit)
 
         if dry_run:
             return create_response(
@@ -229,16 +155,31 @@ async def search_logs(
                 }
             )
 
-        response_data = await _run_xql_query(ctx, xql, limit, timeframe=timeframe, tenants=tenants)
-        response_data["dataset_policy"] = policy_decision.__dict__
-        response_data["executed"] = True
-        return create_response(data=response_data)
+        response_data = await _run_xql_query(ctx, xql, safe_limit, timeframe=timeframe)
+        if response_data.get("error"):
+            return create_response(
+                data={"error": response_data["error"], "executed": True},
+                is_error=True,
+            )
+        rows, truncation = bound_result_rows(
+            extract_xql_rows(response_data)[:safe_limit],
+            allowed_fields=tuple(fields),
+        )
+        return create_response(
+            data={
+                "dataset": dataset,
+                "rows": rows,
+                "returned": len(rows),
+                "executed": True,
+                "query_id": response_data.get("query_id"),
+                "dataset_policy": policy_decision.__dict__,
+                "xsiam": result_metadata(response_data),
+                "truncation": truncation,
+            }
+        )
 
     except DatasetAuthorizationError as e:
         logger.info(f"Dataset authorization denied: {e}")
-        return create_response(data={"error": str(e), "executed": False}, is_error=True)
-    except ToolAuthorizationError as e:
-        logger.info(f"Tool authorization denied: {e}")
         return create_response(data={"error": str(e), "executed": False}, is_error=True)
     except (ValueError, KeyError, TypeError) as e:
         logger.exception(f"Invalid log search request: {e}")
@@ -324,7 +265,7 @@ async def discover_log_fields(
     dataset: Annotated[
         str,
         Field(description="Allowed XSIAM dataset to sample for field discovery."),
-    ] = "xdr_data",
+    ],
     sample_size: Annotated[
         int,
         Field(description=f"Number of rows to sample with XQL. Capped at {MAX_DISCOVERY_SAMPLE_SIZE}."),
@@ -332,10 +273,6 @@ async def discover_log_fields(
     timeframe: Annotated[
         dict | None,
         Field(description="Optional XSIAM API timeframe object for the sample query."),
-    ] = None,
-    tenants: Annotated[
-        list[str] | None,
-        Field(description="Optional tenant list for the sample query."),
     ] = None,
     field_name_contains: Annotated[
         str | None,
@@ -364,7 +301,6 @@ async def discover_log_fields(
             query,
             safe_sample_size,
             timeframe=timeframe,
-            tenants=tenants,
             max_poll_attempts=30,
         )
         if response_data.get("error"):
@@ -372,7 +308,6 @@ async def discover_log_fields(
                 data={
                     "error": response_data["error"],
                     "dataset": dataset,
-                    "query": query,
                     "dataset_policy": policy_decision.__dict__,
                 },
                 is_error=True,
@@ -388,7 +323,6 @@ async def discover_log_fields(
         return create_response(
             data={
                 "dataset": dataset,
-                "query": query,
                 "source": "xql_sample",
                 "sample_size_requested": safe_sample_size,
                 "rows_observed": len(rows),
@@ -398,7 +332,7 @@ async def discover_log_fields(
                 "fields": fields,
                 "dataset_policy": policy_decision.__dict__,
                 "exhaustive": False,
-                "guidance": "Use these observed field names to build compact structured search_logs calls. This tool returns schema guidance only; it intentionally does not return sample event values.",
+                "guidance": "Use these observed field names to build compact query_dataset calls. This tool returns schema guidance only; it intentionally does not return sample event values.",
             }
         )
     except DatasetAuthorizationError as e:

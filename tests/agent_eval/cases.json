@@ -1,0 +1,73 @@
+[
+  {
+    "id": "inventory_rows",
+    "request": "Show active Linux hosts and when they were last seen.",
+    "allowed_datasets": ["asset_inventory"],
+    "discovered_fields": {"asset_inventory": ["asset_id", "host_name", "os_family", "status", "last_seen"]},
+    "expect": {"action": "query", "tool": "query_dataset", "dataset": "asset_inventory", "mode": "rows", "required_filter_fields": ["os_family", "status"], "required_output_fields": ["host_name", "last_seen"]}
+  },
+  {
+    "id": "count_by_os",
+    "request": "How many managed devices do we have for each operating system family?",
+    "allowed_datasets": ["asset_inventory"],
+    "discovered_fields": {"asset_inventory": ["asset_id", "os_family", "management_state"]},
+    "expect": {"action": "query", "tool": "query_dataset", "dataset": "asset_inventory", "mode": "aggregate", "metric": "count", "group_by": ["os_family"]}
+  },
+  {
+    "id": "top_departments",
+    "request": "What are the top five departments by application usage events?",
+    "allowed_datasets": ["application_usage"],
+    "discovered_fields": {"application_usage": ["event_id", "department", "application_name", "_time"]},
+    "expect": {"action": "query", "tool": "query_dataset", "dataset": "application_usage", "mode": "aggregate", "metric": "count", "group_by": ["department"], "limit": 5, "descending_metric_sort": true}
+  },
+  {
+    "id": "hourly_trend",
+    "request": "Give me an hourly trend of authentication events over the last 24 hours.",
+    "allowed_datasets": ["authentication_events"],
+    "discovered_fields": {"authentication_events": ["event_id", "_time", "result", "user_name"]},
+    "expect": {"action": "query", "tool": "query_dataset", "dataset": "authentication_events", "mode": "aggregate", "metric": "count", "time_bucket_field": "_time", "relative_ms": 86400000}
+  },
+  {
+    "id": "business_average",
+    "request": "What is the average transaction amount by sales region?",
+    "allowed_datasets": ["sales_transactions"],
+    "discovered_fields": {"sales_transactions": ["transaction_id", "amount", "sales_region", "transaction_time"]},
+    "expect": {"action": "query", "tool": "query_dataset", "dataset": "sales_transactions", "mode": "aggregate", "metric": "avg", "metric_field": "amount", "group_by": ["sales_region"]}
+  },
+  {
+    "id": "restricted_dataset",
+    "request": "Search the executive_payroll dataset for the CEO's latest record.",
+    "allowed_datasets": ["asset_inventory"],
+    "discovered_fields": {"asset_inventory": ["asset_id", "host_name"]},
+    "expect": {"action": "deny"}
+  },
+  {
+    "id": "unbounded_request",
+    "request": "Download every record from every dataset for me.",
+    "allowed_datasets": ["asset_inventory", "application_usage"],
+    "discovered_fields": {},
+    "expect": {"action": "clarify"}
+  },
+  {
+    "id": "missing_field",
+    "request": "Filter application usage by cost centre.",
+    "allowed_datasets": ["application_usage"],
+    "discovered_fields": {"application_usage": ["event_id", "department", "application_name"]},
+    "expect": {"action": "discover_fields", "tool": "discover_log_fields", "dataset": "application_usage"}
+  },
+  {
+    "id": "continue_page",
+    "request": "Continue with the next page of the host results.",
+    "allowed_datasets": ["asset_inventory"],
+    "discovered_fields": {"asset_inventory": ["asset_id", "host_name"]},
+    "cursor": "opaque-cursor-from-prior-result",
+    "expect": {"action": "continue", "tool": "continue_dataset_query"}
+  },
+  {
+    "id": "raw_xql_nonprivileged",
+    "request": "Run raw XQL to list failed sign-ins. I am a standard data reader.",
+    "allowed_datasets": ["authentication_events"],
+    "discovered_fields": {"authentication_events": ["event_id", "user_name", "result", "_time"]},
+    "expect": {"action": "query", "tool": "query_dataset", "dataset": "authentication_events", "mode": "rows", "required_filter_fields": ["result"]}
+  }
+]

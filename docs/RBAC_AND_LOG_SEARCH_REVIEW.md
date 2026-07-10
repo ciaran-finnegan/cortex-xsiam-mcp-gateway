@@ -1,132 +1,116 @@
-# Cortex XSIAM MCP RBAC And Log Search Review
+# RBAC And Dataset Query Review
 
-## Short Answer
+## Capability
 
-This MCP server can be used to search XSIAM logs. The preferred path is
-`search_logs`, which is dataset-scoped, policy-checked, and designed for
-Claude Code/Codex-style agents that turn plain-English investigation requests
-into structured MCP tool calls.
+The gateway can query XSIAM logs and any other XSIAM dataset exposed to XQL.
+The preferred agent path is `query_dataset`, which compiles a typed plan for one
+explicit policy-authorized dataset. `execute_xql_query` remains a privileged
+escape hatch.
 
-The raw `execute_xql_query` tool remains available only to privileged groups.
-Caller-supplied raw XQL through `search_logs(query=...)` is also privileged.
+## Authorization Chain
 
-## Implemented Controls
+```mermaid
+flowchart LR
+  Token["Verified Entra token or signed gateway assertion"]
+  Context["Principal, tenant, groups, app roles"]
+  Tool["TOOL_ACCESS_POLICY"]
+  Dataset["LOG_SEARCH_DATASET_POLICY"]
+  Compiler["Typed query compiler"]
+  Broker["Role credential profile"]
+  XSIAM["XSIAM API"]
 
-The current alpha implementation includes:
+  Token --> Context --> Tool --> Dataset --> Compiler --> Broker --> XSIAM
+```
 
-- Entra bearer JWT validation for HTTP transport.
-- Optional HMAC-signed trusted gateway identity forwarding for Portkey,
-  LiteLLM, and similar gateways.
-- Tool-level policy for every MCP tool through `TOOL_ACCESS_POLICY`.
-- Dataset allowlist policy for `search_logs`, `list_log_datasets`, and
-  `discover_log_fields`.
-- Raw XQL restriction through `RAW_XQL_PRIVILEGED_GROUPS`.
-- Role/group-scoped XSIAM credential selection from pre-provisioned API key
-  profiles.
-- Structured audit logging for every MCP tool invocation.
-- Optional audit export to a Cortex XSIAM HTTP Log Collector.
+1. HTTP identity middleware validates Entra bearer tokens or signed optional
+   gateway assertions.
+2. Tool middleware authorizes every built-in and OpenAPI-generated tool.
+3. Discovery and query tools authorize the explicit dataset before making an
+   XSIAM call.
+4. Typed query models reject unknown arguments, identifiers, operators,
+   functions, and incompatible row/aggregate shapes.
+5. The credential broker deterministically selects a pre-provisioned profile by
+   numeric priority and fails closed when no profile matches.
+6. Audit middleware records start and end outcomes with the actual selected
+   credential profile.
 
-For local stdio development, `LOG_SEARCH_DEFAULT_PRINCIPAL_ID` and
-`LOG_SEARCH_DEFAULT_GROUPS` can still seed a development principal. Do not use
-those defaults as production authorization.
+Raw XQL has an additional guard: the principal needs a configured privileged
+group and a `*` dataset grant. This avoids pretending that arbitrary joins and
+subqueries can be securely authorized by parsing one declared dataset.
 
-## Current Tools
+## Agent Query Tools
 
-Python-implemented tools:
+- `get_dataset_query_guidance`: compact client-agent rules.
+- `get_xql_help`: focused typed/XQL recipes.
+- `list_log_datasets`: policy-filtered dataset discovery.
+- `discover_log_fields`: observed field metadata from a bounded sample, without
+  sample values.
+- `query_dataset`: typed rows, filters, aggregates, top-N, and time trends.
+- `continue_dataset_query`: cursor-only bounded keyset continuation.
+- `search_logs`: compatibility row-search wrapper with no raw query or tenant
+  arguments.
+- `execute_xql_query`: privileged raw XQL.
+- `get_xql_query_quota`: operational quota visibility.
 
-- `get_cases`: searches XSIAM cases/incidents.
-- `get_issues`: searches XSIAM issues/alerts.
-- `execute_xql_query`: privileged raw XQL query execution.
-- `get_log_search_guidance`: compact agent instructions for XSIAM log search.
-- `list_log_datasets`: policy-allowed dataset discovery.
-- `discover_log_fields`: bounded XQL sample returning observed field metadata,
-  not event values.
-- `search_logs`: structured log search with optional privileged raw XQL.
-- `get_xql_query_quota`: XQL query quota visibility.
+The client agent maps plain English to these tools. The server does not run an
+LLM to generate XQL.
 
-OpenAPI-generated tools:
+## Dataset And Field Discovery
 
-- `get_tenant_info`
-- `get_assets`
-- `get_asset_by_id`
-- `get_filtered_endpoints`
-- `get_vulnerabilities`
-- `get_assessment_profile_results`
+Palo Alto documents `POST /public_api/v1/xql/get_datasets` for dataset
+discovery. Field names are sampled because schemas can be sparse and vary by
+parser, integration, and timeframe. Sampling is guidance, not a full schema
+guarantee.
 
-## Log Search Capability
+Dataset authorization runs before sampling. The response contains field names,
+inferred serialized types, and observed counts, but not the sampled values.
 
-The intended agent workflow is:
+## Query And Pagination Controls
 
-1. Agent translates the user's plain-English request into an investigation
-   plan.
-2. Agent calls `get_log_search_guidance`.
-3. Agent discovers allowed datasets with `list_log_datasets`.
-4. Agent discovers observed field names with `discover_log_fields`.
-5. Agent calls `search_logs` with explicit `dataset`, `filters`, `fields`,
-   `timeframe`, and a low `limit`.
+The typed compiler supports:
 
-`search_logs` supports two modes:
+- row projection;
+- AND/OR typed filters;
+- `count`, `count_distinct`, `sum`, `avg`, `min`, and `max`;
+- grouping, top-N sorting, and minute/hour/day buckets;
+- relative or absolute timeframes;
+- up to two deterministic keyset sort fields.
 
-- Structured XQL generation through `dataset`, `filters`, `fields`, and
-  `limit`.
-- Privileged raw XQL through `query`.
+The executor caps one response at configured row, field, cell, and byte limits,
+polls under a deadline, and cannot exceed four process-local XQL queries. It
+does not auto-stream or auto-exhaust result pages.
 
-It does not accept `natural_language_query`. The client agent is responsible
-for interpreting plain English and producing structured MCP calls.
+Continuation cursors are encrypted, expire, and bind to the principal, tenant,
+auth source, groups, query plan, and policy hash. Policy is rechecked on every
+page. XSIAM timestamp values serialized as epoch milliseconds are converted
+back to timestamps in seek predicates.
 
-Before execution, the server checks:
+## XSIAM XQL APIs
 
-- the MCP tool is allowed for the principal's groups/app roles;
-- the requested dataset is allowed by `LOG_SEARCH_DATASET_POLICY`;
-- raw XQL is allowed only for `RAW_XQL_PRIVILEGED_GROUPS`;
-- result limits are capped.
+- [Start an XQL query](https://docs-cortex.paloaltonetworks.com/r/Cortex-XSIAM-REST-API/Start-an-XQL-query)
+- [Get XQL query results](https://docs-cortex.paloaltonetworks.com/r/Cortex-XSIAM-REST-API/Get-XQL-query-results)
+- [Get XQL query results stream](https://docs-cortex.paloaltonetworks.com/r/Cortex-XSIAM-REST-API/Get-XQL-query-results-Stream)
+- [Get XQL query quota](https://docs-cortex.paloaltonetworks.com/r/Cortex-XSIAM-REST-API/Get-XQL-query-Quota)
+- [Get all datasets](https://docs-cortex.paloaltonetworks.com/r/Cortex-XSIAM-REST-API/Get-all-datasets)
+- [XQL command reference](https://docs-cortex.paloaltonetworks.com/r/Cortex/Cortex-XQL-Command-Reference)
 
-## XSIAM XQL API Review
-
-The XSIAM API supports the log-search use case through these endpoints:
-
-- `POST /public_api/v1/xql/start_xql_query`
-- `POST /public_api/v1/xql/get_query_results`
-- `POST /public_api/v1/xql/get_query_results_stream`
-- `POST /public_api/v1/xql/get_quota`
-- `POST /public_api/v1/xql/get_datasets`
-
-Field discovery uses bounded XQL samples because fields can vary by dataset,
-parser, integration, and time range. Discovery returns field names, inferred
-types, and observed counts only; it does not return sample event values.
-
-Sources:
-
-- https://docs-cortex.paloaltonetworks.com/r/Cortex-XSIAM-REST-API/Start-an-XQL-query
-- https://docs-cortex.paloaltonetworks.com/r/Cortex-XSIAM-REST-API/Get-XQL-query-results
-- https://docs-cortex.paloaltonetworks.com/r/Cortex-XSIAM-REST-API/Get-XQL-query-results-Stream
-- https://docs-cortex.paloaltonetworks.com/r/Cortex-XSIAM-REST-API/Get-XQL-query-Quota
-- https://docs-cortex.paloaltonetworks.com/r/Cortex-XSIAM-REST-API/Get-all-datasets
+The non-streaming results API is used deliberately for bounded agent answers.
+Streaming remains a future controlled export/investigation feature, not the
+default MCP response path.
 
 ## Credential Model
 
-The gateway should not dynamically provision XSIAM API keys for every user.
-Instead, provision least-privilege XSIAM API keys for roles or groups and map
-verified Entra/gateway groups to those profiles with
-`XSIAM_CREDENTIAL_PROFILES`.
-
-If `XSIAM_CREDENTIAL_BROKER_ENABLED=true` and no credential profile matches the
-principal, execution fails closed.
+Users do not need personal XSIAM API keys. The service can use one constrained
+service credential when server-side policy is the enforcement layer, or select
+from pre-provisioned role/group profiles for defense in depth. The gateway does
+not dynamically create per-user keys.
 
 ## Remaining Gaps
 
-- Field-level output redaction is not implemented.
-- Streaming XQL result retrieval is not implemented.
-- Per-tenant/per-user XQL concurrency controls are not implemented.
-- Live validation is still needed for each tenant-specific Entra, gateway,
-  dataset, tool, credential, and audit-export configuration.
-- FastMCP 3 compatibility work is still pending.
-
-## Recommended Next Hardening
-
-- Add field-level output policy for sensitive fields.
-- Add streaming XQL result retrieval for controlled large investigations.
-- Add XQL concurrency limits per tenant and principal.
-- Add curated dataset catalog support for production tenants.
-- Add live smoke tests for the target tenant using non-sensitive datasets and
-  synthetic or approved security events.
+- Field-level role-based output redaction is not implemented.
+- Streaming export is not implemented.
+- Query semaphore, replay cache, and cursor cryptography are process-local;
+  multi-replica deployments need shared rate/replay controls and consistent
+  secrets.
+- Each deployment must validate its own Entra claims, group mappings, gateway
+  contract, credential permissions, and audit collector.

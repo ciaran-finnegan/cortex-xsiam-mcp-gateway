@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["results"],
+  "properties": {
+    "results": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "action", "tool", "arguments", "reason"],
+        "properties": {
+          "id": {"type": "string"},
+          "action": {"enum": ["query", "continue", "discover_fields", "clarify", "deny"]},
+          "tool": {"type": ["string", "null"]},
+          "arguments": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["dataset", "mode", "fields", "filters", "metrics", "group_by", "time_bucket", "order_by", "timeframe", "limit", "field_name_contains", "cursor"],
+            "properties": {
+              "dataset": {"type": ["string", "null"]},
+              "mode": {"enum": ["rows", "aggregate", null]},
+              "fields": {"type": ["array", "null"], "items": {"type": "string"}},
+              "filters": {
+                "type": ["array", "null"],
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["field", "operator", "value"],
+                  "properties": {
+                    "field": {"type": "string"},
+                    "operator": {"enum": ["eq", "neq", "contains", "not_contains", "regex", "not_regex", "gt", "gte", "lt", "lte", "in", "not_in", "is_null", "is_not_null"]},
+                    "value": {"type": ["string", "number", "boolean", "null"]}
+                  }
+                }
+              },
+              "metrics": {
+                "type": ["array", "null"],
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["function", "alias", "field"],
+                  "properties": {
+                    "function": {"enum": ["count", "count_distinct", "sum", "avg", "min", "max"]},
+                    "alias": {"type": "string"},
+                    "field": {"type": ["string", "null"]}
+                  }
+                }
+              },
+              "group_by": {"type": ["array", "null"], "items": {"type": "string"}},
+              "time_bucket": {
+                "type": ["object", "null"],
+                "additionalProperties": false,
+                "required": ["field", "size", "unit"],
+                "properties": {
+                  "field": {"type": "string"},
+                  "size": {"type": "integer"},
+                  "unit": {"enum": ["m", "h", "d"]}
+                }
+              },
+              "order_by": {
+                "type": ["array", "null"],
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["field", "direction"],
+                  "properties": {
+                    "field": {"type": "string"},
+                    "direction": {"enum": ["asc", "desc"]}
+                  }
+                }
+              },
+              "timeframe": {
+                "type": ["object", "null"],
+                "additionalProperties": false,
+                "required": ["relative_ms"],
+                "properties": {"relative_ms": {"type": "integer"}}
+              },
+              "limit": {"type": ["integer", "null"]},
+              "field_name_contains": {"type": ["string", "null"]},
+              "cursor": {"type": ["string", "null"]}
+            }
+          },
+          "reason": {"type": "string"}
+        }
+      }
+    }
+  }
+}
