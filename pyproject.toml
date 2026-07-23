@@ -27,7 +27,7 @@ packages = [
 
 [tool.poetry.dependencies]
 python = ">=3.12,<3.14"
-fastapi = "^0.139.0"
+fastapi = "^0.139.2"
 uvicorn = {version = "^0.51.0", extras = ["standard"]}
 types-requests = "^2.33.0.20260518"
 requests = "^2.34.2"
@@ -39,11 +39,11 @@ cryptography = "^49.0.0"
 pydantic-settings = "^2.12.0"
 
 [tool.poetry.group.dev.dependencies]
-ruff = "^0.15.20"
+ruff = "^0.15.22"
 black = "^26.5.1"
-mypy = "^2.2.0"
+mypy = "^2.3.0"
 pytest = "^9.1.1"
-pre-commit = "^4.6.0"
+pre-commit = "^4.6.1"
 pytest-asyncio = "^1.4.0"
 
 [build-system]
