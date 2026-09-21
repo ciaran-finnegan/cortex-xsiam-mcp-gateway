@@ -39,6 +39,9 @@ Implemented in this fork:
 - XQL execution and result polling.
 - Agent-oriented dataset guidance, policy-filtered discovery, and XQL-backed field
   discovery.
+- Authored dataset catalogue with `find_datasets` topic and entity search, a
+  built-in vendor-standard catalogue, and an operator overlay for site-specific
+  datasets.
 - `query_dataset` for typed row projection, filters, aggregations, top-N, and
   time-bucketed trends across any policy-allowed XSIAM dataset.
 - Encrypted, principal-bound keyset continuation for bounded row pagination.
@@ -156,7 +159,8 @@ production hardening in the roadmap.
 | Tool | Purpose | Current control |
 | --- | --- | --- |
 | `get_dataset_query_guidance` | Return compact instructions for LLM agents querying XSIAM datasets. | Tool policy and audit. |
-| `list_log_datasets` | Discover datasets the current principal is allowed to query. | Tool policy, dataset allowlist policy, capped output. |
+| `find_datasets` | Search the authored dataset catalogue by topic, domain, or entity type and return candidate key fields. | Tool policy, dataset policy applied before catalogue lookup, authored text only, capped and paged output. |
+| `list_log_datasets` | List datasets the current principal is allowed to query, with offset paging. | Tool policy, dataset allowlist policy, capped output. |
 | `discover_log_fields` | Run a bounded XQL sample against one allowed dataset and return observed fields. | Tool policy, dataset allowlist policy, capped output, no sample values. |
 | `query_dataset` | Execute a typed row or aggregate plan for one explicit dataset. | Tool policy, dataset policy, compiler allowlists, output budgets. |
 | `continue_dataset_query` | Retrieve one bounded next page using an opaque keyset cursor. | Cursor encryption, principal/group/policy binding, policy recheck. |
@@ -180,9 +184,10 @@ The primary enterprise path is agent-driven:
 
 1. The user asks a plain-English question.
 2. The LLM agent calls `get_dataset_query_guidance`.
-3. The agent calls `list_log_datasets` to find allowed candidate datasets.
-4. The agent calls `discover_log_fields` for one candidate dataset to learn
-   observed field names and types from a bounded XQL sample.
+3. The agent calls `find_datasets` with the user's topic to find allowed
+   candidate datasets and their candidate key fields.
+4. The agent calls `discover_log_fields` for one candidate dataset to confirm
+   field names and types from a bounded XQL sample.
 5. The agent calls `query_dataset` with an explicit dataset and either a typed
    row plan or aggregate plan.
 6. The agent summarizes the bounded result and follows a continuation cursor

@@ -68,7 +68,7 @@ flowchart LR
 
 1. User gives the LLM agent a plain-English investigation request.
 2. Agent calls `get_dataset_query_guidance` for compact rules.
-3. Agent calls `list_log_datasets` to discover allowed datasets.
+3. Agent calls `find_datasets` to search the authored catalogue for allowed datasets.
 4. Agent calls `discover_log_fields` for one dataset. The server runs a bounded
    XQL sample and returns capped field metadata, not sample event values.
 5. Agent calls `query_dataset` with an explicit typed row or aggregate plan.
@@ -88,7 +88,7 @@ sequenceDiagram
   participant XSIAM as "XSIAM XQL API"
 
   User->>Agent: "Top five departments by application usage"
-  Agent->>MCP: "list_log_datasets"
+  Agent->>MCP: "find_datasets"
   MCP->>Policy: "filter datasets for verified groups"
   MCP-->>Agent: "allowed datasets"
   Agent->>MCP: "discover_log_fields(application_usage)"

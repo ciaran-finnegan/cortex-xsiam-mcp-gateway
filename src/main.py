@@ -30,6 +30,7 @@ from pkg.setup_logging import setup_logging
 from pkg.util import bundle_openapi_from_folders, get_papi_auth_headers, get_papi_url
 from service.cortex_mcp.identity_middleware import IdentityMiddleware
 from service.cortex_mcp.server import create_mcp_server
+from usecase.dataset_catalogue import get_catalogue
 from usecase.module_util import discover_and_register_modules
 
 logger = logging.getLogger("Cortex MCP")
@@ -129,6 +130,10 @@ def validate_transport_security(transport: Transport) -> None:
 
 
 async def initialize_mcp_server(api_key: str, api_key_id: str, papi_url: str) -> FastMCP:
+    # Fail closed at startup when an operator-supplied catalogue overlay is unreadable or invalid.
+    # Module discovery tolerates per-module errors, so this check must happen here.
+    get_catalogue()
+
     # Create MCP server instance with authentication
     mcp = create_mcp_server(api_key, api_key_id)
 
