@@ -12,13 +12,14 @@ from entities.MCPContext import MCPContext
 from usecase.xql_builder import (
     MAX_XQL_RESULT_LIMIT,
     build_filter_clause,
+    format_xql_enum,
     format_xql_value,
     validate_identifier,
 )
 
 QueryMode = Literal["rows", "aggregate"]
 FilterLogic = Literal["and", "or"]
-FilterValueType = Literal["literal", "timestamp_ms"]
+FilterValueType = Literal["literal", "timestamp_ms", "enum"]
 FilterOperator = Literal[
     "eq",
     "neq",
@@ -49,7 +50,11 @@ class QueryFilter(BaseModel):
     value: Any | None = Field(default=None, description="Literal filter value. Omit for null operators.")
     value_type: FilterValueType = Field(
         default="literal",
-        description="Use timestamp_ms when a numeric epoch-millisecond value targets an XQL TIMESTAMP field.",
+        description=(
+            "Use timestamp_ms when a numeric epoch-millisecond value targets an XQL TIMESTAMP field. "
+            "Use enum when the field is an XQL enum, for example event_type in endpoint telemetry: "
+            "pass the bare uppercase member name such as PROCESS."
+        ),
     )
 
     @model_validator(mode="after")
@@ -61,6 +66,11 @@ class QueryFilter(BaseModel):
             raise ValueError(f"{self.operator} requires a value")
         if self.operator in {"in", "not_in"} and not isinstance(self.value, list):
             raise ValueError(f"{self.operator} requires a list value")
+        if self.value_type == "enum":
+            if self.operator not in {"eq", "neq", "in", "not_in"}:
+                raise ValueError("enum supports only eq, neq, in, and not_in")
+            for member in self.value if isinstance(self.value, list) else [self.value]:
+                format_xql_enum(member)
         if self.value_type == "timestamp_ms":
             if self.operator not in {"eq", "neq", "gt", "gte", "lt", "lte"}:
                 raise ValueError("timestamp_ms supports only comparison operators")
@@ -316,6 +326,12 @@ def _query_filter_clause(query_filter: QueryFilter) -> str:
     if query_filter.value_type == "literal":
         return build_filter_clause(query_filter.field, query_filter.operator, query_filter.value)
     field = validate_identifier(query_filter.field, "filter field")
+    if query_filter.value_type == "enum":
+        if query_filter.operator in {"in", "not_in"}:
+            clause = f"{field} in ({', '.join(format_xql_enum(member) for member in query_filter.value)})"
+            return f"not ({clause})" if query_filter.operator == "not_in" else clause
+        symbol = "=" if query_filter.operator == "eq" else "!="
+        return f"{field} {symbol} {format_xql_enum(query_filter.value)}"
     symbols = {"eq": "=", "neq": "!=", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
     value = int(query_filter.value)
     return f'{field} {symbols[query_filter.operator]} to_timestamp({value}, "MILLIS")'

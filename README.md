@@ -227,7 +227,8 @@ Raw XQL is an exceptional escape hatch for advanced analysts:
 Because raw XQL can join or subquery multiple datasets, `execute_xql_query`
 requires both membership in `RAW_XQL_PRIVILEGED_GROUPS` and a `*` dataset grant.
 It also requires a terminal numeric `| limit N` stage, which the server clamps
-to its result policy before submitting the query. Routine Claude Code/Codex
+to its result policy before submitting the query. Comments are removed before
+that check and before submission, so a limit inside a comment does not count. Routine Claude Code/Codex
 workflows should use `query_dataset`.
 
 ### Structured Search

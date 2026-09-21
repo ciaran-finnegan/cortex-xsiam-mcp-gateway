@@ -32,6 +32,10 @@ XQLHelpTopic = Literal[
     "time_trends",
     "pagination",
     "raw_xql",
+    "enum_fields",
+    "field_types",
+    "ingestion_health",
+    "helpers",
 ]
 
 
@@ -328,8 +332,74 @@ _XQL_HELP: dict[str, dict[str, Any]] = {
             "For the next page, pass only the returned cursor to continue_dataset_query; do not reconstruct or add query arguments.",
         ],
     },
+    "enum_fields": {
+        "use": (
+            "Some fields are XQL enums, not strings. The common one is event_type and event_sub_type in endpoint "
+            "telemetry. Comparing an enum to a quoted string or a number fails. Set value_type to enum and pass the "
+            "bare uppercase member name. Group by the field first to see which members exist."
+        ),
+        "structured_example": {
+            "dataset": "xdr_data",
+            "mode": "rows",
+            "fields": ["_time", "agent_hostname", "actor_process_image_name"],
+            "filters": [{"field": "event_type", "operator": "eq", "value": "PROCESS", "value_type": "enum"}],
+            "timeframe": {"relative_ms": 3600000},
+            "limit": 10,
+        },
+        "discover_members_example": {
+            "dataset": "xdr_data",
+            "mode": "aggregate",
+            "metrics": [{"function": "count", "alias": "events"}],
+            "group_by": ["event_type"],
+            "timeframe": {"relative_ms": 3600000},
+            "limit": 25,
+        },
+    },
+    "field_types": {
+        "use": (
+            "The most common query failures are an unknown field and a literal of the wrong type. Call "
+            "discover_log_fields first and match the literal to the reported type: a number field takes a JSON "
+            "number, a string field takes a JSON string, a timestamp field takes value_type timestamp_ms. The same "
+            "name can differ by dataset; an event identifier is a number in one dataset and a string in another."
+        ),
+        "rules": [
+            "Never reuse a field name from one dataset in another without discovery.",
+            "If a query fails validation, rerun discover_log_fields with field_name_contains and check the type.",
+            "Zero rows usually means a wrong value or wrong dataset, not absence; confirm with an aggregate by that field.",
+        ],
+    },
+    "ingestion_health": {
+        "use": (
+            "To check one data source, call dataset_health. To compare every source at once, aggregate the ingestion "
+            "metrics dataset by vendor, product, and log type, if policy allows it."
+        ),
+        "structured_example": {
+            "dataset": "metrics_source",
+            "mode": "aggregate",
+            "metrics": [
+                {"function": "max", "alias": "last_seen", "field": "_time"},
+                {"function": "sum", "alias": "events", "field": "total_event_count"},
+                {"function": "sum", "alias": "bytes", "field": "total_size_bytes"},
+            ],
+            "group_by": ["_vendor", "_product", "_log_type"],
+            "order_by": [{"field": "events", "direction": "desc"}],
+            "timeframe": {"relative_ms": 86400000},
+            "limit": 50,
+        },
+    },
+    "helpers": {
+        "use": "Prefer a question-shaped helper over planning typed queries yourself when one fits.",
+        "tools": {
+            "resolve_entity": "Host name, user name, or IP address to the other identifiers it is known by.",
+            "firewall_traffic": "Traffic between a source and a destination by action, rule, app, and port.",
+            "firewall_verdict": "Whether traffic to a destination is being blocked, and by which rules and sources.",
+            "entity_activity": "Recent activity for a user, computer, IP address, or cloud resource across datasets.",
+            "dataset_health": "Whether a data source is arriving, its observed fields, and three recent records.",
+            "find_datasets": "Which allowed dataset holds a kind of data, with candidate key fields.",
+        },
+    },
     "raw_xql": {
-        "use": "Only privileged roles may call execute_xql_query. Raw XQL must end with a numeric limit stage, which the server clamps. For other users, map supported intent to query_dataset.",
+        "use": "Only privileged roles may call execute_xql_query. Raw XQL must end with a numeric limit stage, which the server clamps. Comments are removed before the check and before submission, so a limit written inside a comment does not count. For other users, map supported intent to query_dataset.",
         "xql_pattern": "dataset = <allowed_dataset> | filter <field> = \"literal\" | fields <field1>, <field2> | limit 25",
     },
 }
