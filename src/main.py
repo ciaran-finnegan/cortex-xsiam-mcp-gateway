@@ -175,6 +175,8 @@ def main():
         asyncio.run(async_main(get_config().mcp_transport))
     except Exception as e:
         logger.exception(f"Main loop stopped: {e}")
+        # Exit non-zero so supervisors see a failed start, for example an invalid catalogue overlay.
+        raise SystemExit(1) from e
     finally:
         logger.info("Cortex MCP Server has shut down.")
 

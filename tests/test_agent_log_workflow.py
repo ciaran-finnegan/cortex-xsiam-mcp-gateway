@@ -242,3 +242,24 @@ async def test_search_logs_compatibility_path_projects_and_bounds_upstream_rows(
     assert response["returned"] == 2
     assert response["rows"] == [{"event_id": "1"}, {"event_id": "2"}]
     assert "reply" not in response
+
+
+@pytest.mark.asyncio
+async def test_list_log_datasets_policy_fallback_pages_with_next_offset(monkeypatch):
+    from config.config import get_config
+    from entities.exceptions import PAPIConnectionError
+
+    async def failing_get_fetcher(ctx):
+        raise PAPIConnectionError("unreachable")
+
+    monkeypatch.setattr(get_config(), "log_search_dataset_policy", '{"Tier1":["a_raw","b_raw","c_raw"]}')
+    monkeypatch.setattr(logs, "get_fetcher", failing_get_fetcher)
+
+    first = _response(await logs.list_log_datasets(_ctx(), max_datasets=2))
+    second = _response(await logs.list_log_datasets(_ctx(), max_datasets=2, offset=first["next_offset"]))
+
+    assert first["source"] == "dataset_policy_fallback"
+    assert [item["dataset_name"] for item in first["datasets"]] == ["a_raw", "b_raw"]
+    assert first["truncated"] is True and first["next_offset"] == 2
+    assert [item["dataset_name"] for item in second["datasets"]] == ["c_raw"]
+    assert second["truncated"] is False and second["next_offset"] is None

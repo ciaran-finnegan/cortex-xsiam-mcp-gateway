@@ -114,8 +114,8 @@ ENTITY_ROLES: dict[str, tuple[str, ...]] = {
     "email_address": ("email_sender", "email_recipient"),
 }
 
-_MATCH_RE = re.compile(r"^[A-Za-z_*][A-Za-z0-9_.*]*$")
-_TEXT_RE = re.compile(r"^[A-Za-z0-9 .,;:()/&+'_\-]*$")
+_MATCH_RE = re.compile(r"^[A-Za-z_*][A-Za-z0-9_.*]*\Z")
+_TEXT_RE = re.compile(r"^[A-Za-z0-9 .,;:()/&+'_\-]*\Z")
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _STOPWORDS = frozenset(
     "a an and are for from in is it me my of on or our please show the this that to what which with logs log data events".split()
@@ -205,7 +205,7 @@ class CatalogueEntry(BaseModel):
     @field_validator("match")
     @classmethod
     def _validate_match(cls, value: str) -> str:
-        if not _MATCH_RE.match(value):
+        if not _MATCH_RE.fullmatch(value):
             raise ValueError("match must be a dataset name or a glob using only '*'")
         if value.strip("*") == "":
             raise ValueError("match must not be a bare wildcard")
@@ -216,7 +216,7 @@ class CatalogueEntry(BaseModel):
     def _validate_text(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        if not _TEXT_RE.match(value):
+        if not _TEXT_RE.fullmatch(value):
             raise ValueError("catalogue text may contain only letters, digits, spaces, and basic punctuation")
         return value.strip()
 
@@ -233,7 +233,7 @@ class CatalogueEntry(BaseModel):
     @field_validator("time_field")
     @classmethod
     def _validate_time_field(cls, value: str) -> str:
-        if not SAFE_IDENTIFIER_RE.match(value):
+        if not SAFE_IDENTIFIER_RE.fullmatch(value):
             raise ValueError("time_field must be a valid field identifier")
         return value
 
@@ -244,7 +244,7 @@ class CatalogueEntry(BaseModel):
             if not names or len(names) > 8:
                 raise ValueError(f"role {role} must list between 1 and 8 candidate fields")
             for name in names:
-                if not isinstance(name, str) or len(name) > 255 or not SAFE_IDENTIFIER_RE.match(name):
+                if not isinstance(name, str) or len(name) > 255 or not SAFE_IDENTIFIER_RE.fullmatch(name):
                     raise ValueError(f"role {role} has an invalid field identifier")
         return value
 
@@ -467,7 +467,7 @@ def search_catalogue(
     excluded_without_entity_fields = 0
     seen: set[str] = set()
     for name in allowed_dataset_names:
-        if not isinstance(name, str) or len(name) > 255 or not SAFE_IDENTIFIER_RE.match(name) or name in seen:
+        if not isinstance(name, str) or len(name) > 255 or not SAFE_IDENTIFIER_RE.fullmatch(name) or name in seen:
             continue
         seen.add(name)
         resolved = active.resolve(name)

@@ -333,3 +333,46 @@ def test_shipped_default_tool_policy_grants_find_datasets_to_analyst_groups():
     assert "find_datasets" in default_policy["Tier1"]
     assert "find_datasets" in default_policy["SOC"]
     assert "execute_xql_query" not in default_policy["Tier1"]
+
+
+# --- review hardening -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"match": "site_app_raw\n"},
+        {"description": "Site logs.\n"},
+        {"time_field": "_time\n"},
+        {"fields": {"user": ["operator_id\n"]}},
+    ],
+)
+def test_overlay_entries_reject_trailing_newlines(mutation):
+    entry = {"match": "site_app_raw", "domain": "application", "description": "Site application logs."}
+    entry.update(mutation)
+
+    with pytest.raises(dc.CatalogueError):
+        dc.parse_catalogue(json.dumps({"version": 1, "entries": [entry]}), "overlay")
+
+
+def test_safe_identifier_rejects_trailing_newline_everywhere():
+    from usecase.xql_builder import SAFE_IDENTIFIER_RE, _validate_identifier
+
+    assert SAFE_IDENTIFIER_RE.match("xdr_data")
+    assert not SAFE_IDENTIFIER_RE.match("xdr_data\n")
+    with pytest.raises(ValueError):
+        _validate_identifier("xdr_data\n", "dataset")
+    assert dc.search_catalogue(["ok_raw\n", "ok_raw"], catalogue=dc.DatasetCatalogue([]))["total_matches"] == 1
+
+
+def test_main_exits_non_zero_when_startup_fails(monkeypatch):
+    import main as main_module
+
+    async def failing_async_main(transport):
+        raise dc.CatalogueError("Dataset catalogue overlay failed validation")
+
+    monkeypatch.setattr(main_module, "async_main", failing_async_main)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main_module.main()
+    assert exit_info.value.code == 1

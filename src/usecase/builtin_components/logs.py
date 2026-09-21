@@ -250,6 +250,7 @@ async def list_log_datasets(
             max_datasets=max_datasets,
             offset=offset,
         )
+        fallback_offset = max(int(offset), 0)
         return create_response(
             data={
                 "source": "dataset_policy_fallback",
@@ -257,6 +258,8 @@ async def list_log_datasets(
                 "datasets": fallback,
                 "count": len(fallback),
                 "truncated": truncated,
+                "offset": fallback_offset,
+                "next_offset": fallback_offset + len(fallback) if truncated else None,
             }
         )
     except Exception as e:
