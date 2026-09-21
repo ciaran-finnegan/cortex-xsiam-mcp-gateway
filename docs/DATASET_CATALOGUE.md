@@ -21,6 +21,7 @@ principal is allowed to query.
 | `keywords` | Lowercase search tokens. |
 | `time_field` | Timestamp field; defaults to `_time`. |
 | `fields` | Map of field role to candidate field names, for example `source_ip`, `dest_ip`, `user`, `host`, `action`, `rule`, `resource_id`. |
+| `host_filter` | Optional `{field, value}` equality that narrows a mixed dataset to its host records, used by `coverage_gap`. The value is restricted to letters, digits, spaces, dot, dash, and underscore. |
 | `identity_source` | `true` when rows link host, IP address, and user, so `resolve_entity` may read the dataset. Default `false`. |
 | `volume` | `low`, `medium`, `high`, or `very_high`. `high` and above make `find_datasets` return `query_hint: aggregate_first`. |
 

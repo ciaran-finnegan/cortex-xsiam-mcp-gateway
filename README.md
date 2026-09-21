@@ -40,7 +40,7 @@ Implemented in this fork:
 - Agent-oriented dataset guidance, policy-filtered discovery, and XQL-backed field
   discovery.
 - Question-shaped investigation helpers (`resolve_entity`, `firewall_traffic`,
-  `firewall_verdict`, `entity_activity`, `dataset_health`, `threat_intel_lookup`) for orchestrators and users who should not have to pick
+  `firewall_verdict`, `entity_activity`, `dataset_health`, `threat_intel_lookup`, `coverage_gap`) for orchestrators and users who should not have to pick
   datasets or fields.
 - Authored dataset catalogue with `find_datasets` topic and entity search, a
   built-in vendor-standard catalogue, and an operator overlay for site-specific
@@ -168,6 +168,7 @@ production hardening in the roadmap.
 | `firewall_verdict` | Say whether traffic to a destination is being blocked, and by which rules and sources. | Same as `firewall_traffic`. |
 | `dataset_health` | Check whether a dataset is receiving data, list observed fields, and show three recent records. | Tool policy, dataset policy, three bounded queries per dataset, no field values in schema output. |
 | `threat_intel_lookup` | Look up one indicator and its related malware families and threat actors. | Tool policy, per-dataset policy, typed queries only, no free-text threat intel fields returned. |
+| `coverage_gap` | Count and list hosts present in one inventory and absent from another. | Tool policy, policy on both datasets, one server-generated anti-join from validated identifiers, projected and bounded output. |
 | `entity_activity` | Summarize recent activity for one user, computer, IP address, or cloud resource across allowed datasets. | Tool policy, dataset policy per dataset, aggregate-first with capped samples, dataset and query budgets, audited provenance. |
 | `list_log_datasets` | List datasets the current principal is allowed to query, with offset paging. | Tool policy, dataset allowlist policy, capped output. |
 | `discover_log_fields` | Run a bounded XQL sample against one allowed dataset and return observed fields. | Tool policy, dataset allowlist policy, capped output, no sample values. |

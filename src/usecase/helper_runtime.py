@@ -198,6 +198,44 @@ def _output_fields(plan: DatasetQueryPlan) -> tuple[str, ...]:
     return tuple(names)
 
 
+async def run_generated_xql(
+    run: HelperRun,
+    xql: str,
+    datasets: tuple[str, ...],
+    output_fields: tuple[str, ...],
+    limit: int,
+    timeframe: QueryTimeframe,
+    purpose: str,
+) -> list[dict[str, Any]]:
+    """Execute XQL built by a server-side builder that reads more than one dataset.
+
+    The caller must build ``xql`` from validated identifiers and authored catalogue values only.
+    Every dataset the query reads must be listed, and each one is policy checked here, so a
+    generated join can never reach a dataset the principal could not query directly.
+    """
+    if not datasets:
+        raise ValueError("Generated XQL must declare the datasets it reads")
+    for dataset in datasets:
+        ensure_dataset_authorized(run.principal, dataset)
+    run._spend()
+    safe_limit = min(max(int(limit), 1), get_config().dataset_query_max_rows)
+    response = await run_xql_query(run.ctx, xql, safe_limit, timeframe=timeframe.to_api())
+    record: dict[str, Any] = {
+        "dataset": "+".join(datasets),
+        "purpose": purpose,
+        "query_sha256": query_hash(xql),
+        "query_id": response.get("query_id"),
+    }
+    if response.get("error"):
+        record["error"] = True
+        run.queries.append(record)
+        return []
+    rows, _budget = bound_result_rows(extract_xql_rows(response)[:safe_limit], allowed_fields=output_fields)
+    record["returned"] = len(rows)
+    run.queries.append(record)
+    return rows
+
+
 async def run_plan(run: HelperRun, plan: DatasetQueryPlan, purpose: str) -> list[dict[str, Any]]:
     """Execute one typed plan under policy and output budgets. Returns bounded rows; errors return []."""
     ensure_dataset_authorized(run.principal, plan.dataset)

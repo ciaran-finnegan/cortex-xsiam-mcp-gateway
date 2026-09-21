@@ -397,6 +397,7 @@ _XQL_HELP: dict[str, dict[str, Any]] = {
             "entity_activity": "Recent activity for a user, computer, IP address, or cloud resource across datasets.",
             "dataset_health": "Whether a data source is arriving, its observed fields, and three recent records.",
             "threat_intel_lookup": "Verdict for one indicator plus related malware families and threat actors.",
+            "coverage_gap": "Hosts present in one inventory dataset and absent from another.",
             "find_datasets": "Which allowed dataset holds a kind of data, with candidate key fields.",
         },
     },

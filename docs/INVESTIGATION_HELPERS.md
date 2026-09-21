@@ -19,6 +19,7 @@ XQL, or field list.
 | `firewall_verdict` | "Is the firewall dropping traffic to X?" | `destination`, optional `source`, `dest_port`, `window_hours` |
 | `dataset_health` | "Is this data source arriving, and what does a record look like?" | `dataset` or `topic`, `window_hours`, `include_samples` |
 | `threat_intel_lookup` | "What do we know about this IP address, domain, URL, hash, or email address?" | `indicator`, `include_related` |
+| `coverage_gap` | "Which computers in this inventory are missing from that one?" | `reference`, `target`, `window_days`, `max_missing` |
 | `entity_activity` | "Show me logs for this user / computer / IP address / cloud resource today." | `value`, optional `entity_type`, `window_hours`, `domains`, `max_datasets`, `include_samples` |
 
 `source` and `destination` accept an IP address, a host name, or a user name.
@@ -113,6 +114,27 @@ with guidance that this is not evidence it is benign.
 Each of the four datasets is policy checked separately; related objects are
 simply omitted when the principal may not read that dataset.
 
+### `coverage_gap`
+
+Counts and lists hosts that appear in a reference inventory but not in a target
+inventory: directory computers with no endpoint agent, agents with no
+vulnerability scan record, and similar. Find suitable datasets with
+`find_datasets` and `entity_type: host`.
+
+This is the one helper that cannot use a typed plan, because the answer needs
+an anti-join. The server generates exactly one query shape. The caller supplies
+two dataset names and nothing else; every identifier comes from the catalogue
+and is verified against the live schema, and the only literal is the
+catalogue's authored `host_filter` value (for example `type = "computer"` on a
+directory dataset that also holds users). Host names are compared as
+upper-case short names so FQDNs and bare names match.
+
+Both datasets are policy checked before any query, and the generated-query
+runner checks every dataset a query declares. Raw XQL privilege is not
+required, because the caller contributes no query text and cannot reach a
+dataset they could not query directly. The response returns the reference
+total, missing count, coverage percentage, and up to 100 missing host names.
+
 ## Controls
 
 - **Tool policy and audit apply unchanged.** Helpers are ordinary MCP tools.
@@ -121,9 +143,11 @@ simply omitted when the principal may not read that dataset.
 - **Dataset policy applies to every dataset a helper touches**, including
   identity sources. A helper never reads, names, or counts a dataset the
   principal cannot query. An explicit `dataset` argument is policy checked.
-- **Typed compiler only.** Helpers build `DatasetQueryPlan` objects and use the
-  same compiler, executor concurrency limit, and output budgets as
-  `query_dataset`. Entity values are validated and only ever used as escaped
+- **Typed compiler, with one generated exception.** Helpers build
+  `DatasetQueryPlan` objects and use the same compiler, executor concurrency
+  limit, and output budgets as `query_dataset`. `coverage_gap` alone runs a
+  server-generated anti-join built from validated identifiers; its output is
+  projected to the expected columns and bounded the same way. Entity values are validated and only ever used as escaped
   filter literals.
 - **Verified fields only.** Catalogue field names are intersected with the
   dataset's discovered fields before a plan is built. Field names are cached
