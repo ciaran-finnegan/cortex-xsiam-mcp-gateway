@@ -43,6 +43,7 @@ async def get_dataset_query_guidance() -> dict[str, Any]:
             "If the question is about traffic between two things or whether a firewall is blocking something, call firewall_traffic or firewall_verdict.",
             "If the question names a computer, user, or IP address and you need its other identifiers, call resolve_entity. Never guess an IP address.",
             "If the question asks what a user, computer, IP address, or cloud resource has been doing, call entity_activity.",
+            "If the question is whether a data source is arriving or what its records look like, call dataset_health. Never dump a dataset to find out.",
             "Use the workflow below only when no helper fits.",
         ],
         "workflow": [

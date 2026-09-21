@@ -121,6 +121,7 @@ export TOOL_ACCESS_POLICY='{
     "firewall_traffic",
     "firewall_verdict",
     "entity_activity",
+    "dataset_health",
     "list_log_datasets",
     "discover_log_fields",
     "query_dataset",
