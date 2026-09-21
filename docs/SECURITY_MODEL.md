@@ -119,7 +119,8 @@ that check and before submission. XSIAM ignores comments, so a check on the raw
 text could be satisfied by a limit the engine never runs.
 
 Question-shaped helpers (`resolve_entity`, `firewall_traffic`,
-`firewall_verdict`, `entity_activity`, `dataset_health`) choose datasets
+`firewall_verdict`, `entity_activity`, `dataset_health`,
+`threat_intel_lookup`) choose datasets
 server-side. They use the same compiler, executor, dataset policy, and output
 budgets, add a per-call query budget, and report every dataset and query hash
 in the audit event. See [Investigation Helpers](INVESTIGATION_HELPERS.md).
