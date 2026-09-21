@@ -366,13 +366,13 @@ def test_safe_identifier_rejects_trailing_newline_everywhere():
 
 
 def test_main_exits_non_zero_when_startup_fails(monkeypatch):
-    import main as main_module
+    from main import main as run_main
 
     async def failing_async_main(transport):
         raise dc.CatalogueError("Dataset catalogue overlay failed validation")
 
-    monkeypatch.setattr(main_module, "async_main", failing_async_main)
+    monkeypatch.setattr("main.async_main", failing_async_main)
 
     with pytest.raises(SystemExit) as exit_info:
-        main_module.main()
+        run_main()
     assert exit_info.value.code == 1
