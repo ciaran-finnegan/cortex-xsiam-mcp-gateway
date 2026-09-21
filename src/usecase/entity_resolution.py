@@ -11,6 +11,7 @@ filter literals, and IP addresses are re-validated before reuse.
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import re
 from dataclasses import dataclass, field
@@ -27,15 +28,18 @@ from usecase.helper_runtime import (
     window_timeframe,
 )
 
-EntityKind = Literal["host", "ip", "user"]
+EntityKind = Literal["host", "ip", "user", "cloud_resource"]
 
 MAX_ENTITY_CHARS = 253
+MAX_RESOURCE_CHARS = 512
 MIN_PARTIAL_TERM_CHARS = 3
 MAX_IDENTITY_SOURCES = 4
 MAX_LINKS_PER_SOURCE = 10
 MAX_VALUES_PER_KIND = 10
 
 _ENTITY_VALUE_RE = re.compile(r"^[\w.\-@\\:$' ]+\Z")
+# Cloud resource identifiers (ARNs, Azure resource IDs, GCP self links) need '/', ':', '=', '+', and ','.
+_RESOURCE_VALUE_RE = re.compile(r"^[\w.\-@:/=+, ]+\Z")
 
 
 @dataclass(frozen=True)
@@ -101,6 +105,12 @@ def parse_entity(value: str, kind: str | None = None) -> EntityTerm:
     if not isinstance(value, str):
         raise ValueError("Entity value must be text")
     cleaned = value.strip()
+    if kind == "cloud_resource":
+        if len(cleaned) < MIN_PARTIAL_TERM_CHARS or len(cleaned) > MAX_RESOURCE_CHARS:
+            raise ValueError(f"A cloud resource needs between {MIN_PARTIAL_TERM_CHARS} and {MAX_RESOURCE_CHARS} characters")
+        if not _RESOURCE_VALUE_RE.fullmatch(cleaned):
+            raise ValueError("Cloud resource value contains unsupported characters")
+        return EntityTerm("cloud_resource", cleaned, cleaned, (cleaned.lower(),))
     if not cleaned or len(cleaned) > MAX_ENTITY_CHARS:
         raise ValueError(f"Entity value must be between 1 and {MAX_ENTITY_CHARS} characters")
     if "/" in cleaned:
@@ -144,6 +154,12 @@ def match_quality(entity: EntityTerm, candidate: Any) -> str | None:
         if entity.kind == "ip":
             if lowered == entity.term.lower():
                 return "exact"
+            continue
+        if entity.kind == "cloud_resource":
+            if lowered == entity.term.lower():
+                return "exact"
+            if entity.term.lower() in lowered:
+                best = "partial"
             continue
         bare = lowered.split("\\")[-1].split("@")[0] if entity.kind == "user" else lowered.split(".")[0]
         if lowered in entity.exact_forms or bare in entity.exact_forms:
@@ -214,30 +230,39 @@ def build_identity_plan(
     return plan, output
 
 
+async def _lookup_source(
+    run: HelperRun, resolved: ResolvedDataset, entity: EntityTerm, window_hours: int
+) -> tuple[str, list[dict[str, Any]]] | None:
+    roles = await verified_roles(run, resolved)
+    discovered = await discovered_field_names(run, resolved.dataset_name)
+    built = build_identity_plan(resolved, roles, entity, window_hours, discovered)
+    if built is None:
+        return None
+    plan, output = built
+    links: list[dict[str, Any]] = []
+    for row in await run_plan(run, plan, "identity_lookup"):
+        # None means the filter matched a secondary candidate field that is not projected.
+        quality = match_quality(entity, row.get(output.get(entity.kind, ""))) or "partial"
+        link: dict[str, Any] = {"dataset": resolved.dataset_name, "match": quality}
+        for kind, name in output.items():
+            link[kind] = row.get(name)
+        for extra in ("events", "last_seen"):
+            if extra in row:
+                link[extra] = row[extra]
+        links.append(link)
+    return resolved.dataset_name, links
+
+
 async def resolve(run: HelperRun, entity: EntityTerm, window_hours: int) -> Resolution:
-    """Look the entity up in every allowed identity source and merge what they say."""
+    """Look the entity up in every allowed identity source concurrently and merge what they say."""
     resolution = Resolution(entity)
-    sources = await select_datasets(run, identity_sources_only=True)
-    for resolved in sources[:MAX_IDENTITY_SOURCES]:
-        roles = await verified_roles(run, resolved)
-        discovered = await discovered_field_names(run, resolved.dataset_name)
-        built = build_identity_plan(resolved, roles, entity, window_hours, discovered)
-        if built is None:
+    sources = (await select_datasets(run, identity_sources_only=True))[:MAX_IDENTITY_SOURCES]
+    results = await asyncio.gather(*(_lookup_source(run, source, entity, window_hours) for source in sources))
+    for result in results:
+        if result is None:
             continue
-        plan, output = built
-        rows = await run_plan(run, plan, "identity_lookup")
-        resolution.sources_used.append(resolved.dataset_name)
-        for row in rows:
-            quality = match_quality(entity, row.get(output.get(entity.kind, "")))
-            if quality is None:
-                # The filter matched a secondary candidate field that is not projected.
-                quality = "partial"
-            link: dict[str, Any] = {"dataset": resolved.dataset_name, "match": quality}
-            for kind, name in output.items():
-                link[kind] = row.get(name)
-            for extra in ("events", "last_seen"):
-                if extra in row:
-                    link[extra] = row[extra]
-            resolution.links.append(link)
+        dataset_name, links = result
+        resolution.sources_used.append(dataset_name)
+        resolution.links.extend(links)
     resolution.links.sort(key=lambda link: (link["match"] != "exact", -(link.get("last_seen") or 0)))
     return resolution

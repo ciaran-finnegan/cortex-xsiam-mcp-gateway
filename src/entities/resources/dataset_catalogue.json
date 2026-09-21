@@ -640,9 +640,6 @@
         "dest_zone": [
           "to_zone"
         ],
-        "host": [
-          "log_source_name"
-        ],
         "bytes": [
           "bytes_total",
           "bytes_sent",
@@ -696,9 +693,6 @@
         ],
         "dest_zone": [
           "to_zone"
-        ],
-        "host": [
-          "log_source_name"
         ],
         "name": [
           "threat_name"
@@ -756,9 +750,6 @@
         "dest_zone": [
           "to_zone"
         ],
-        "host": [
-          "log_source_name"
-        ],
         "url_domain": [
           "url_domain",
           "uri"
@@ -811,9 +802,6 @@
         ],
         "dest_zone": [
           "to_zone"
-        ],
-        "host": [
-          "log_source_name"
         ],
         "file_hash": [
           "file_sha_256"

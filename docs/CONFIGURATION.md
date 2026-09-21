@@ -120,6 +120,7 @@ export TOOL_ACCESS_POLICY='{
     "resolve_entity",
     "firewall_traffic",
     "firewall_verdict",
+    "entity_activity",
     "list_log_datasets",
     "discover_log_fields",
     "query_dataset",

@@ -17,6 +17,7 @@ XQL, or field list.
 | `resolve_entity` | "What is this computer's IP address?", "Who uses this address?", "Which machines does this user use?" | `value`, optional `entity_type` (`host`, `ip`, `user`), `window_hours` |
 | `firewall_traffic` | "Show me firewall traffic between X and Y." | `source`, `destination`, optional `dest_port`, `window_hours`, `include_samples` |
 | `firewall_verdict` | "Is the firewall dropping traffic to X?" | `destination`, optional `source`, `dest_port`, `window_hours` |
+| `entity_activity` | "Show me logs for this user / computer / IP address / cloud resource today." | `value`, optional `entity_type`, `window_hours`, `domains`, `max_datasets`, `include_samples` |
 
 `source` and `destination` accept an IP address, a host name, or a user name.
 Host names are resolved to IP addresses first, because firewall logs are keyed
@@ -59,6 +60,27 @@ agent can explain the verdict.
 The default window is 24 hours and is clamped to
 `DATASET_QUERY_MAX_TIMEFRAME_MS`.
 
+### `entity_activity`
+
+Fans out across catalogued datasets the principal may query that have a field
+for the entity kind, in an order that suits the kind: identity and VPN data
+first for a user, endpoint telemetry first for a computer, network data first
+for an address, cloud audit first for a cloud resource. Datasets with no
+catalogue record are skipped, because nothing says which field to match.
+
+For each dataset it runs one bounded aggregate: event count and last-seen
+time, broken down by the dataset's operation, action, event type, or name
+field, top five values. The two busiest datasets also return up to five recent
+records. A computer is resolved first, then matched by exact host name where a
+dataset has a host field and by resolved address where it has address fields.
+A cloud resource must be declared with `entity_type: cloud_resource`, since
+its identifier may contain `/` and `:`.
+
+The response separates `datasets_with_activity`, `datasets_without_activity`,
+and a count of `datasets_not_checked`, so the agent can say what was and was
+not looked at. It checks six datasets by default and at most eight; per-dataset
+work runs concurrently under the executor's concurrency limit.
+
 ## Controls
 
 - **Tool policy and audit apply unchanged.** Helpers are ordinary MCP tools.
@@ -74,8 +96,9 @@ The default window is 24 hours and is clamped to
 - **Verified fields only.** Catalogue field names are intersected with the
   dataset's discovered fields before a plan is built. Field names are cached
   for an hour; values are never cached.
-- **Query budget.** One helper call may issue at most 20 XQL queries, field
-  discovery included.
+- **Query budget.** One helper call may issue at most 30 XQL queries, field
+  discovery included. Slots are reserved before each query, so concurrent
+  per-dataset work cannot overshoot it.
 - **Provenance in the audit event.** Because the server chooses datasets, each
   response carries `provenance.queries` with dataset, purpose, query hash,
   query id, and row count. The audit event records the same list as
