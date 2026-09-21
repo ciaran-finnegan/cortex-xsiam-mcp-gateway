@@ -48,6 +48,7 @@ async def get_dataset_query_guidance() -> dict[str, Any]:
             "If the question names a computer, user, or IP address and you need its other identifiers, call resolve_entity. Never guess an IP address.",
             "If the question asks what a user, computer, IP address, or cloud resource has been doing, call entity_activity.",
             "If the question is whether a data source is arriving or what its records look like, call dataset_health. Never dump a dataset to find out.",
+            "If the question is what is known about an IP address, domain, URL, hash, or email address as a threat, call threat_intel_lookup.",
             "Use the workflow below only when no helper fits.",
         ],
         "workflow": [
@@ -395,6 +396,7 @@ _XQL_HELP: dict[str, dict[str, Any]] = {
             "firewall_verdict": "Whether traffic to a destination is being blocked, and by which rules and sources.",
             "entity_activity": "Recent activity for a user, computer, IP address, or cloud resource across datasets.",
             "dataset_health": "Whether a data source is arriving, its observed fields, and three recent records.",
+            "threat_intel_lookup": "Verdict for one indicator plus related malware families and threat actors.",
             "find_datasets": "Which allowed dataset holds a kind of data, with candidate key fields.",
         },
     },

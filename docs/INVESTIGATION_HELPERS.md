@@ -18,6 +18,7 @@ XQL, or field list.
 | `firewall_traffic` | "Show me firewall traffic between X and Y." | `source`, `destination`, optional `dest_port`, `window_hours`, `include_samples` |
 | `firewall_verdict` | "Is the firewall dropping traffic to X?" | `destination`, optional `source`, `dest_port`, `window_hours` |
 | `dataset_health` | "Is this data source arriving, and what does a record look like?" | `dataset` or `topic`, `window_hours`, `include_samples` |
+| `threat_intel_lookup` | "What do we know about this IP address, domain, URL, hash, or email address?" | `indicator`, `include_related` |
 | `entity_activity` | "Show me logs for this user / computer / IP address / cloud resource today." | `value`, optional `entity_type`, `window_hours`, `domains`, `max_datasets`, `include_samples` |
 
 `source` and `destination` accept an IP address, a host name, or a user name.
@@ -95,6 +96,22 @@ by day, and three recent records with up to eight fields. `status` is
 Give an exact `dataset`, or a `topic` to check the three best catalogue
 matches. It works for datasets with no catalogue record, since it only needs
 the dataset's own timestamp field.
+
+### `threat_intel_lookup`
+
+Looks one indicator up in the Cortex threat intelligence datasets and walks to
+the malware families it is associated with and the threat actors linked to
+those families. Analysts usually write this as a three-way join; the helper
+uses sequential typed queries instead, so no raw XQL or join is involved.
+
+Threat intelligence is third-party text, so only short identifying fields are
+returned (names, aliases, type, verdict, origin, motivation, dates). Free-text
+descriptions are never requested, and association names are truncated. An
+indicator that is not found is reported as unknown to threat intelligence,
+with guidance that this is not evidence it is benign.
+
+Each of the four datasets is policy checked separately; related objects are
+simply omitted when the principal may not read that dataset.
 
 ## Controls
 

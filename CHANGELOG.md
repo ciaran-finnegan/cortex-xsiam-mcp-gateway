@@ -4,6 +4,10 @@ This project follows a lightweight changelog format until stable releases begin.
 
 ## Unreleased
 
+- Added `threat_intel_lookup`, which resolves one indicator to its verdict and
+  related malware families and threat actors using sequential typed queries,
+  without returning free-text threat intelligence fields.
+
 - Security: `execute_xql_query` now strips `//` and `/* */` comments (outside
   string literals) before enforcing the terminal `| limit N`. Previously a
   limit written only inside a comment satisfied the check while XSIAM ran the
