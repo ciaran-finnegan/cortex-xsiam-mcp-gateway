@@ -4,6 +4,16 @@ This project follows a lightweight changelog format until stable releases begin.
 
 ## Unreleased
 
+- Security: `execute_xql_query` now strips `//` and `/* */` comments (outside
+  string literals) before enforcing the terminal `| limit N`. Previously a
+  limit written only inside a comment satisfied the check while XSIAM ran the
+  query with no in-query limit.
+- Added `value_type: enum` for typed filters so enum fields such as endpoint
+  `event_type` can be filtered; member names are validated as bare uppercase
+  identifiers.
+- Added `get_xql_help` topics `enum_fields`, `field_types`, `ingestion_health`,
+  and `helpers`.
+
 - Added `dataset_health`, a bounded arrival, schema, and sample check for one
   data source, as the alternative to unfiltered dataset dumps.
 

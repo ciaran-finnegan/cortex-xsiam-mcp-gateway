@@ -13,6 +13,16 @@ def _validate_identifier(value: str, label: str) -> str:
     return value
 
 
+ENUM_VALUE_RE = re.compile(r"^[A-Z][A-Z0-9_]*\Z")
+
+
+def format_xql_enum(value) -> str:
+    """Format an XQL enum member such as ENUM.PROCESS from a validated bare name."""
+    if not isinstance(value, str) or len(value) > 128 or not ENUM_VALUE_RE.match(value):
+        raise ValueError("Enum values must be uppercase names such as PROCESS or NETWORK")
+    return f"ENUM.{value}"
+
+
 def _format_xql_value(value) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -68,9 +78,50 @@ def validate_identifier(value: str, label: str) -> str:
     return _validate_identifier(value, label)
 
 
+def strip_xql_comments(query: str) -> str:
+    """Remove ``//`` line comments and ``/* */`` block comments that sit outside string literals.
+
+    XSIAM ignores comments, so any check made on the raw text can be satisfied by text the
+    engine never runs. Policy checks must look at the query with comments removed.
+    Double-quoted and triple-double-quoted strings are preserved verbatim.
+    """
+    out: list[str] = []
+    index, length = 0, len(query)
+    while index < length:
+        if query.startswith('"""', index):
+            end = query.find('"""', index + 3)
+            end = length if end == -1 else end + 3
+            out.append(query[index:end])
+            index = end
+        elif query[index] == '"':
+            end = index + 1
+            while end < length and query[end] != '"':
+                end += 2 if query[end] == "\\" else 1
+            end = min(end + 1, length)
+            out.append(query[index:end])
+            index = end
+        elif query.startswith("//", index):
+            end = query.find("\n", index)
+            index = length if end == -1 else end
+        elif query.startswith("/*", index):
+            end = query.find("*/", index + 2)
+            if end == -1:
+                raise ValueError("Raw XQL has an unterminated block comment")
+            out.append(" ")
+            index = end + 2
+        else:
+            out.append(query[index])
+            index += 1
+    return "".join(out)
+
+
 def enforce_terminal_xql_limit(query: str, maximum: int) -> str:
-    """Require and clamp a terminal numeric limit on privileged raw XQL."""
-    normalized = query.strip()
+    """Require and clamp a terminal numeric limit on privileged raw XQL.
+
+    Comments are stripped first. Otherwise a ``| limit N`` written inside a comment would
+    satisfy this check while the engine runs the query with no limit at all.
+    """
+    normalized = strip_xql_comments(query).strip()
     match = TERMINAL_LIMIT_RE.search(normalized)
     if not match:
         raise ValueError("Raw XQL must end with a numeric '| limit N' stage")
