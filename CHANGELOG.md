@@ -4,6 +4,14 @@ This project follows a lightweight changelog format until stable releases begin.
 
 ## Unreleased
 
+- Added `entity_activity`, which summarizes recent activity for one user,
+  computer, IP address, or cloud resource across allowed catalogued datasets
+  with one bounded aggregate per dataset and capped samples. Identity sources
+  are now read concurrently, and the helper query budget reserves slots before
+  each query so concurrent work cannot exceed it.
+- Corrected the built-in catalogue: in firewall session datasets the log source
+  name is the reporting firewall, not the subject host.
+
 - Added question-shaped investigation helpers: `resolve_entity` links a host,
   user, or IP address to the others it is known by; `firewall_traffic` and
   `firewall_verdict` answer traffic and blocking questions with aggregate-first

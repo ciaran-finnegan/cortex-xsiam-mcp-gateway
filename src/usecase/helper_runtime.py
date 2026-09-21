@@ -68,7 +68,7 @@ DEFAULT_WINDOW_HOURS = 24
 FIELD_CACHE_TTL_SECONDS = 3600
 FIELD_CACHE_MAX_ENTRIES = 256
 FIELD_DISCOVERY_SAMPLE = 5
-MAX_HELPER_QUERIES = 20
+MAX_HELPER_QUERIES = 30
 
 _field_cache: dict[str, tuple[float, frozenset[str]]] = {}
 
@@ -84,13 +84,16 @@ class HelperRun:
     ctx: Context
     principal: MCPContext
     queries: list[dict[str, Any]] = field(default_factory=list)
+    spent: int = 0
 
     def provenance(self) -> dict[str, Any]:
         return {"queries": list(self.queries), "content_trust": "untrusted_data"}
 
     def _spend(self) -> None:
-        if len(self.queries) >= MAX_HELPER_QUERIES:
+        # Reserve the slot before awaiting so concurrent helper tasks cannot overshoot the budget.
+        if self.spent >= MAX_HELPER_QUERIES:
             raise ValueError(f"Helper query budget of {MAX_HELPER_QUERIES} exceeded; narrow the request")
+        self.spent += 1
 
 
 def window_timeframe(window_hours: int) -> QueryTimeframe:
