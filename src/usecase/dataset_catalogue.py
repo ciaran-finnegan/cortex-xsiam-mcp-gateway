@@ -201,6 +201,10 @@ class CatalogueEntry(BaseModel):
     time_field: str = Field(default="_time", max_length=255)
     fields: dict[FieldRole, list[str]] = Field(default_factory=dict)
     volume: VolumeClass | None = None
+    identity_source: bool = Field(
+        default=False,
+        description="True when rows link a host, IP address, and user, so resolve_entity may use the dataset.",
+    )
 
     @field_validator("match")
     @classmethod
@@ -287,6 +291,7 @@ class ResolvedDataset:
             "time_field": entry.time_field,
             "fields": {role: list(names) for role, names in entry.fields.items()},
             "volume": entry.volume,
+            "identity_source": entry.identity_source,
             "query_hint": _query_hint(entry),
             "catalogue_source": self.source,
             "fields_verified": False,

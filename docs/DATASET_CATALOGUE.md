@@ -21,6 +21,7 @@ principal is allowed to query.
 | `keywords` | Lowercase search tokens. |
 | `time_field` | Timestamp field; defaults to `_time`. |
 | `fields` | Map of field role to candidate field names, for example `source_ip`, `dest_ip`, `user`, `host`, `action`, `rule`, `resource_id`. |
+| `identity_source` | `true` when rows link host, IP address, and user, so `resolve_entity` may read the dataset. Default `false`. |
 | `volume` | `low`, `medium`, `high`, or `very_high`. `high` and above make `find_datasets` return `query_hint: aggregate_first`. |
 
 ## Three Layers

@@ -39,6 +39,9 @@ Implemented in this fork:
 - XQL execution and result polling.
 - Agent-oriented dataset guidance, policy-filtered discovery, and XQL-backed field
   discovery.
+- Question-shaped investigation helpers (`resolve_entity`, `firewall_traffic`,
+  `firewall_verdict`) for orchestrators and users who should not have to pick
+  datasets or fields.
 - Authored dataset catalogue with `find_datasets` topic and entity search, a
   built-in vendor-standard catalogue, and an operator overlay for site-specific
   datasets.
@@ -160,6 +163,9 @@ production hardening in the roadmap.
 | --- | --- | --- |
 | `get_dataset_query_guidance` | Return compact instructions for LLM agents querying XSIAM datasets. | Tool policy and audit. |
 | `find_datasets` | Search the authored dataset catalogue by topic, domain, or entity type and return candidate key fields. | Tool policy, dataset policy applied before catalogue lookup, authored text only, capped and paged output. |
+| `resolve_entity` | Link one host name, user name, or IP address to the others it is known by. | Tool policy, dataset policy on every identity source, verified fields, untrusted-data labelling. |
+| `firewall_traffic` | Summarize firewall sessions between a source and destination by action, rule, app, and port. | Tool policy, dataset policy, aggregate-first typed plans, query budget, audited provenance. |
+| `firewall_verdict` | Say whether traffic to a destination is being blocked, and by which rules and sources. | Same as `firewall_traffic`. |
 | `list_log_datasets` | List datasets the current principal is allowed to query, with offset paging. | Tool policy, dataset allowlist policy, capped output. |
 | `discover_log_fields` | Run a bounded XQL sample against one allowed dataset and return observed fields. | Tool policy, dataset allowlist policy, capped output, no sample values. |
 | `query_dataset` | Execute a typed row or aggregate plan for one explicit dataset. | Tool policy, dataset policy, compiler allowlists, output budgets. |
@@ -197,6 +203,9 @@ This keeps plain-English reasoning in Claude Code, Codex, or another MCP client
 agent while keeping the MCP server focused on policy, compact discovery, XQL
 execution, and audit logging. The server does not accept natural-language log
 queries.
+
+When a question matches an [investigation helper](docs/INVESTIGATION_HELPERS.md),
+the agent calls the helper instead of planning these steps itself.
 
 See [Agent Log Search](docs/AGENT_LOG_SEARCH.md) and
 [Claude Code/Codex Log Search Testing](docs/CLAUDE_CODE_LOG_SEARCH_TESTING.md).

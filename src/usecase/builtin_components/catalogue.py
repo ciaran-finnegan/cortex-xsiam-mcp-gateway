@@ -4,14 +4,6 @@ from typing import Annotated, Any
 from fastmcp import Context, FastMCP
 from pydantic import Field
 
-from entities.exceptions import (
-    PAPIAuthenticationError,
-    PAPIClientError,
-    PAPIClientRequestError,
-    PAPIConnectionError,
-    PAPIResponseError,
-    PAPIServerError,
-)
 from usecase.base_module import BaseModule
 from usecase.dataset_catalogue import (
     DEFAULT_FIND_RESULTS,
@@ -23,47 +15,16 @@ from usecase.dataset_catalogue import (
     get_catalogue,
     search_catalogue,
 )
-from usecase.fetcher import get_fetcher
+from usecase.helper_runtime import allowed_dataset_names
 from usecase.identity import resolve_mcp_context
-from usecase.log_policy import ALL_DATASETS, authorize_dataset
-from usecase.xql_discovery import parse_dataset_reply
 
 logger = logging.getLogger(__name__)
-
-_PAPI_ERRORS = (
-    PAPIConnectionError,
-    PAPIAuthenticationError,
-    PAPIServerError,
-    PAPIClientRequestError,
-    PAPIResponseError,
-    PAPIClientError,
-)
 
 _GUIDANCE = (
     "Pick one dataset, then call discover_log_fields to confirm the candidate field names before query_dataset. "
     "Catalogue field names are candidates, not guarantees. When query_hint is aggregate_first, answer with an "
     "aggregate and a bounded timeframe before requesting rows."
 )
-
-
-async def _allowed_dataset_names(ctx: Context, principal) -> tuple[list[str], str, str | None]:
-    """Return dataset names the principal may query, the source used, and an optional warning.
-
-    Dataset policy is applied here, before any catalogue lookup, so catalogue text is never
-    returned for a dataset the principal cannot query.
-    """
-    try:
-        fetcher = await get_fetcher(ctx)
-        response_data = await fetcher.send_request("/xql/get_datasets", data={"request_data": {}})
-        names = [record["dataset_name"] for record in parse_dataset_reply(response_data)]
-        source, warning = "xsiam_api", None
-    except (*_PAPI_ERRORS, ValueError) as e:
-        logger.warning("find_datasets could not list XSIAM datasets; using policy names: %s", type(e).__name__)
-        decision = authorize_dataset(principal, ALL_DATASETS)
-        names = [name for name in decision.allowed_datasets if name != ALL_DATASETS]
-        source = "dataset_policy_fallback"
-        warning = "XSIAM dataset listing is unavailable; results are limited to dataset names written in policy."
-    return [name for name in names if authorize_dataset(principal, name).allowed], source, warning
 
 
 async def find_datasets(
@@ -87,7 +48,7 @@ async def find_datasets(
     try:
         principal = resolve_mcp_context(ctx)
         catalogue = get_catalogue()
-        allowed_names, source, warning = await _allowed_dataset_names(ctx, principal)
+        allowed_names, source, warning = await allowed_dataset_names(ctx, principal)
         result = search_catalogue(
             allowed_names,
             topic=topic,
