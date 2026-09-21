@@ -187,6 +187,29 @@ class CatalogueError(ValueError):
     """Raised when a catalogue file is missing, oversized, or fails validation."""
 
 
+class HostFilter(BaseModel):
+    """Authored equality filter that narrows a mixed dataset to its host records."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    field: str = Field(max_length=255)
+    value: str = Field(min_length=1, max_length=80)
+
+    @field_validator("field")
+    @classmethod
+    def _validate_field(cls, value: str) -> str:
+        if not SAFE_IDENTIFIER_RE.fullmatch(value):
+            raise ValueError("host_filter.field must be a valid field identifier")
+        return value
+
+    @field_validator("value")
+    @classmethod
+    def _validate_value(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9_.\- ]+", value):
+            raise ValueError("host_filter.value may contain only letters, digits, spaces, dot, dash, and underscore")
+        return value
+
+
 class CatalogueEntry(BaseModel):
     """One authored catalogue record. ``match`` is an exact dataset name or a ``*`` glob."""
 
@@ -201,6 +224,10 @@ class CatalogueEntry(BaseModel):
     time_field: str = Field(default="_time", max_length=255)
     fields: dict[FieldRole, list[str]] = Field(default_factory=dict)
     volume: VolumeClass | None = None
+    host_filter: HostFilter | None = Field(
+        default=None,
+        description="Set when only some rows describe hosts, for example a directory dataset that also holds users.",
+    )
     identity_source: bool = Field(
         default=False,
         description="True when rows link a host, IP address, and user, so resolve_entity may use the dataset.",

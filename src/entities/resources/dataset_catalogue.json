@@ -590,7 +590,11 @@
           "email"
         ]
       },
-      "volume": "medium"
+      "volume": "medium",
+      "host_filter": {
+        "field": "type",
+        "value": "computer"
+      }
     },
     {
       "match": "panw_ngfw_traffic_raw",

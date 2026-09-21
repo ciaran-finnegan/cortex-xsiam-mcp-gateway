@@ -123,6 +123,7 @@ export TOOL_ACCESS_POLICY='{
     "entity_activity",
     "dataset_health",
     "threat_intel_lookup",
+    "coverage_gap",
     "list_log_datasets",
     "discover_log_fields",
     "query_dataset",

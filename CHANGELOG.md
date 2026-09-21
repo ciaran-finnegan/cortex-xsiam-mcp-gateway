@@ -4,6 +4,11 @@ This project follows a lightweight changelog format until stable releases begin.
 
 ## Unreleased
 
+- Added `coverage_gap`, which counts and lists hosts present in a reference
+  inventory and absent from a target inventory using one server-generated
+  anti-join built only from validated catalogue identifiers, with both datasets
+  policy checked. Added the authored `host_filter` catalogue attribute.
+
 - Added `threat_intel_lookup`, which resolves one indicator to its verdict and
   related malware families and threat actors using sequential typed queries,
   without returning free-text threat intelligence fields.
