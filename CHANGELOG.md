@@ -4,6 +4,16 @@ This project follows a lightweight changelog format until stable releases begin.
 
 ## Unreleased
 
+- Added an authored dataset catalogue and the `find_datasets` tool so agents can
+  select datasets by topic, domain, or entity type instead of guessing from
+  names. Dataset policy is applied before catalogue lookup, catalogue text is
+  authored content only, and field names are candidates that helpers verify
+  against discovered fields.
+- Added `DATASET_CATALOGUE_OVERLAY_PATH` for operator-authored, out-of-repo
+  descriptions of site-specific datasets; an invalid overlay fails startup.
+- Added `offset` paging and `next_offset` to `list_log_datasets` so tenants with
+  more datasets than the response cap can be listed completely.
+
 ## 0.2.0-alpha.1 - 2026-07-10
 
 - Added `query_dataset` with typed row projection, filters, aggregates, top-N,

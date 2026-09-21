@@ -163,6 +163,8 @@ async def start_server(args: argparse.Namespace):
         logger.error("\n[Python] Server interrupted by user.")
     except Exception as error:
         logger.error(f"\n[Shell] Failed to execute the MCP server as expected: {error}")
+        # Exit non-zero so supervisors see a failed start, for example an invalid catalogue overlay.
+        sys.exit(1)
 
 
 # --- Update Folder Helper Functions ---

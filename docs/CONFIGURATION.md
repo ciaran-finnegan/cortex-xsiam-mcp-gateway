@@ -44,6 +44,21 @@ export LOG_SEARCH_DEFAULT_GROUPS="Security"
 
 Do not use default groups as a production authorization mechanism.
 
+## Dataset Catalogue
+
+`find_datasets` searches an authored catalogue that describes what each dataset
+holds and which fields identify a host, user, IP address, or cloud resource.
+The gateway ships a built-in catalogue of vendor-standard Cortex and marketplace
+datasets. Describe site-specific datasets in an overlay file that lives outside
+this repository.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DATASET_CATALOGUE_OVERLAY_PATH` | empty | Path to an operator-authored overlay JSON file. Overlay entries win over built-in entries. An unreadable, oversized, or invalid overlay stops the server at startup. |
+
+See [Dataset Catalogue](DATASET_CATALOGUE.md) for the file format and security
+properties.
+
 ## Raw XQL Privilege
 
 `execute_xql_query` is restricted to groups listed in
@@ -101,6 +116,7 @@ export TOOL_ACCESS_POLICY='{
     "get_log_search_guidance",
     "get_dataset_query_guidance",
     "get_xql_help",
+    "find_datasets",
     "list_log_datasets",
     "discover_log_fields",
     "query_dataset",
@@ -192,7 +208,7 @@ MCP_IDENTITY_AUTH_MODE=entra
 ENTRA_TENANT_ID=replace-with-tenant-id
 ENTRA_AUDIENCE=api://your-mcp-app-registration
 LOG_SEARCH_DATASET_POLICY={"Security":["*"],"Tier1":["xdr_data"]}
-TOOL_ACCESS_POLICY={"Security":["*"],"Tier1":["get_dataset_query_guidance","list_log_datasets","discover_log_fields","query_dataset","continue_dataset_query"]}
+TOOL_ACCESS_POLICY={"Security":["*"],"Tier1":["get_dataset_query_guidance","find_datasets","list_log_datasets","discover_log_fields","query_dataset","continue_dataset_query"]}
 RAW_XQL_PRIVILEGED_GROUPS=Security,Admin
 DATASET_QUERY_CURSOR_SECRET=replace-with-a-long-random-secret
 AUDIT_LOG_ENABLED=true

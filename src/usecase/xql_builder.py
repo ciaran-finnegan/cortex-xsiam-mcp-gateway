@@ -2,7 +2,8 @@ import re
 
 MAX_XQL_RESULT_LIMIT = 1000
 DEFAULT_LOG_FIELDS = ["event_id", "event_type", "event_sub_type"]
-SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
+# \Z, not $: a $ anchor also matches before a trailing newline, which would let "name\n" through.
+SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*\Z")
 TERMINAL_LIMIT_RE = re.compile(r"\|\s*limit\s+([0-9]+)\s*$", re.IGNORECASE)
 
 

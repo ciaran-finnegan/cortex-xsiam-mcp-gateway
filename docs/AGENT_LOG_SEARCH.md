@@ -23,7 +23,7 @@ sequenceDiagram
   User->>Agent: "Average transaction amount by region"
   Agent->>MCP: "get_dataset_query_guidance"
   MCP-->>Agent: "workflow and safety rules"
-  Agent->>MCP: "list_log_datasets(name_contains='transaction')"
+  Agent->>MCP: "find_datasets(topic='card transactions')"
   MCP->>XSIAM: "get_datasets"
   MCP-->>Agent: "policy-allowed candidates"
   Agent->>MCP: "discover_log_fields(dataset='sales_transactions')"
@@ -37,7 +37,9 @@ sequenceDiagram
 
 1. Read `get_dataset_query_guidance` once per workflow when tool use is not
    already clear.
-2. Call `list_log_datasets`, narrowing by name where possible.
+2. Call `find_datasets` with the user's topic, and `entity_type` when the
+   question names a host, user, IP address, or cloud resource. Use
+   `list_log_datasets` when the user names a dataset.
 3. Call `discover_log_fields` for one allowed dataset and optionally filter
    field names by the user's concepts.
 4. Choose rows mode only when the user needs examples or record details.
@@ -53,7 +55,8 @@ sequenceDiagram
 | Tool | Use | Data minimization |
 | --- | --- | --- |
 | `get_dataset_query_guidance` | Compact workflow rules. | No tenant data. |
-| `list_log_datasets` | Discover datasets allowed for the verified principal. | Capped, filterable metadata. |
+| `find_datasets` | Search the authored dataset catalogue by topic, domain, or entity type. | Policy applied before lookup; authored text only; capped and paged. See [Dataset Catalogue](DATASET_CATALOGUE.md). |
+| `list_log_datasets` | List datasets allowed for the verified principal. | Capped, filterable, offset-paged metadata. |
 | `discover_log_fields` | Observe fields from one bounded dataset sample. | Field names/types/counts only; no values. |
 | `get_xql_help` | Retrieve one focused recipe for filters, aggregates, top-N, trends, pagination, or raw XQL. | No tenant data. |
 | `query_dataset` | Execute one typed row or aggregate plan. | Explicit dataset, low defaults, projection and response budgets. |

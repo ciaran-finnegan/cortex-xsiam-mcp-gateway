@@ -1,0 +1,1730 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "match": "xdr_data",
+      "domain": "endpoint_telemetry",
+      "description": "Cortex XDR agent telemetry covering process, file, network, registry, and event log activity on endpoints.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex XDR",
+      "keywords": [
+        "endpoint",
+        "edr",
+        "process",
+        "file",
+        "registry",
+        "host",
+        "agent"
+      ],
+      "fields": {
+        "host": [
+          "agent_hostname"
+        ],
+        "ip": [
+          "agent_ip_addresses",
+          "action_local_ip",
+          "action_remote_ip"
+        ],
+        "user": [
+          "actor_effective_username",
+          "action_username"
+        ],
+        "process": [
+          "actor_process_image_name",
+          "action_process_image_name"
+        ],
+        "command_line": [
+          "actor_process_command_line",
+          "action_process_image_command_line"
+        ],
+        "file_hash": [
+          "action_file_sha256",
+          "actor_process_image_sha256",
+          "action_process_image_sha256"
+        ],
+        "url_domain": [
+          "dns_query_name",
+          "action_external_hostname"
+        ],
+        "event_type": [
+          "event_type"
+        ],
+        "dest_port": [
+          "action_remote_port"
+        ]
+      },
+      "volume": "very_high"
+    },
+    {
+      "match": "endpoints",
+      "domain": "endpoint_inventory",
+      "description": "Current Cortex XDR agent inventory with endpoint name, addresses, status, version, and last user.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex XDR",
+      "keywords": [
+        "endpoint",
+        "agent",
+        "inventory",
+        "host",
+        "status"
+      ],
+      "fields": {
+        "host": [
+          "endpoint_name"
+        ],
+        "ip": [
+          "ip_address",
+          "last_origin_ip"
+        ],
+        "user": [
+          "user"
+        ],
+        "resource_id": [
+          "cloud_instance_id"
+        ],
+        "cloud_account": [
+          "cloud_provider_account_id"
+        ]
+      },
+      "volume": "low"
+    },
+    {
+      "match": "host_inventory",
+      "domain": "endpoint_inventory",
+      "description": "Host insights inventory collected by the Cortex XDR agent, including hardware, software, users, and services.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex XDR",
+      "keywords": [
+        "inventory",
+        "host",
+        "software",
+        "applications"
+      ],
+      "fields": {
+        "host": [
+          "host_name"
+        ],
+        "ip": [
+          "ip_addresses"
+        ]
+      },
+      "volume": "medium"
+    },
+    {
+      "match": "asset_inventory",
+      "domain": "endpoint_inventory",
+      "description": "Unified asset inventory of devices and cloud assets known to Cortex.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "asset",
+        "inventory",
+        "host",
+        "cloud"
+      ],
+      "fields": {
+        "host": [
+          "xdm.asset.name"
+        ],
+        "resource_id": [
+          "xdm.asset.id",
+          "xdm.asset.strong_id"
+        ],
+        "resource_name": [
+          "xdm.asset.name"
+        ],
+        "cloud_account": [
+          "xdm.asset.realm"
+        ]
+      },
+      "volume": "medium"
+    },
+    {
+      "match": "alerts",
+      "domain": "alerts_incidents",
+      "description": "Alerts raised or ingested by Cortex, one row per alert with name, source, severity, host, and user.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "alerts",
+        "detection",
+        "severity"
+      ],
+      "fields": {
+        "name": [
+          "alert_name"
+        ],
+        "severity": [
+          "severity"
+        ],
+        "host": [
+          "host_name"
+        ],
+        "ip": [
+          "host_ip"
+        ],
+        "user": [
+          "user_name"
+        ],
+        "log_type": [
+          "alert_source"
+        ],
+        "action": [
+          "action"
+        ],
+        "resource_name": [
+          "cloud_referenced_resource"
+        ],
+        "url_domain": [
+          "dns_query_name"
+        ]
+      },
+      "volume": "medium"
+    },
+    {
+      "match": "incidents",
+      "domain": "alerts_incidents",
+      "description": "Cortex incidents that group related alerts, with status, severity, and assignment.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "incidents",
+        "cases",
+        "alerts"
+      ],
+      "fields": {
+        "name": [
+          "name",
+          "description"
+        ],
+        "severity": [
+          "severity"
+        ],
+        "user": [
+          "assigned_user"
+        ]
+      },
+      "volume": "low"
+    },
+    {
+      "match": "issues",
+      "domain": "alerts_incidents",
+      "description": "Cortex issues, the unified record for alerts and findings on newer platform versions.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "issues",
+        "alerts",
+        "findings"
+      ],
+      "fields": {
+        "name": [
+          "xdm.issue.name"
+        ],
+        "severity": [
+          "xdm.issue.severity"
+        ]
+      },
+      "volume": "medium"
+    },
+    {
+      "match": "cases",
+      "domain": "alerts_incidents",
+      "description": "Cortex cases that group related issues for investigation, with status, severity, and assignment.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "cases",
+        "incidents"
+      ],
+      "fields": {
+        "name": [
+          "xdm.case.name"
+        ],
+        "severity": [
+          "xdm.case.severity"
+        ]
+      },
+      "volume": "low"
+    },
+    {
+      "match": "management_auditing",
+      "domain": "platform_audit",
+      "description": "Cortex management audit log of administrator and user actions in the console.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "audit",
+        "admin",
+        "console"
+      ],
+      "fields": {
+        "user": [
+          "user_name",
+          "email"
+        ],
+        "operation": [
+          "subtype"
+        ],
+        "event_type": [
+          "management_auditing_type"
+        ],
+        "source_ip": [
+          "source_ip"
+        ]
+      },
+      "volume": "low"
+    },
+    {
+      "match": "agent_auditing",
+      "domain": "platform_audit",
+      "description": "Cortex XDR agent audit log of agent installs, upgrades, policy changes, and status events.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex XDR",
+      "keywords": [
+        "audit",
+        "agent",
+        "endpoint"
+      ],
+      "fields": {
+        "host": [
+          "endpoint_name"
+        ]
+      },
+      "volume": "medium"
+    },
+    {
+      "match": "xql_query_center_history",
+      "domain": "platform_audit",
+      "description": "History of XQL query executions with issuer, source, status, duration, and datasets read.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "xql",
+        "query",
+        "history",
+        "audit"
+      ],
+      "fields": {
+        "user": [
+          "issuer"
+        ],
+        "operation": [
+          "xql_query_source"
+        ]
+      },
+      "volume": "high"
+    },
+    {
+      "match": "metrics_source",
+      "domain": "ingestion_health",
+      "description": "Ingestion metrics per vendor, product, and log type with event counts and bytes; use it to check that a data source is arriving.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "ingestion",
+        "health",
+        "metrics",
+        "volume",
+        "collector"
+      ],
+      "fields": {
+        "log_type": [
+          "_log_type"
+        ]
+      },
+      "volume": "medium"
+    },
+    {
+      "match": "data_ingestion_health",
+      "domain": "ingestion_health",
+      "description": "Data ingestion health findings for collectors and data sources.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "ingestion",
+        "health",
+        "collector"
+      ],
+      "volume": "low"
+    },
+    {
+      "match": "parsing_rules_errors",
+      "domain": "ingestion_health",
+      "description": "Errors raised by parsing rules while ingesting data.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "ingestion",
+        "health",
+        "parsing"
+      ],
+      "volume": "low"
+    },
+    {
+      "match": "cloud_audit_logs",
+      "domain": "cloud_audit",
+      "description": "Normalized cloud provider audit events across AWS, Azure, and Google Cloud, with identity, operation, and referenced resource.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "cloud",
+        "audit",
+        "aws",
+        "azure",
+        "gcp",
+        "iam"
+      ],
+      "fields": {
+        "user": [
+          "identity_name",
+          "identity_normalized"
+        ],
+        "source_ip": [
+          "caller_ip"
+        ],
+        "operation": [
+          "operation_name",
+          "operation_name_orig"
+        ],
+        "resource_name": [
+          "referenced_resource",
+          "referenced_resource_name"
+        ],
+        "cloud_account": [
+          "project",
+          "cloud_provider"
+        ],
+        "event_type": [
+          "event_type"
+        ]
+      },
+      "volume": "high"
+    },
+    {
+      "match": "email_data",
+      "domain": "email",
+      "description": "Email metadata collected by Cortex email integrations, with sender, recipients, subject, and delivery verdicts.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "email",
+        "mail",
+        "phishing"
+      ],
+      "fields": {
+        "email_sender": [
+          "sender",
+          "from"
+        ],
+        "email_recipient": [
+          "recipients"
+        ],
+        "source_ip": [
+          "sender_ip"
+        ]
+      },
+      "volume": "high"
+    },
+    {
+      "match": "threat_intel_indicators",
+      "domain": "threat_intel",
+      "description": "Threat intelligence indicators with type, verdict, and reliability.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "threat",
+        "intel",
+        "indicator",
+        "ioc"
+      ],
+      "fields": {
+        "name": [
+          "value"
+        ]
+      },
+      "volume": "medium"
+    },
+    {
+      "match": "threat_intel_*",
+      "domain": "threat_intel",
+      "description": "Threat intelligence objects such as malware, threat actors, and relationships.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "threat",
+        "intel"
+      ],
+      "volume": "low"
+    },
+    {
+      "match": "indicators",
+      "domain": "threat_intel",
+      "description": "Indicators of compromise managed in Cortex.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "indicator",
+        "ioc",
+        "threat"
+      ],
+      "volume": "medium"
+    },
+    {
+      "match": "va_cves",
+      "domain": "vulnerability",
+      "description": "Vulnerability assessment CVE records with severity and affected products.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "vulnerability",
+        "cve"
+      ],
+      "fields": {
+        "name": [
+          "cve_id",
+          "name"
+        ],
+        "severity": [
+          "severity"
+        ]
+      },
+      "volume": "medium"
+    },
+    {
+      "match": "va_endpoints",
+      "domain": "vulnerability",
+      "description": "Vulnerability assessment results per endpoint.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "vulnerability",
+        "endpoint",
+        "cve"
+      ],
+      "fields": {
+        "host": [
+          "endpoint_name"
+        ],
+        "severity": [
+          "severity"
+        ]
+      },
+      "volume": "medium"
+    },
+    {
+      "match": "uvm_findings",
+      "domain": "vulnerability",
+      "description": "Unified vulnerability management findings per asset.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "vulnerability",
+        "findings"
+      ],
+      "volume": "medium"
+    },
+    {
+      "match": "findings",
+      "domain": "vulnerability",
+      "description": "Security posture and vulnerability findings across assets.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "findings",
+        "posture",
+        "vulnerability"
+      ],
+      "volume": "medium"
+    },
+    {
+      "match": "playbook_runs",
+      "domain": "platform_audit",
+      "description": "Automation playbook runs with status and timing.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "playbook",
+        "automation",
+        "soar"
+      ],
+      "volume": "medium"
+    },
+    {
+      "match": "playbook_tasks",
+      "domain": "platform_audit",
+      "description": "Automation playbook task executions.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "playbook",
+        "automation",
+        "soar"
+      ],
+      "volume": "medium"
+    },
+    {
+      "match": "pan_dss_raw",
+      "domain": "directory",
+      "description": "Directory objects synchronized by Cloud Identity Engine, including users, groups, and computers.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cloud Identity Engine",
+      "keywords": [
+        "directory",
+        "active",
+        "ad",
+        "users",
+        "groups",
+        "computers"
+      ],
+      "fields": {
+        "host": [
+          "name",
+          "dns_host_name"
+        ],
+        "user": [
+          "sam_account_name",
+          "upn",
+          "email"
+        ]
+      },
+      "volume": "medium"
+    },
+    {
+      "match": "panw_ngfw_traffic_raw",
+      "domain": "network_traffic",
+      "description": "Firewall traffic session records with source, destination, application, rule, action, zones, and bytes.",
+      "vendor": "Palo Alto Networks",
+      "product": "PAN-OS NGFW",
+      "keywords": [
+        "firewall",
+        "network",
+        "sessions",
+        "deny",
+        "allow",
+        "ngfw"
+      ],
+      "fields": {
+        "source_ip": [
+          "source_ip"
+        ],
+        "dest_ip": [
+          "dest_ip"
+        ],
+        "source_port": [
+          "source_port"
+        ],
+        "dest_port": [
+          "dest_port"
+        ],
+        "source_user": [
+          "source_user"
+        ],
+        "dest_user": [
+          "dest_user"
+        ],
+        "action": [
+          "action"
+        ],
+        "rule": [
+          "rule_matched"
+        ],
+        "app": [
+          "app"
+        ],
+        "source_zone": [
+          "from_zone"
+        ],
+        "dest_zone": [
+          "to_zone"
+        ],
+        "host": [
+          "log_source_name"
+        ],
+        "bytes": [
+          "bytes_total",
+          "bytes_sent",
+          "bytes_received"
+        ]
+      },
+      "volume": "very_high"
+    },
+    {
+      "match": "panw_ngfw_threat_raw",
+      "domain": "network_threat",
+      "description": "Firewall threat log records for vulnerability, spyware, antivirus, and other inspection profiles.",
+      "vendor": "Palo Alto Networks",
+      "product": "PAN-OS NGFW",
+      "keywords": [
+        "firewall",
+        "threat",
+        "ips",
+        "ngfw"
+      ],
+      "fields": {
+        "source_ip": [
+          "source_ip"
+        ],
+        "dest_ip": [
+          "dest_ip"
+        ],
+        "source_port": [
+          "source_port"
+        ],
+        "dest_port": [
+          "dest_port"
+        ],
+        "source_user": [
+          "source_user"
+        ],
+        "dest_user": [
+          "dest_user"
+        ],
+        "action": [
+          "action"
+        ],
+        "rule": [
+          "rule_matched"
+        ],
+        "app": [
+          "app"
+        ],
+        "source_zone": [
+          "from_zone"
+        ],
+        "dest_zone": [
+          "to_zone"
+        ],
+        "host": [
+          "log_source_name"
+        ],
+        "name": [
+          "threat_name"
+        ],
+        "severity": [
+          "severity"
+        ]
+      },
+      "volume": "high"
+    },
+    {
+      "match": "panw_ngfw_url_raw",
+      "domain": "web_proxy",
+      "description": "Firewall URL filtering records with requested URL, category, action, and user.",
+      "vendor": "Palo Alto Networks",
+      "product": "PAN-OS NGFW",
+      "keywords": [
+        "firewall",
+        "url",
+        "web",
+        "proxy",
+        "ngfw"
+      ],
+      "fields": {
+        "source_ip": [
+          "source_ip"
+        ],
+        "dest_ip": [
+          "dest_ip"
+        ],
+        "source_port": [
+          "source_port"
+        ],
+        "dest_port": [
+          "dest_port"
+        ],
+        "source_user": [
+          "source_user"
+        ],
+        "dest_user": [
+          "dest_user"
+        ],
+        "action": [
+          "action"
+        ],
+        "rule": [
+          "rule_matched"
+        ],
+        "app": [
+          "app"
+        ],
+        "source_zone": [
+          "from_zone"
+        ],
+        "dest_zone": [
+          "to_zone"
+        ],
+        "host": [
+          "log_source_name"
+        ],
+        "url_domain": [
+          "url_domain",
+          "uri"
+        ]
+      },
+      "volume": "very_high"
+    },
+    {
+      "match": "panw_ngfw_filedata_raw",
+      "domain": "network_threat",
+      "description": "Firewall file and data filtering records for transfers inspected in sessions.",
+      "vendor": "Palo Alto Networks",
+      "product": "PAN-OS NGFW",
+      "keywords": [
+        "firewall",
+        "file",
+        "data",
+        "ngfw"
+      ],
+      "fields": {
+        "source_ip": [
+          "source_ip"
+        ],
+        "dest_ip": [
+          "dest_ip"
+        ],
+        "source_port": [
+          "source_port"
+        ],
+        "dest_port": [
+          "dest_port"
+        ],
+        "source_user": [
+          "source_user"
+        ],
+        "dest_user": [
+          "dest_user"
+        ],
+        "action": [
+          "action"
+        ],
+        "rule": [
+          "rule_matched"
+        ],
+        "app": [
+          "app"
+        ],
+        "source_zone": [
+          "from_zone"
+        ],
+        "dest_zone": [
+          "to_zone"
+        ],
+        "host": [
+          "log_source_name"
+        ],
+        "file_hash": [
+          "file_sha_256"
+        ]
+      },
+      "volume": "high"
+    },
+    {
+      "match": "panw_ngfw_globalprotect_raw",
+      "domain": "vpn_remote_access",
+      "description": "GlobalProtect VPN portal and gateway events with user, public and private addresses, and connection status.",
+      "vendor": "Palo Alto Networks",
+      "product": "GlobalProtect",
+      "keywords": [
+        "vpn",
+        "remote",
+        "globalprotect"
+      ],
+      "fields": {
+        "user": [
+          "source_user"
+        ],
+        "ip": [
+          "public_ip",
+          "private_ip"
+        ],
+        "host": [
+          "endpoint_device_name",
+          "source_device_host"
+        ],
+        "operation": [
+          "event_id"
+        ]
+      },
+      "volume": "high"
+    },
+    {
+      "match": "panw_ngfw_userid_raw",
+      "domain": "authentication_identity",
+      "description": "Firewall User-ID mappings between users and IP addresses, with the mapping source.",
+      "vendor": "Palo Alto Networks",
+      "product": "PAN-OS NGFW",
+      "keywords": [
+        "userid",
+        "user",
+        "mapping",
+        "ngfw"
+      ],
+      "fields": {
+        "user": [
+          "user",
+          "source_user"
+        ],
+        "ip": [
+          "source_ip"
+        ]
+      },
+      "volume": "high"
+    },
+    {
+      "match": "panw_ngfw_system_raw",
+      "domain": "platform_audit",
+      "description": "Firewall system log records for device health, routing, HA, and service events.",
+      "vendor": "Palo Alto Networks",
+      "product": "PAN-OS NGFW",
+      "keywords": [
+        "firewall",
+        "system",
+        "device",
+        "ngfw"
+      ],
+      "fields": {
+        "host": [
+          "log_source_name"
+        ],
+        "operation": [
+          "event_name"
+        ],
+        "event_type": [
+          "sub_type"
+        ],
+        "severity": [
+          "severity"
+        ]
+      },
+      "volume": "high"
+    },
+    {
+      "match": "panw_ngfw_config_raw",
+      "domain": "platform_audit",
+      "description": "Firewall configuration change audit records with administrator and command.",
+      "vendor": "Palo Alto Networks",
+      "product": "PAN-OS NGFW",
+      "keywords": [
+        "firewall",
+        "config",
+        "audit",
+        "ngfw"
+      ],
+      "fields": {
+        "user": [
+          "admin"
+        ],
+        "host": [
+          "log_source_name"
+        ],
+        "operation": [
+          "cmd"
+        ]
+      },
+      "volume": "low"
+    },
+    {
+      "match": "panw_ngfw_*",
+      "domain": "network_traffic",
+      "description": "PAN-OS firewall log records.",
+      "vendor": "Palo Alto Networks",
+      "product": "PAN-OS NGFW",
+      "keywords": [
+        "firewall",
+        "ngfw"
+      ],
+      "volume": "high"
+    },
+    {
+      "match": "palo_alto_networks_prisma_access_raw",
+      "domain": "network_traffic",
+      "description": "Prisma Access records forwarded to Cortex.",
+      "vendor": "Palo Alto Networks",
+      "product": "Prisma Access",
+      "keywords": [
+        "prisma",
+        "sase",
+        "network"
+      ],
+      "volume": "high"
+    },
+    {
+      "match": "msft_azure_ad_raw",
+      "domain": "authentication_identity",
+      "description": "Microsoft Entra ID sign-in records with user principal, application, client address, and result.",
+      "vendor": "Microsoft",
+      "product": "Entra ID",
+      "keywords": [
+        "azure",
+        "entra",
+        "login",
+        "authentication",
+        "signin"
+      ],
+      "fields": {
+        "user": [
+          "userPrincipalName"
+        ],
+        "source_ip": [
+          "ipAddress"
+        ],
+        "app": [
+          "appDisplayName"
+        ]
+      },
+      "volume": "high"
+    },
+    {
+      "match": "msft_azure_ad_audit_raw",
+      "domain": "saas_audit",
+      "description": "Microsoft Entra ID directory audit records for user, group, application, and role changes.",
+      "vendor": "Microsoft",
+      "product": "Entra ID",
+      "keywords": [
+        "azure",
+        "entra",
+        "audit",
+        "directory"
+      ],
+      "fields": {
+        "operation": [
+          "activityDisplayName"
+        ]
+      },
+      "volume": "medium"
+    },
+    {
+      "match": "msft_azure_raw",
+      "domain": "cloud_audit",
+      "description": "Microsoft Azure activity and resource logs with caller, operation, and resource identifier.",
+      "vendor": "Microsoft",
+      "product": "Azure",
+      "keywords": [
+        "azure",
+        "cloud",
+        "audit",
+        "activity"
+      ],
+      "fields": {
+        "source_ip": [
+          "callerIpAddress"
+        ],
+        "operation": [
+          "operationName"
+        ],
+        "resource_id": [
+          "resourceId"
+        ]
+      },
+      "volume": "high"
+    },
+    {
+      "match": "msft_azure_flowlogs_raw",
+      "domain": "cloud_network",
+      "description": "Microsoft Azure network security group flow records.",
+      "vendor": "Microsoft",
+      "product": "Azure",
+      "keywords": [
+        "azure",
+        "cloud",
+        "flow",
+        "network"
+      ],
+      "volume": "very_high",
+      "fields": {
+        "source_ip": [
+          "sourceAddress"
+        ],
+        "dest_ip": [
+          "destinationAddress"
+        ],
+        "source_port": [
+          "sourcePort"
+        ],
+        "dest_port": [
+          "destinationPort"
+        ],
+        "action": [
+          "deviceAction"
+        ],
+        "rule": [
+          "nsgRuleName"
+        ],
+        "resource_id": [
+          "resourceId"
+        ]
+      }
+    },
+    {
+      "match": "msft_azure_waf_raw",
+      "domain": "network_threat",
+      "description": "Microsoft Azure web application firewall records.",
+      "vendor": "Microsoft",
+      "product": "Azure",
+      "keywords": [
+        "azure",
+        "waf",
+        "web"
+      ],
+      "volume": "high"
+    },
+    {
+      "match": "msft_o365_*",
+      "domain": "saas_audit",
+      "description": "Microsoft 365 audit and configuration records for the named workload.",
+      "vendor": "Microsoft",
+      "product": "Microsoft 365",
+      "keywords": [
+        "o365",
+        "m365",
+        "office",
+        "audit",
+        "sharepoint",
+        "exchange"
+      ],
+      "fields": {
+        "source_ip": [
+          "ClientIP"
+        ],
+        "user": [
+          "UserId"
+        ],
+        "operation": [
+          "Operation"
+        ]
+      },
+      "volume": "high"
+    },
+    {
+      "match": "msft_graph_security_alerts_raw",
+      "domain": "alerts_incidents",
+      "description": "Microsoft Graph security alerts from Defender and related products.",
+      "vendor": "Microsoft",
+      "product": "Graph Security",
+      "keywords": [
+        "alerts",
+        "defender",
+        "microsoft"
+      ],
+      "volume": "low"
+    },
+    {
+      "match": "microsoft_windows_raw",
+      "domain": "endpoint_telemetry",
+      "description": "Windows event log records collected by agent or collector, keyed by event identifier and provider.",
+      "vendor": "Microsoft",
+      "product": "Windows",
+      "keywords": [
+        "windows",
+        "eventlog",
+        "event",
+        "host"
+      ],
+      "fields": {
+        "host": [
+          "host_name",
+          "computer_name"
+        ],
+        "event_id": [
+          "event_id"
+        ],
+        "user": [
+          "user"
+        ],
+        "process": [
+          "process_name"
+        ],
+        "command_line": [
+          "process_cmd"
+        ],
+        "file_hash": [
+          "process_sha256"
+        ]
+      },
+      "volume": "very_high"
+    },
+    {
+      "match": "amazon_aws_raw",
+      "domain": "cloud_audit",
+      "description": "Amazon Web Services logs. The _log_type field separates CloudTrail audit events from VPC flow records and other sources.",
+      "vendor": "Amazon",
+      "product": "AWS",
+      "keywords": [
+        "aws",
+        "cloud",
+        "cloudtrail",
+        "audit",
+        "flow"
+      ],
+      "fields": {
+        "log_type": [
+          "_log_type"
+        ],
+        "source_ip": [
+          "sourceIPAddress",
+          "srcaddr"
+        ],
+        "dest_ip": [
+          "dstaddr"
+        ],
+        "dest_port": [
+          "dstport"
+        ],
+        "action": [
+          "action"
+        ],
+        "operation": [
+          "eventName"
+        ],
+        "cloud_account": [
+          "recipientAccountId",
+          "account_id"
+        ]
+      },
+      "volume": "very_high"
+    },
+    {
+      "match": "aws_guardduty_raw",
+      "domain": "alerts_incidents",
+      "description": "Amazon GuardDuty findings.",
+      "vendor": "Amazon",
+      "product": "GuardDuty",
+      "keywords": [
+        "aws",
+        "guardduty",
+        "alerts",
+        "findings"
+      ],
+      "fields": {
+        "severity": [
+          "Severity"
+        ],
+        "name": [
+          "Title",
+          "Type"
+        ],
+        "cloud_account": [
+          "AccountId"
+        ],
+        "resource_id": [
+          "Arn"
+        ]
+      },
+      "volume": "low"
+    },
+    {
+      "match": "google_gcp_*",
+      "domain": "cloud_audit",
+      "description": "Google Cloud audit and platform logs.",
+      "vendor": "Google",
+      "product": "Google Cloud",
+      "keywords": [
+        "gcp",
+        "google",
+        "cloud",
+        "audit"
+      ],
+      "volume": "high"
+    },
+    {
+      "match": "google_workspace_*",
+      "domain": "saas_audit",
+      "description": "Google Workspace audit records.",
+      "vendor": "Google",
+      "product": "Workspace",
+      "keywords": [
+        "google",
+        "workspace",
+        "audit",
+        "login"
+      ],
+      "volume": "medium"
+    },
+    {
+      "match": "okta_sso_raw",
+      "domain": "authentication_identity",
+      "description": "Okta system log events for sign-ins, MFA, and administrative changes.",
+      "vendor": "Okta",
+      "product": "SSO",
+      "keywords": [
+        "okta",
+        "login",
+        "authentication",
+        "mfa"
+      ],
+      "fields": {
+        "operation": [
+          "eventType"
+        ]
+      },
+      "volume": "high"
+    },
+    {
+      "match": "duo_duo_raw",
+      "domain": "authentication_identity",
+      "description": "Duo authentication and administrator records.",
+      "vendor": "Cisco",
+      "product": "Duo",
+      "keywords": [
+        "duo",
+        "mfa",
+        "authentication",
+        "login"
+      ],
+      "volume": "medium"
+    },
+    {
+      "match": "ping_identity_*",
+      "domain": "authentication_identity",
+      "description": "Ping Identity directory and federation records.",
+      "vendor": "Ping Identity",
+      "keywords": [
+        "ping",
+        "sso",
+        "login",
+        "authentication"
+      ],
+      "volume": "medium"
+    },
+    {
+      "match": "cyber_ark_vault_raw",
+      "domain": "authentication_identity",
+      "description": "CyberArk vault audit records for privileged account access.",
+      "vendor": "CyberArk",
+      "product": "Vault",
+      "keywords": [
+        "cyberark",
+        "pam",
+        "privileged"
+      ],
+      "volume": "medium"
+    },
+    {
+      "match": "sailpoint_identitynow_raw",
+      "domain": "directory",
+      "description": "SailPoint identity governance events.",
+      "vendor": "SailPoint",
+      "product": "IdentityNow",
+      "keywords": [
+        "sailpoint",
+        "identity",
+        "governance"
+      ],
+      "volume": "low"
+    },
+    {
+      "match": "crowdstrike_*",
+      "domain": "endpoint_telemetry",
+      "description": "CrowdStrike Falcon detections and telemetry.",
+      "vendor": "CrowdStrike",
+      "product": "Falcon",
+      "keywords": [
+        "crowdstrike",
+        "endpoint",
+        "edr"
+      ],
+      "volume": "high"
+    },
+    {
+      "match": "sentinelone_*",
+      "domain": "endpoint_telemetry",
+      "description": "SentinelOne threats and activity records.",
+      "vendor": "SentinelOne",
+      "keywords": [
+        "sentinelone",
+        "endpoint",
+        "edr"
+      ],
+      "volume": "medium"
+    },
+    {
+      "match": "carbonblack_*",
+      "domain": "endpoint_telemetry",
+      "description": "VMware Carbon Black endpoint protection and application control records.",
+      "vendor": "VMware",
+      "product": "Carbon Black",
+      "keywords": [
+        "carbonblack",
+        "endpoint",
+        "application",
+        "control"
+      ],
+      "volume": "medium"
+    },
+    {
+      "match": "cisco_asa_raw",
+      "domain": "network_traffic",
+      "description": "Cisco ASA firewall syslog records.",
+      "vendor": "Cisco",
+      "product": "ASA",
+      "keywords": [
+        "cisco",
+        "asa",
+        "firewall",
+        "network"
+      ],
+      "volume": "high"
+    },
+    {
+      "match": "cisco_ise_raw",
+      "domain": "authentication_identity",
+      "description": "Cisco ISE network access authentication records.",
+      "vendor": "Cisco",
+      "product": "ISE",
+      "keywords": [
+        "cisco",
+        "ise",
+        "nac",
+        "authentication"
+      ],
+      "volume": "high"
+    },
+    {
+      "match": "cisco_umbrella_*",
+      "domain": "dns",
+      "description": "Cisco Umbrella DNS and proxy records.",
+      "vendor": "Cisco",
+      "product": "Umbrella",
+      "keywords": [
+        "cisco",
+        "umbrella",
+        "dns",
+        "proxy"
+      ],
+      "volume": "high"
+    },
+    {
+      "match": "cisco_*",
+      "domain": "network_traffic",
+      "description": "Cisco network device syslog records.",
+      "vendor": "Cisco",
+      "keywords": [
+        "cisco",
+        "network",
+        "switch",
+        "router"
+      ],
+      "volume": "medium"
+    },
+    {
+      "match": "fortinet_fortigate_raw",
+      "domain": "network_traffic",
+      "description": "Fortinet FortiGate firewall records.",
+      "vendor": "Fortinet",
+      "product": "FortiGate",
+      "keywords": [
+        "fortinet",
+        "fortigate",
+        "firewall",
+        "network"
+      ],
+      "volume": "high"
+    },
+    {
+      "match": "check_point_*",
+      "domain": "network_traffic",
+      "description": "Check Point firewall records.",
+      "vendor": "Check Point",
+      "keywords": [
+        "checkpoint",
+        "firewall",
+        "network"
+      ],
+      "volume": "high"
+    },
+    {
+      "match": "zscaler_*",
+      "domain": "web_proxy",
+      "description": "Zscaler web and private access records.",
+      "vendor": "Zscaler",
+      "keywords": [
+        "zscaler",
+        "proxy",
+        "web",
+        "url"
+      ],
+      "volume": "very_high"
+    },
+    {
+      "match": "squid_squid_raw",
+      "domain": "web_proxy",
+      "description": "Squid proxy access records with client address, URL, and result code.",
+      "vendor": "Squid",
+      "product": "Squid",
+      "keywords": [
+        "squid",
+        "proxy",
+        "web",
+        "url"
+      ],
+      "volume": "high"
+    },
+    {
+      "match": "infoblox_*",
+      "domain": "dns",
+      "description": "Infoblox DNS and DHCP records.",
+      "vendor": "Infoblox",
+      "keywords": [
+        "infoblox",
+        "dns",
+        "dhcp"
+      ],
+      "volume": "high"
+    },
+    {
+      "match": "proofpoint_*",
+      "domain": "email",
+      "description": "Proofpoint email security records.",
+      "vendor": "Proofpoint",
+      "keywords": [
+        "proofpoint",
+        "email",
+        "phishing"
+      ],
+      "volume": "medium"
+    },
+    {
+      "match": "mimecast_*",
+      "domain": "email",
+      "description": "Mimecast email security records.",
+      "vendor": "Mimecast",
+      "keywords": [
+        "mimecast",
+        "email",
+        "phishing"
+      ],
+      "volume": "medium"
+    },
+    {
+      "match": "qualys_*",
+      "domain": "vulnerability",
+      "description": "Qualys asset and vulnerability detection records.",
+      "vendor": "Qualys",
+      "keywords": [
+        "qualys",
+        "vulnerability",
+        "cve",
+        "assets"
+      ],
+      "volume": "medium"
+    },
+    {
+      "match": "tenable_*",
+      "domain": "vulnerability",
+      "description": "Tenable asset and vulnerability records.",
+      "vendor": "Tenable",
+      "keywords": [
+        "tenable",
+        "nessus",
+        "vulnerability",
+        "cve"
+      ],
+      "volume": "medium"
+    },
+    {
+      "match": "prisma_cloud_raw",
+      "domain": "cloud_audit",
+      "description": "Prisma Cloud alerts and posture records.",
+      "vendor": "Palo Alto Networks",
+      "product": "Prisma Cloud",
+      "keywords": [
+        "prisma",
+        "cloud",
+        "posture",
+        "alerts"
+      ],
+      "volume": "low"
+    },
+    {
+      "match": "salesforce_login_raw",
+      "domain": "authentication_identity",
+      "description": "Salesforce login history records.",
+      "vendor": "Salesforce",
+      "keywords": [
+        "salesforce",
+        "login",
+        "authentication"
+      ],
+      "volume": "medium",
+      "fields": {
+        "user": [
+          "USER_NAME"
+        ],
+        "source_ip": [
+          "SOURCE_IP",
+          "CLIENT_IP"
+        ]
+      }
+    },
+    {
+      "match": "salesforce_*",
+      "domain": "saas_audit",
+      "description": "Salesforce audit, setup, and object records.",
+      "vendor": "Salesforce",
+      "keywords": [
+        "salesforce",
+        "audit",
+        "saas"
+      ],
+      "volume": "medium"
+    },
+    {
+      "match": "workday_signon_raw",
+      "domain": "authentication_identity",
+      "description": "Workday sign-on records.",
+      "vendor": "Workday",
+      "keywords": [
+        "workday",
+        "login",
+        "authentication"
+      ],
+      "volume": "low",
+      "fields": {
+        "user": [
+          "User_Name"
+        ],
+        "source_ip": [
+          "Signon_IP_Address"
+        ]
+      }
+    },
+    {
+      "match": "workday_*",
+      "domain": "saas_audit",
+      "description": "Workday activity audit records.",
+      "vendor": "Workday",
+      "keywords": [
+        "workday",
+        "audit",
+        "saas"
+      ],
+      "volume": "low"
+    },
+    {
+      "match": "servicenow_servicenow_raw",
+      "domain": "saas_audit",
+      "description": "ServiceNow audit and record change events.",
+      "vendor": "ServiceNow",
+      "keywords": [
+        "servicenow",
+        "itsm",
+        "audit"
+      ],
+      "volume": "low"
+    },
+    {
+      "match": "github_github_audit_raw",
+      "domain": "saas_audit",
+      "description": "GitHub organization audit log records.",
+      "vendor": "GitHub",
+      "keywords": [
+        "github",
+        "audit",
+        "code",
+        "repository"
+      ],
+      "volume": "low",
+      "fields": {
+        "user": [
+          "actor"
+        ],
+        "source_ip": [
+          "actor_ip"
+        ],
+        "operation": [
+          "action"
+        ],
+        "resource_name": [
+          "repo"
+        ]
+      }
+    },
+    {
+      "match": "snowflake_snowflake_raw",
+      "domain": "saas_audit",
+      "description": "Snowflake login and query history records.",
+      "vendor": "Snowflake",
+      "keywords": [
+        "snowflake",
+        "database",
+        "audit",
+        "login"
+      ],
+      "volume": "medium"
+    },
+    {
+      "match": "slack_*",
+      "domain": "saas_audit",
+      "description": "Slack audit log records.",
+      "vendor": "Slack",
+      "keywords": [
+        "slack",
+        "audit",
+        "saas"
+      ],
+      "volume": "low"
+    },
+    {
+      "match": "box_*",
+      "domain": "saas_audit",
+      "description": "Box enterprise event records.",
+      "vendor": "Box",
+      "keywords": [
+        "box",
+        "audit",
+        "file",
+        "saas"
+      ],
+      "volume": "low"
+    },
+    {
+      "match": "*_generic_alert_raw",
+      "domain": "alerts_incidents",
+      "description": "Alerts ingested from an external product through a generic alert integration.",
+      "keywords": [
+        "alerts",
+        "external"
+      ],
+      "volume": "low"
+    },
+    {
+      "match": "auth_logs",
+      "domain": "authentication_identity",
+      "description": "Cortex authentication story records normalized from identity providers and endpoints.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "authentication",
+        "login",
+        "identity"
+      ],
+      "volume": "high"
+    },
+    {
+      "match": "login_logs",
+      "domain": "authentication_identity",
+      "description": "Cortex login event records normalized from endpoints and identity sources.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "login",
+        "authentication",
+        "logon"
+      ],
+      "volume": "high"
+    },
+    {
+      "match": "vpn_logs",
+      "domain": "vpn_remote_access",
+      "description": "Cortex VPN session records normalized from remote access sources.",
+      "vendor": "Palo Alto Networks",
+      "product": "Cortex",
+      "keywords": [
+        "vpn",
+        "remote"
+      ],
+      "volume": "medium"
+    }
+  ]
+}
