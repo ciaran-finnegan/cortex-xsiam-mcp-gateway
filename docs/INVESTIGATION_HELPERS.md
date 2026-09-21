@@ -17,6 +17,7 @@ XQL, or field list.
 | `resolve_entity` | "What is this computer's IP address?", "Who uses this address?", "Which machines does this user use?" | `value`, optional `entity_type` (`host`, `ip`, `user`), `window_hours` |
 | `firewall_traffic` | "Show me firewall traffic between X and Y." | `source`, `destination`, optional `dest_port`, `window_hours`, `include_samples` |
 | `firewall_verdict` | "Is the firewall dropping traffic to X?" | `destination`, optional `source`, `dest_port`, `window_hours` |
+| `dataset_health` | "Is this data source arriving, and what does a record look like?" | `dataset` or `topic`, `window_hours`, `include_samples` |
 | `entity_activity` | "Show me logs for this user / computer / IP address / cloud resource today." | `value`, optional `entity_type`, `window_hours`, `domains`, `max_datasets`, `include_samples` |
 
 `source` and `destination` accept an IP address, a host name, or a user name.
@@ -80,6 +81,20 @@ The response separates `datasets_with_activity`, `datasets_without_activity`,
 and a count of `datasets_not_checked`, so the agent can say what was and was
 not looked at. It checks six datasets by default and at most eight; per-dataset
 work runs concurrently under the executor's concurrency limit.
+
+### `dataset_health`
+
+People validating a new data source tend to dump the dataset with no filter
+and a very large limit. `dataset_health` answers the same question with at
+most three bounded queries per dataset: a 25-row sample for field names and
+types (values discarded), an arrival trend by hour (windows up to 48 hours) or
+by day, and three recent records with up to eight fields. `status` is
+`receiving`, `stale` (nothing in the window but records within seven days),
+`no_data`, or `unknown` when no timestamp field was observed.
+
+Give an exact `dataset`, or a `topic` to check the three best catalogue
+matches. It works for datasets with no catalogue record, since it only needs
+the dataset's own timestamp field.
 
 ## Controls
 

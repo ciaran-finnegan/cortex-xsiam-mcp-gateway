@@ -4,6 +4,9 @@ This project follows a lightweight changelog format until stable releases begin.
 
 ## Unreleased
 
+- Added `dataset_health`, a bounded arrival, schema, and sample check for one
+  data source, as the alternative to unfiltered dataset dumps.
+
 - Added `entity_activity`, which summarizes recent activity for one user,
   computer, IP address, or cloud resource across allowed catalogued datasets
   with one bounded aggregate per dataset and capped samples. Identity sources
