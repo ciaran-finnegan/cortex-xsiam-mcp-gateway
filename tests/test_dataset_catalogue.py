@@ -8,6 +8,7 @@ from config.config import get_config
 from entities.exceptions import PAPIConnectionError
 from entities.MCPContext import MCPContext
 from usecase import dataset_catalogue as dc
+from usecase import helper_runtime
 from usecase.builtin_components import catalogue as catalogue_tools
 
 
@@ -258,7 +259,7 @@ async def test_server_startup_fails_when_overlay_is_invalid(monkeypatch, tmp_pat
 async def test_find_datasets_never_describes_datasets_outside_policy(monkeypatch):
     monkeypatch.setattr(get_config(), "log_search_dataset_policy", '{"Tier1":["panw_ngfw_traffic_raw"]}')
     monkeypatch.setattr(
-        catalogue_tools, "get_fetcher", _fake_fetcher(["panw_ngfw_traffic_raw", "panw_ngfw_threat_raw", "xdr_data"])
+        helper_runtime, "get_fetcher", _fake_fetcher(["panw_ngfw_traffic_raw", "panw_ngfw_threat_raw", "xdr_data"])
     )
 
     response = await catalogue_tools.find_datasets(_ctx(), topic="firewall")
@@ -275,7 +276,7 @@ async def test_find_datasets_never_describes_datasets_outside_policy(monkeypatch
 @pytest.mark.asyncio
 async def test_find_datasets_returns_nothing_for_principal_without_groups(monkeypatch):
     monkeypatch.setattr(get_config(), "log_search_dataset_policy", '{"Tier1":["xdr_data"]}')
-    monkeypatch.setattr(catalogue_tools, "get_fetcher", _fake_fetcher(["xdr_data"]))
+    monkeypatch.setattr(helper_runtime, "get_fetcher", _fake_fetcher(["xdr_data"]))
 
     response = await catalogue_tools.find_datasets(_ctx(groups=()), topic="endpoint")
 
@@ -290,7 +291,7 @@ async def test_find_datasets_falls_back_to_policy_names_without_leaking_error_de
         raise PAPIConnectionError("https://tenant.internal.example refused connection")
 
     monkeypatch.setattr(get_config(), "log_search_dataset_policy", '{"Tier1":["xdr_data"],"Security":["*"]}')
-    monkeypatch.setattr(catalogue_tools, "get_fetcher", failing_get_fetcher)
+    monkeypatch.setattr(helper_runtime, "get_fetcher", failing_get_fetcher)
 
     tier1 = await catalogue_tools.find_datasets(_ctx(), topic="endpoint")
     wildcard = await catalogue_tools.find_datasets(_ctx(groups=("Security",)), topic="endpoint")

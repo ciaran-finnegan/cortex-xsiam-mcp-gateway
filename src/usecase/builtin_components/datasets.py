@@ -39,6 +39,11 @@ async def get_dataset_query_guidance() -> dict[str, Any]:
     """Return compact instructions for agents answering questions from allowed XSIAM datasets."""
     return {
         "success": True,
+        "helpers_first": [
+            "If the question is about traffic between two things or whether a firewall is blocking something, call firewall_traffic or firewall_verdict.",
+            "If the question names a computer, user, or IP address and you need its other identifiers, call resolve_entity. Never guess an IP address.",
+            "Use the workflow below only when no helper fits.",
+        ],
         "workflow": [
             "Call find_datasets with the user's topic to find an allowed dataset and its candidate key fields; use list_log_datasets when the user names a dataset.",
             "Call discover_log_fields for one dataset to confirm candidate fields and find others related to the user's concepts.",

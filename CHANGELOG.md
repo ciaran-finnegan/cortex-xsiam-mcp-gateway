@@ -4,6 +4,15 @@ This project follows a lightweight changelog format until stable releases begin.
 
 ## Unreleased
 
+- Added question-shaped investigation helpers: `resolve_entity` links a host,
+  user, or IP address to the others it is known by; `firewall_traffic` and
+  `firewall_verdict` answer traffic and blocking questions with aggregate-first
+  typed plans. Helpers select datasets from the catalogue under dataset policy,
+  verify fields against the live schema, and enforce a per-call query budget.
+- Audit events now record `helper_queries` (dataset, purpose, query hash, query
+  id, row count) for tools that choose datasets server-side.
+- Added the `identity_source` catalogue flag.
+
 - Added an authored dataset catalogue and the `find_datasets` tool so agents can
   select datasets by topic, domain, or entity type instead of guessing from
   names. Dataset policy is applied before catalogue lookup, catalogue text is

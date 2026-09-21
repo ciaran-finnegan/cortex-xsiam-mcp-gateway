@@ -86,7 +86,8 @@
           "cloud_provider_account_id"
         ]
       },
-      "volume": "low"
+      "volume": "low",
+      "identity_source": true
     },
     {
       "match": "host_inventory",
@@ -108,7 +109,8 @@
           "ip_addresses"
         ]
       },
-      "volume": "medium"
+      "volume": "medium",
+      "identity_source": true
     },
     {
       "match": "asset_inventory",
@@ -846,7 +848,8 @@
           "event_id"
         ]
       },
-      "volume": "high"
+      "volume": "high",
+      "identity_source": true
     },
     {
       "match": "panw_ngfw_userid_raw",
@@ -869,7 +872,8 @@
           "source_ip"
         ]
       },
-      "volume": "high"
+      "volume": "high",
+      "identity_source": true
     },
     {
       "match": "panw_ngfw_system_raw",

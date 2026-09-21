@@ -49,10 +49,10 @@ class Settings(BaseSettings):
     tool_access_policy: str = Field(
         (
             '{"Admin":["*"],"Security":["*"],'
-            '"SOC":["get_log_search_guidance","find_datasets","list_log_datasets","discover_log_fields","search_logs",'
+            '"SOC":["get_log_search_guidance","find_datasets","resolve_entity","firewall_traffic","firewall_verdict","list_log_datasets","discover_log_fields","search_logs",'
             '"get_dataset_query_guidance","get_xql_help","query_dataset","continue_dataset_query",'
             '"get_xql_query_quota","get_cases","get_issues"],'
-            '"Tier1":["get_log_search_guidance","find_datasets","list_log_datasets","discover_log_fields","search_logs",'
+            '"Tier1":["get_log_search_guidance","find_datasets","resolve_entity","firewall_traffic","firewall_verdict","list_log_datasets","discover_log_fields","search_logs",'
             '"get_dataset_query_guidance","get_xql_help","query_dataset","continue_dataset_query",'
             '"get_xql_query_quota","get_cases","get_issues"]}'
         ),
