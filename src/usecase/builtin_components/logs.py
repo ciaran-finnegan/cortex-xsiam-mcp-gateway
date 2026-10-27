@@ -16,6 +16,12 @@ from entities.exceptions import (
 from pkg.util import create_response
 from usecase.base_module import BaseModule
 from usecase.fetcher import get_fetcher
+from usecase.field_catalog import (
+    remember_observed_fields,
+    search_field_references,
+    unknown_fields_error,
+    validate_field_references,
+)
 from usecase.identity import resolve_mcp_context
 from usecase.log_policy import (
     DatasetAuthorizationError,
@@ -40,7 +46,7 @@ from usecase.xql_discovery import (
     normalize_dataset_record,
     policy_dataset_records,
 )
-from usecase.xql_executor import run_xql_query
+from usecase.xql_executor import failure_details, run_xql_query
 from usecase.xql_results import bound_result_rows, result_metadata
 
 logger = logging.getLogger(__name__)
@@ -97,6 +103,7 @@ async def _run_xql_query(
     timeframe: dict | None = None,
     poll_interval_seconds: int = 1,
     max_poll_attempts: int = 60,
+    timeout_seconds: int | None = None,
 ) -> dict:
     return await run_xql_query(
         ctx,
@@ -104,7 +111,7 @@ async def _run_xql_query(
         min(max(int(limit), 1), MAX_XQL_RESULT_LIMIT),
         timeframe=timeframe,
         poll_interval_seconds=poll_interval_seconds,
-        timeout_seconds=max(max_poll_attempts * max(poll_interval_seconds, 1), 1),
+        timeout_seconds=timeout_seconds or max(max_poll_attempts * max(poll_interval_seconds, 1), 1),
     )
 
 
@@ -144,6 +151,15 @@ async def search_logs(
         policy_decision = ensure_dataset_authorized(context, dataset)
         safe_limit = min(max(int(limit), 1), get_config().dataset_query_max_rows)
         xql = build_structured_xql(dataset, filters, fields, safe_limit)
+        field_validation = await validate_field_references(
+            ctx,
+            dataset,
+            search_field_references(fields, filters),
+            timeframe=timeframe,
+            allow_sample=not dry_run,
+        )
+        if field_validation.status == "rejected":
+            return create_response(data=unknown_fields_error(dataset, field_validation), is_error=True)
 
         if dry_run:
             return create_response(
@@ -152,13 +168,27 @@ async def search_logs(
                     "timeframe": timeframe,
                     "dataset_policy": policy_decision.__dict__,
                     "executed": False,
+                    "field_validation": field_validation.summary(),
                 }
             )
 
-        response_data = await _run_xql_query(ctx, xql, safe_limit, timeframe=timeframe)
+        response_data = await _run_xql_query(
+            ctx,
+            xql,
+            safe_limit,
+            timeframe=timeframe,
+            timeout_seconds=get_config().dataset_query_timeout_seconds,
+        )
         if response_data.get("error"):
             return create_response(
-                data={"error": response_data["error"], "executed": True},
+                data={
+                    "error": response_data["error"],
+                    "executed": True,
+                    "dataset": dataset,
+                    "query_id": response_data.get("query_id"),
+                    **failure_details(response_data),
+                    "field_validation": field_validation.summary(),
+                },
                 is_error=True,
             )
         rows, truncation = bound_result_rows(
@@ -175,6 +205,7 @@ async def search_logs(
                 "dataset_policy": policy_decision.__dict__,
                 "xsiam": result_metadata(response_data),
                 "truncation": truncation,
+                "field_validation": field_validation.summary(),
             }
         )
 
@@ -315,6 +346,7 @@ async def discover_log_fields(
 
         rows = extract_xql_rows(response_data)
         all_fields = infer_field_catalog(rows)
+        remember_observed_fields(dataset, (field["name"] for field in all_fields), len(rows))
         fields, truncated = filter_field_catalog(
             all_fields,
             field_name_contains=field_name_contains,

@@ -130,6 +130,7 @@ runs inside discovery and query tools.
 | `DATASET_QUERY_MAX_TIMEFRAME_MS` | `2592000000` | Maximum relative/absolute timeframe span; default 30 days. |
 | `DATASET_QUERY_CURSOR_SECRET` | empty | Secret used to encrypt and authenticate continuation cursors. Required for continuation. |
 | `DATASET_QUERY_CURSOR_TTL_SECONDS` | `900` | Cursor validity period. |
+| `DATASET_QUERY_TIMEOUT_SECONDS` | `300` | Wall-clock limit for one typed `query_dataset`, `continue_dataset_query`, or `search_logs` XQL query, including the wait for a concurrency slot; valid range 1-1500 so it stays under typical 1800-second MCP idle timeouts. The public XQL API has no cancel endpoint, so a timed-out query may keep running in XSIAM. |
 | `XQL_MAX_CONCURRENT_QUERIES` | `4` | Process-level XQL concurrency, hard-capped at XSIAM's four-query limit. |
 | `XQL_MAX_QUERY_CHARS` | `32768` | Maximum compiled or privileged raw XQL length. |
 

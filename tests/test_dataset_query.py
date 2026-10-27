@@ -18,6 +18,7 @@ from usecase.dataset_query import (
     decode_query_cursor,
     encode_query_cursor,
 )
+from usecase.field_catalog import remember_observed_fields
 from usecase.xql_results import bound_result_rows
 
 
@@ -44,6 +45,10 @@ def _ctx(groups=("DataReader",)):
         set_state=lambda key, value: state.__setitem__(key, value),
         get_state=lambda key: state.get(key),
     )
+
+
+def _remember_host_inventory_fields():
+    remember_observed_fields("host_inventory", ["host_name", "host_id", "os_type", "last_seen"], rows_observed=25)
 
 
 def test_row_query_requires_explicit_fields():
@@ -257,6 +262,7 @@ def test_result_budget_truncates_cells_fields_and_total_bytes(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_query_dataset_live_shape_generates_cursor_without_exposing_hidden_sort_fields(monkeypatch):
+    _remember_host_inventory_fields()
     monkeypatch.setattr(get_config(), "log_search_dataset_policy", '{"DataReader":["host_inventory"]}')
     monkeypatch.setattr(get_config(), "dataset_query_cursor_secret", "unit-test-cursor-secret")
 
@@ -301,6 +307,7 @@ async def test_query_dataset_live_shape_generates_cursor_without_exposing_hidden
 
 @pytest.mark.asyncio
 async def test_query_dataset_keeps_cursor_at_xsiam_result_ceiling(monkeypatch):
+    _remember_host_inventory_fields()
     monkeypatch.setattr(get_config(), "log_search_dataset_policy", '{"DataReader":["host_inventory"]}')
     monkeypatch.setattr(get_config(), "dataset_query_cursor_secret", "unit-test-cursor-secret")
     monkeypatch.setattr(get_config(), "dataset_query_max_rows", 1000)
@@ -340,6 +347,7 @@ async def test_query_dataset_keeps_cursor_at_xsiam_result_ceiling(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_continue_dataset_query_uses_cursor_seek_and_rechecks_policy(monkeypatch):
+    _remember_host_inventory_fields()
     monkeypatch.setattr(get_config(), "log_search_dataset_policy", '{"DataReader":["host_inventory"]}')
     monkeypatch.setattr(get_config(), "dataset_query_cursor_secret", "unit-test-cursor-secret")
     queries = []

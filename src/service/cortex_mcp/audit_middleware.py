@@ -19,6 +19,14 @@ from usecase.identity import (
     resolve_mcp_context,
 )
 from usecase.log_policy import ToolAuthorizationError
+from usecase.xql_builder import SAFE_IDENTIFIER_RE
+
+# Tool error codes that map to a more specific audit outcome than "error".
+_OUTCOME_BY_ERROR_CODE = {
+    "query_timeout": "timeout",
+    "unknown_fields": "rejected",
+}
+_AUDITED_ERROR_CODES = {*_OUTCOME_BY_ERROR_CODE, "xql_failed"}
 
 
 class ToolAuditMiddleware(Middleware):
@@ -97,6 +105,9 @@ def _infer_outcome(result: ToolResult) -> str:
         return "success"
 
     if str(payload.get("success", "")).lower() == "false":
+        outcome = _OUTCOME_BY_ERROR_CODE.get(str(payload.get("error_code", "")))
+        if outcome:
+            return outcome
         error = str(payload.get("error", "")).lower()
         if "not allowed" in error or "not authorized" in error or "privileged" in error:
             return "denied"
@@ -123,6 +134,15 @@ def _summarize_tool_result(result: ToolResult, fastmcp_context: Any | None = Non
             summary["query_id"] = payload["query_id"]
         if "executed" in payload:
             summary["executed"] = payload["executed"]
+        # Only identifier-shaped dataset names and gateway error codes are kept,
+        # never free text; continuation calls carry the dataset only here.
+        dataset = payload.get("dataset")
+        if isinstance(dataset, str) and len(dataset) <= 255 and SAFE_IDENTIFIER_RE.match(dataset):
+            summary["dataset"] = dataset
+        if payload.get("error_code") in _AUDITED_ERROR_CODES:
+            summary["error_code"] = payload["error_code"]
+        if isinstance(payload.get("timeout_seconds"), int):
+            summary["timeout_seconds"] = payload["timeout_seconds"]
     return summary
 
 

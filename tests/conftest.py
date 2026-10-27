@@ -17,3 +17,12 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "live" in item.keywords:
             item.add_marker(skip_live)
+
+
+@pytest.fixture(autouse=True)
+def _clear_field_catalog():
+    from usecase.field_catalog import clear_observed_fields
+
+    clear_observed_fields()
+    yield
+    clear_observed_fields()

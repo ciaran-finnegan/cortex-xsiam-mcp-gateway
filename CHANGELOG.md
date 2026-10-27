@@ -4,6 +4,22 @@ This project follows a lightweight changelog format until stable releases begin.
 
 ## Unreleased
 
+- `query_dataset` and `search_logs` now reject fields, filters, metric fields,
+  group fields, time-bucket fields, and sort fields that discovery has not
+  observed for the dataset, before execution, listing up to three nearest
+  observed names. The gateway caches field names (never values) from
+  `discover_log_fields` and runs a bounded discovery sample when nothing is
+  cached.
+- XQL job failures now relay XSIAM's reason as a sanitised `xsiam_error`
+  (literals, addresses, and long tokens redacted) alongside the existing
+  `error_reference_sha256`, for typed queries, `search_logs`, and
+  `execute_xql_query`.
+- Added `DATASET_QUERY_TIMEOUT_SECONDS` (default 300): a wall-clock limit for
+  typed queries that returns a structured `query_timeout` error and audits the
+  call with a `timeout` outcome. Field-validation rejections audit as
+  `rejected`. XSIAM's public API has no cancel endpoint, so timed-out queries
+  are abandoned, not cancelled.
+
 ## 0.2.0-alpha.1 - 2026-07-10
 
 - Added `query_dataset` with typed row projection, filters, aggregates, top-N,
