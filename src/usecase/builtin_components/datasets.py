@@ -18,10 +18,16 @@ from usecase.dataset_query import (
     encode_query_cursor,
     query_hash,
 )
+from usecase.field_catalog import (
+    FieldValidation,
+    plan_field_references,
+    unknown_fields_error,
+    validate_field_references,
+)
 from usecase.identity import resolve_mcp_context
 from usecase.log_policy import DatasetAuthorizationError, ensure_dataset_authorized
 from usecase.xql_discovery import extract_xql_rows
-from usecase.xql_executor import run_xql_query
+from usecase.xql_executor import failure_details, run_xql_query
 from usecase.xql_results import bound_result_rows, result_metadata
 
 XQLHelpTopic = Literal[
@@ -46,6 +52,8 @@ async def get_dataset_query_guidance() -> dict[str, Any]:
             "Request only necessary fields and start with a limit of 25 or less.",
             "To continue a prior page, call continue_dataset_query with only the opaque cursor exactly as returned.",
             "Use get_xql_help only when the typed query schema is insufficient or raw XQL is explicitly required.",
+            "If a query returns error_code unknown_fields, retry with one of the suggested field names; do not guess others.",
+            "If a query returns error_code query_timeout, narrow the timeframe or group on shorter fields before retrying.",
         ],
         "rules": [
             "Never invent dataset or field names.",
@@ -124,6 +132,15 @@ async def query_dataset(
             enable_continuation=enable_continuation,
         )
         compiled = build_dataset_xql(plan)
+        field_validation = await validate_field_references(
+            ctx,
+            dataset,
+            plan_field_references(plan),
+            timeframe=plan.timeframe.to_api() if plan.timeframe else None,
+            allow_sample=not dry_run,
+        )
+        if field_validation.status == "rejected":
+            return {"success": False, **unknown_fields_error(dataset, field_validation)}
         if dry_run:
             return {
                 "success": True,
@@ -133,8 +150,9 @@ async def query_dataset(
                 "xql": compiled.xql,
                 "query_sha256": query_hash(compiled.xql),
                 "dataset_policy": policy.__dict__,
+                "field_validation": field_validation.summary(),
             }
-        return await _execute_plan(ctx, principal, plan)
+        return await _execute_plan(ctx, principal, plan, field_validation=field_validation)
     except (DatasetAuthorizationError, ValueError) as e:
         return {"success": False, "executed": False, "error": str(e)}
     except Exception as e:
@@ -163,6 +181,7 @@ async def _execute_plan(
     plan: DatasetQueryPlan,
     *,
     seek_values: list[Any] | None = None,
+    field_validation: FieldValidation | None = None,
 ) -> dict[str, Any]:
     compiled = build_dataset_xql(plan, seek_values=seek_values)
     response = await run_xql_query(
@@ -170,7 +189,9 @@ async def _execute_plan(
         compiled.xql,
         compiled.result_limit,
         timeframe=plan.timeframe.to_api() if plan.timeframe else None,
+        timeout_seconds=get_config().dataset_query_timeout_seconds,
     )
+    validation_summary = {"field_validation": field_validation.summary()} if field_validation else {}
     if response.get("error"):
         return {
             "success": False,
@@ -179,6 +200,8 @@ async def _execute_plan(
             "mode": plan.mode,
             "query_id": response.get("query_id"),
             "error": response["error"],
+            **failure_details(response),
+            **validation_summary,
         }
 
     safe_limit = compiled.page_limit
@@ -211,6 +234,7 @@ async def _execute_plan(
         },
         "xsiam": result_metadata(response),
         "truncation": budget,
+        **validation_summary,
     }
 
 

@@ -157,6 +157,12 @@ class Settings(BaseSettings):
         900,
         validation_alias="DATASET_QUERY_CURSOR_TTL_SECONDS",
     )
+    dataset_query_timeout_seconds: int = Field(
+        300,
+        ge=1,
+        le=1500,
+        validation_alias="DATASET_QUERY_TIMEOUT_SECONDS",
+    )
     xql_max_concurrent_queries: int = Field(
         4,
         validation_alias="XQL_MAX_CONCURRENT_QUERIES",

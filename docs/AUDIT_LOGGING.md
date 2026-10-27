@@ -21,7 +21,7 @@ Important fields:
 | `event_id` | Unique event identifier. |
 | `timestamp` | UTC event timestamp. |
 | `phase` | `start` or `end`. |
-| `outcome` | `started`, `success`, `denied`, or `error`. |
+| `outcome` | `started`, `success`, `denied`, `rejected` (query named fields not observed by discovery), `timeout` (query exceeded `DATASET_QUERY_TIMEOUT_SECONDS` or its tool timeout), or `error`. |
 | `tool` | MCP tool name. |
 | `principal.id` | Human or service principal known to the server. |
 | `principal.groups` | Groups/app roles known to the server. |
@@ -31,6 +31,9 @@ Important fields:
 | `request.query_sha256` | SHA-256 hash of raw XQL when present. |
 | `xsiam.profile_name` | Configured nonsecret name of the XSIAM credential profile selected for the request. |
 | `xsiam.matched_group` | Verified group that selected the credential profile, when profile brokering is enabled. |
+| `result.dataset` | Dataset echoed by a query tool result, including continuation calls that carry no dataset argument. |
+| `result.error_code` | Gateway error code: `unknown_fields`, `query_timeout`, or `xql_failed`. |
+| `result.timeout_seconds` | Server-side limit that a timed-out query exceeded. |
 | `error.message_sha256` | SHA-256 of exception text; raw exception messages are not emitted. |
 
 Raw XQL is not logged by default because it can contain sensitive indicators,

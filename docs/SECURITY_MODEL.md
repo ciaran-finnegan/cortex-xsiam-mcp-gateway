@@ -102,11 +102,20 @@ than accepting an XQL string. It enforces:
 - server caps for filters, metrics, grouping, fields, rows, cell length,
   response bytes, and timeframe;
 - a process-level semaphore hard-capped at four concurrent XQL queries;
-- timeout-bounded polling;
+- a wall-clock limit per typed query (`DATASET_QUERY_TIMEOUT_SECONDS`) that
+  also covers the concurrency-slot wait and every upstream request;
+- field validation against discovered field names before execution, with a
+  bounded 25-row discovery sample when nothing is cached; only field names are
+  kept from that sample, never values;
 - removal of any columns XSIAM returns outside the requested projection;
-- metadata-only upstream HTTP and XQL failure errors so XSIAM response bodies
-  and query error details cannot echo queries, filters, or tenant data into MCP
-  responses or logs;
+- metadata-only upstream HTTP errors so XSIAM response bodies cannot echo
+  queries, filters, or tenant data into MCP responses or logs;
+- XQL job failures relayed as a sanitised `xsiam_error` capped at 300
+  characters: quoted literals are redacted unless they are identifiers from
+  the submitted query, and URLs, email and IP addresses, UUIDs, and long
+  numbers or hex tokens are replaced with placeholders; the message is never
+  logged or audited, and `error_reference_sha256` still identifies the raw
+  upstream detail;
 - untrusted-data provenance on returned rows.
 
 Continuation uses an encrypted keyset cursor instead of an offset. The cursor

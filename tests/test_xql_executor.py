@@ -68,7 +68,7 @@ async def test_xql_executor_rejects_oversized_query_before_fetcher_creation(monk
 
 
 @pytest.mark.asyncio
-async def test_xql_executor_returns_bounded_failure_without_query_text(monkeypatch):
+async def test_xql_executor_relays_sanitized_failure_reason_without_literals(monkeypatch):
     upstream_error = 'invalid field in dataset = sensitive | filter user = "private"'
     fetcher = SequenceFetcher(
         [
@@ -87,16 +87,18 @@ async def test_xql_executor_returns_bounded_failure_without_query_text(monkeypat
         "query_id": "query-2",
         "poll_attempts": 1,
         "error": "XQL query failed",
+        "error_code": "xql_failed",
         "xsiam_status": "FAILED",
+        "xsiam_error": 'invalid field in dataset = sensitive | filter user = "<redacted>"',
         "error_reference_sha256": response["error_reference_sha256"],
     }
     assert len(response["error_reference_sha256"]) == 64
-    assert upstream_error not in str(response)
+    assert "private" not in str(response)
 
 
 @pytest.mark.asyncio
 async def test_xql_executor_sanitizes_synchronous_failure(monkeypatch):
-    upstream_error = 'failed query echoed dataset = sensitive | limit 1'
+    upstream_error = 'failed query echoed dataset = sensitive | filter user = "sensitive-value" | limit 1'
     fetcher = SequenceFetcher(
         [{"reply": {"status": "ERROR", "error": upstream_error}}]
     )
@@ -111,7 +113,8 @@ async def test_xql_executor_sanitizes_synchronous_failure(monkeypatch):
     assert response["xsiam_status"] == "ERROR"
     assert response["poll_attempts"] == 0
     assert len(response["error_reference_sha256"]) == 64
-    assert upstream_error not in str(response)
+    assert response["xsiam_error"] == 'failed query echoed dataset = sensitive | filter user = "<redacted>" | limit 1'
+    assert "sensitive-value" not in str(response)
     assert len(fetcher.requests) == 1
 
 

@@ -208,6 +208,9 @@ async def test_search_logs_has_no_raw_query_or_tenant_parameters():
 @pytest.mark.asyncio
 async def test_search_logs_compatibility_path_projects_and_bounds_upstream_rows(monkeypatch):
     from config.config import get_config
+    from usecase.field_catalog import remember_observed_fields
+
+    remember_observed_fields("auth_logs", ["event_id", "unrequested"], rows_observed=25)
 
     monkeypatch.setattr(get_config(), "log_search_dataset_policy", '{"Tier1":["auth_logs"]}')
     monkeypatch.setattr(get_config(), "dataset_query_max_rows", 2)
