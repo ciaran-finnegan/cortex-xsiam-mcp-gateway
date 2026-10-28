@@ -165,6 +165,67 @@ class Settings(BaseSettings):
         32768,
         validation_alias="XQL_MAX_QUERY_CHARS",
     )
+    xql_timeout_ceiling_seconds: int = Field(
+        120,
+        ge=1,
+        validation_alias="XQL_TIMEOUT_CEILING_SECONDS",
+    )
+    xql_timeout_approved_ceiling_seconds: int = Field(
+        300,
+        ge=1,
+        validation_alias="XQL_TIMEOUT_APPROVED_CEILING_SECONDS",
+    )
+
+    # --- XQL Cost Guard Settings ---
+    cost_guard_enabled: bool = Field(True, validation_alias="COST_GUARD_ENABLED")
+    cost_guard_unit_bands: str = Field(
+        '{"light":[0.001,0.4],"medium":[0.5,3.6],"heavy":[5,9],"extreme":[10,31]}',
+        validation_alias="COST_GUARD_UNIT_BANDS",
+    )
+    cost_guard_dataset_tiers: str = Field(
+        (
+            '{"xdr_data":"heavy","xdr_*":"heavy","*_story":"heavy",'
+            '"amazon_aws_raw":"heavy","msft_azure_raw":"heavy","google_gcp_*":"heavy"}'
+        ),
+        validation_alias="COST_GUARD_DATASET_TIERS",
+    )
+    cost_guard_default_tier: str = Field("medium", validation_alias="COST_GUARD_DEFAULT_TIER")
+    cost_guard_selective_fields: str = Field(
+        "agent_hostname,agent_id,endpoint_id,endpoint_name,host_name,hostname",
+        validation_alias="COST_GUARD_SELECTIVE_FIELDS",
+    )
+    cost_guard_host_fields: str = Field(
+        '{"xdr_data":"agent_hostname"}',
+        validation_alias="COST_GUARD_HOST_FIELDS",
+    )
+    cost_guard_cheaper_datasets: str = Field(
+        '{"amazon_aws_raw":["cloud_audit_logs"],"msft_azure_raw":["cloud_audit_logs"]}',
+        validation_alias="COST_GUARD_CHEAPER_DATASETS",
+    )
+    # Fallbacks when engagement modes are not installed; they match the unset mode's operations row.
+    cost_guard_approval_threshold_units: float = Field(
+        1.0,
+        ge=0,
+        validation_alias="COST_GUARD_APPROVAL_THRESHOLD_UNITS",
+    )
+    cost_guard_reserve_units: float = Field(20.0, ge=0, validation_alias="COST_GUARD_RESERVE_UNITS")
+    cost_guard_approval_daily_cap_units: float = Field(
+        10.0,
+        ge=0,
+        validation_alias="COST_GUARD_APPROVAL_DAILY_CAP_UNITS",
+    )
+    cost_guard_daily_quota_units: float = Field(0.0, ge=0, validation_alias="COST_GUARD_DAILY_QUOTA_UNITS")
+    cost_guard_quota_stale_seconds: int = Field(300, ge=0, validation_alias="COST_GUARD_QUOTA_STALE_SECONDS")
+    cost_guard_elicitation_enabled: bool = Field(True, validation_alias="COST_GUARD_ELICITATION_ENABLED")
+    cost_guard_elicitation_timeout_seconds: int = Field(
+        120,
+        ge=1,
+        validation_alias="COST_GUARD_ELICITATION_TIMEOUT_SECONDS",
+    )
+    cost_guard_long_slot_seconds: int = Field(60, ge=1, validation_alias="COST_GUARD_LONG_SLOT_SECONDS")
+    cost_guard_long_slot_limit: int = Field(2, ge=1, validation_alias="COST_GUARD_LONG_SLOT_LIMIT")
+    cost_guard_cache_ttl_seconds: int = Field(600, ge=0, validation_alias="COST_GUARD_CACHE_TTL_SECONDS")
+    cost_guard_cache_max_entries: int = Field(64, ge=0, validation_alias="COST_GUARD_CACHE_MAX_ENTRIES")
 
     # --- Audit Settings ---
     audit_log_enabled: bool = Field(True, validation_alias="AUDIT_LOG_ENABLED")

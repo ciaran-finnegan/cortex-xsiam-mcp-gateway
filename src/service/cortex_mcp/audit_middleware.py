@@ -8,6 +8,7 @@ from fastmcp.tools.tool import ToolResult
 from config.config import get_config
 from entities.MCPContext import MCPContext
 from usecase.audit import create_tool_audit_event, emit_audit_event, now_monotonic
+from usecase.cost_guard import COST_GUARD_RULES, CostGuardRefusal
 from usecase.credential_broker import (
     clear_current_credential_selection,
     get_current_credential_selection,
@@ -97,7 +98,8 @@ def _infer_outcome(result: ToolResult) -> str:
         return "success"
 
     if str(payload.get("success", "")).lower() == "false":
-        error = str(payload.get("error", "")).lower()
+        # A cost guard refusal keeps error "cost_guard" for clients and words the denial in message.
+        error = f"{payload.get('error', '')} {payload.get('message', '')}".lower()
         if "not allowed" in error or "not authorized" in error or "privileged" in error:
             return "denied"
         return "error"
@@ -105,7 +107,7 @@ def _infer_outcome(result: ToolResult) -> str:
 
 
 def _infer_exception_outcome(error: Exception) -> str:
-    if isinstance(error, (IdentityAuthenticationError, ToolAuthorizationError)):
+    if isinstance(error, (IdentityAuthenticationError, ToolAuthorizationError, CostGuardRefusal)):
         return "denied"
     return "error"
 
@@ -123,6 +125,37 @@ def _summarize_tool_result(result: ToolResult, fastmcp_context: Any | None = Non
             summary["query_id"] = payload["query_id"]
         if "executed" in payload:
             summary["executed"] = payload["executed"]
+        quota = _quota_summary(payload.get("quota"))
+        if quota:
+            summary["quota"] = quota
+        if payload.get("error") == "cost_guard" and payload.get("rule") in COST_GUARD_RULES:
+            summary["cost_guard_rule"] = payload["rule"]
+    return summary
+
+
+_QUOTA_NUMBER_FIELDS = ("estimate_units", "actual_units", "remaining_units", "session_spent_units")
+_QUOTA_LABEL_FIELDS = {
+    "estimate_class": {"light", "medium", "heavy", "extreme"},
+    "actual_units_source": {"query_cost", "remaining_quota_delta", "cache"},
+    "approval_method": {"elicitation", "approval_argument"},
+}
+
+
+def _quota_summary(quota: Any) -> dict[str, Any] | None:
+    """Copy only numeric and allowlisted quota fields so tool output cannot inject audit content."""
+    if not isinstance(quota, dict):
+        return None
+    summary: dict[str, Any] = {}
+    for key in _QUOTA_NUMBER_FIELDS:
+        value = quota.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            summary[key] = value
+    for key, allowed in _QUOTA_LABEL_FIELDS.items():
+        if quota.get(key) in allowed:
+            summary[key] = quota[key]
+    for key in ("cached", "approved"):
+        if isinstance(quota.get(key), bool):
+            summary[key] = quota[key]
     return summary
 
 

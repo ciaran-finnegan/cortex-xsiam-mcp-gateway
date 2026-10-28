@@ -17,3 +17,12 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "live" in item.keywords:
             item.add_marker(skip_live)
+
+
+@pytest.fixture(autouse=True)
+def _reset_cost_guard_state():
+    from usecase import cost_guard
+
+    cost_guard.reset_state()
+    yield
+    cost_guard.reset_state()

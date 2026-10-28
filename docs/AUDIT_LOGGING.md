@@ -73,6 +73,36 @@ group, and SHA-256 of the API key ID; API key values are never included.
 }
 ```
 
+## Cost Guard Events
+
+The XQL cost guard emits `event_type=cortex_xsiam_mcp.cost_guard` (schema
+version `1.0`) for every refusal, approval, and elicitation outcome, in
+addition to the tool invocation events. See the cost guard section of
+`CONFIGURATION.md` for the rules.
+
+| Field | Description |
+| --- | --- |
+| `decision` | `refused`, `approved`, or `elicitation`. |
+| `outcome` | `denied` or `approved`; for elicitation `accepted`, `declined`, `cancelled`, `timeout`, or `error`. |
+| `tool` | Tool that submitted the query. |
+| `principal.id`, `principal.groups` | As in tool invocation events. |
+| `cost_guard.rule` | Refusal rule: `approval_required`, `approval_declined`, `approval_cap`, `reserve`, or `long_running_slots`. |
+| `cost_guard.mode`, `cost_guard.policy_source` | Engagement mode and whether the threshold came from the mode policy or settings. |
+| `cost_guard.estimate_class`, `estimate_low_units`, `estimate_high_units` | Estimate band. |
+| `cost_guard.datasets`, `cost_guard.window_ms` | Datasets referenced and the effective window. |
+| `cost_guard.remaining_units`, `reserve_units`, `approval_threshold_units` | Quota position at the decision. |
+| `cost_guard.query_sha256` | SHA-256 of the submitted XQL. Query text is never included. |
+| `cost_guard.approval_method` | `elicitation` or `approval_argument`. |
+| `cost_guard.approval_sha256` | SHA-256 of the analyst's approval text. The text itself is never logged. |
+| `cost_guard.approval_reason` | `estimate_above_threshold` or `extended_timeout`. |
+| `cost_guard.approved_units`, `approved_today_units`, `approval_cap_units` | Units approved, the principal's UTC-day total, and the cap. |
+
+Tool invocation end events also carry `result.quota` (numeric
+`estimate_units`, `actual_units`, `remaining_units`, `session_spent_units`;
+`estimate_class`, `actual_units_source`, `approval_method` from fixed value
+sets; `cached` and `approved` booleans) and `result.cost_guard_rule` for a
+refusal. A refusal's end event has `outcome=denied`.
+
 ## Local Structured Logs
 
 Audit events are written through the `cortex_xsiam_mcp.audit` logger as compact

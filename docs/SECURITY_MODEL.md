@@ -102,7 +102,11 @@ than accepting an XQL string. It enforces:
 - server caps for filters, metrics, grouping, fields, rows, cell length,
   response bytes, and timeframe;
 - a process-level semaphore hard-capped at four concurrent XQL queries;
-- timeout-bounded polling;
+- timeout-bounded polling, capped at `XQL_TIMEOUT_CEILING_SECONDS`;
+- the XQL cost guard, which applies to raw and typed queries alike: a required
+  timeframe, an estimate per query, refusal above the approval threshold
+  without approval, and refusal of any query that would take the shared quota
+  below the automation reserve, which approval cannot override;
 - removal of any columns XSIAM returns outside the requested projection;
 - metadata-only upstream HTTP and XQL failure errors so XSIAM response bodies
   and query error details cannot echo queries, filters, or tenant data into MCP

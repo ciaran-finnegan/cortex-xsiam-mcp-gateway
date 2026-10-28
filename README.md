@@ -43,6 +43,10 @@ Implemented in this fork:
   time-bucketed trends across any policy-allowed XSIAM dataset.
 - Encrypted, principal-bound keyset continuation for bounded row pagination.
 - Server-side row, field, cell, byte, timeframe, and concurrency limits.
+- An XQL cost guard on every query path: required timeframes, unit estimates,
+  approval and automation-reserve rules, cheaper alternatives, a `quota` block
+  on each result, and a short result cache. See
+  [Configuration](docs/CONFIGURATION.md#xql-cost-guard).
 - Dataset allowlist enforcement before discovery, compilation, or execution.
 - Privileged-group restriction for the legacy `execute_xql_query` tool.
 - Entra ID JWT validation for HTTP transport.
