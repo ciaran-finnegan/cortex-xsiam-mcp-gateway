@@ -177,9 +177,9 @@ the `actual_units` each result records.
 Rules, in order:
 
 1. A cached result for the same principal, groups, dataset policy, XSIAM
-   credential profile and profile configuration, query text, timeframe, and
-   limit is returned within `COST_GUARD_CACHE_TTL_SECONDS` without spending
-   quota. The credential broker is checked first, so a principal it now rejects
+   credential profile, profile configuration, API key fingerprint, query text,
+   timeframe, and limit is returned within `COST_GUARD_CACHE_TTL_SECONDS`
+   without spending quota. The credential broker is checked first, so a principal it now rejects
    gets no cached result.
 2. While `COST_GUARD_LONG_SLOT_LIMIT` queries have held a query slot longer than
    `COST_GUARD_LONG_SLOT_SECONDS`, new heavy and extreme queries are refused.
@@ -215,7 +215,11 @@ A refusal returns `success: false`, `error: "cost_guard"`, a `message` beginning
 7 days and 24 hours of the window, a host filter when the engagement lists
 servers, counts instead of rows, a cheaper dataset that the principal may query
 (field names differ, so it carries no XQL), and the unchanged XQL for the XSIAM
-console, which is not charged to the API quota.
+console, which is not charged to the API quota. A query run in the console is
+outside this gateway: its cost guard, MCP audit events, raw-XQL privilege
+check, and dataset policy do not apply. This repository does not define the
+console's own authorization, audit, or cost controls; confirm them separately
+before relying on that alternative.
 
 Every result carries `quota`: `estimate_units`, `estimate_class`,
 `estimate_band`, `actual_units` (from `query_cost`, else the drop in

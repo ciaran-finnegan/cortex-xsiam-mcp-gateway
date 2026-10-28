@@ -665,7 +665,14 @@ async def prepare_query(
     # Check credential eligibility first, so a principal the broker would now reject cannot
     # read a result cached while it was eligible. Raises CredentialBrokerError.
     selection = select_xsiam_credentials(principal, _lifespan_auth_headers(ctx))
-    ticket.cache_key = _cache_key(principal, query, ticket.timeframe_api, result_limit, selection.profile_name)
+    ticket.cache_key = _cache_key(
+        principal,
+        query,
+        ticket.timeframe_api,
+        result_limit,
+        selection.profile_name,
+        _credential_fingerprint(selection.auth_headers),
+    )
     cached = _cache_lookup(ticket.cache_key)
     if cached is not None:
         cached["quota"].update(
@@ -1374,6 +1381,7 @@ def _cache_key(
     timeframe_api: dict[str, int],
     result_limit: int,
     credential_profile: str,
+    credential_fingerprint: str,
 ) -> str:
     config = get_config()
     credential_policy = f"{config.xsiam_credential_broker_enabled}:{config.xsiam_credential_profiles}"
@@ -1385,6 +1393,7 @@ def _cache_key(
         "dataset_policy_sha256": hashlib.sha256(config.log_search_dataset_policy.encode()).hexdigest(),
         "credential_profile": credential_profile,
         "credential_policy_sha256": hashlib.sha256(credential_policy.encode()).hexdigest(),
+        "credential_sha256": credential_fingerprint,
         "query": query,
         "timeframe": timeframe_api,
         "result_limit": int(result_limit),
@@ -1452,6 +1461,20 @@ def _principal_key(principal: MCPContext) -> str:
         "auth_source": principal.auth_source,
     }
     return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _credential_fingerprint(auth_headers: dict[str, str]) -> str:
+    """One-way fingerprint of the XSIAM key a query will use, so a rotated key misses the cache.
+
+    Mirrors get_fetcher: the selected profile's headers, else the server's configured key.
+    The fingerprint only feeds the in-memory cache key and is never logged or returned.
+    """
+    config = get_config()
+    api_key = auth_headers.get("Authorization")
+    key_id = auth_headers.get("X-XDR-AUTH-ID")
+    if not (api_key and key_id):
+        api_key, key_id = config.papi_auth_header_key, config.papi_auth_id_key
+    return hashlib.sha256(f"{key_id}\x00{api_key}".encode()).hexdigest()
 
 
 def _lifespan_auth_headers(ctx: Any) -> dict[str, str]:

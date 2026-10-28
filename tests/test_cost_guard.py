@@ -1010,6 +1010,33 @@ async def test_cache_is_not_served_once_the_credential_broker_rejects_the_princi
 
 
 @pytest.mark.asyncio
+async def test_cache_misses_after_a_key_rotation_under_the_same_profile(monkeypatch, fetcher):
+    monkeypatch.setattr(get_config(), "xsiam_credential_broker_enabled", True)
+    monkeypatch.setattr(
+        get_config(),
+        "xsiam_credential_profiles",
+        '{"Security":{"priority":10,"profile_name":"security-readonly","api_key_env":"ACME_TEST_KEY","api_key_id_env":"ACME_TEST_KEY_ID"}}',
+    )
+    monkeypatch.setenv("ACME_TEST_KEY", "synthetic-key-one")
+    monkeypatch.setenv("ACME_TEST_KEY_ID", "1")
+    fetcher.fetcher = SequenceFetcher([_success(), _success(), _success()])
+    query = "dataset = acme_alerts | fields alert_id | limit 5"
+
+    await xql_executor.run_xql_query(_ctx(), query, 5, timeframe=_days(1))
+    monkeypatch.setenv("ACME_TEST_KEY", "synthetic-key-two")
+    rotated = await xql_executor.run_xql_query(_ctx(), query, 5, timeframe=_days(1))
+    monkeypatch.setattr(get_config(), "xsiam_credential_broker_enabled", False)
+    monkeypatch.setattr(get_config(), "papi_auth_header_key", "synthetic-server-key")
+    monkeypatch.setattr(get_config(), "papi_auth_id_key", "2")
+    server_key = await xql_executor.run_xql_query(_ctx(), query, 5, timeframe=_days(1))
+
+    assert rotated["quota"]["cached"] is False
+    assert server_key["quota"]["cached"] is False
+    assert len(fetcher.fetcher.requests) == 3
+    assert "synthetic-key" not in json.dumps(list(cost_guard._cache))
+
+
+@pytest.mark.asyncio
 async def test_cache_can_be_disabled(monkeypatch, fetcher):
     monkeypatch.setattr(get_config(), "cost_guard_cache_ttl_seconds", 0)
     fetcher.fetcher = SequenceFetcher([_success(), _success()])
