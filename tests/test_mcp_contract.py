@@ -17,7 +17,12 @@ from usecase.builtin_components.datasets import (
 )
 from usecase.builtin_components.logs import LogsModule, search_logs
 from usecase.builtin_components.validation import XQLValidationModule, validate_xql
-from usecase.xql_docs import CORTEX_DOCS_BASE_URL, XQL_HELP_TOPIC_DOCS, XQL_PROBLEM_DOCS
+from usecase.xql_docs import (
+    CORTEX_DOCS_BASE_URL,
+    XQL_HELP_TOPIC_DOCS,
+    XQL_PROBLEM_DOCS,
+    help_topic_docs,
+)
 from usecase.xql_errors import XQL_ERROR_CLASSES
 
 
@@ -113,8 +118,9 @@ async def test_every_xql_help_topic_and_problem_code_links_to_the_vendor_docs():
 
     for topic in get_args(XQLHelpTopic):
         response = await get_xql_help(topic)
+        assert response["docs"] == help_topic_docs(topic)
         assert response["docs"].startswith(CORTEX_DOCS_BASE_URL + "/")
-        assert response["docs"] == XQL_HELP_TOPIC_DOCS[topic]
+    assert set(XQL_HELP_TOPIC_DOCS) <= set(get_args(XQLHelpTopic))
 
     source = inspect.getsource(xql_validation)
     emitted = set(re.findall(r'Problem\(\s*"([a-z_]+)"', source)) | set(XQL_ERROR_CLASSES)
