@@ -33,6 +33,7 @@ import json
 import logging
 import math
 import re
+import secrets
 import time
 from collections import OrderedDict
 from collections.abc import Iterator
@@ -566,6 +567,8 @@ _approved_units: dict[tuple[str, date], float] = {}
 _spent_units: dict[tuple[str, date], float] = {}
 _cache: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
 _tokens = itertools.count(1)
+_FINGERPRINT_SALT = secrets.token_bytes(16)
+_FINGERPRINT_ITERATIONS = 20_000
 
 
 def reset_state() -> None:
@@ -1467,14 +1470,17 @@ def _credential_fingerprint(auth_headers: dict[str, str]) -> str:
     """One-way fingerprint of the XSIAM key a query will use, so a rotated key misses the cache.
 
     Mirrors get_fetcher: the selected profile's headers, else the server's configured key.
-    The fingerprint only feeds the in-memory cache key and is never logged or returned.
+    PBKDF2 with a salt drawn at start-up keeps the fingerprint slow to brute-force and
+    unlinkable across processes. It only feeds the in-memory cache key and is never logged
+    or returned.
     """
     config = get_config()
     api_key = auth_headers.get("Authorization")
     key_id = auth_headers.get("X-XDR-AUTH-ID")
     if not (api_key and key_id):
         api_key, key_id = config.papi_auth_header_key, config.papi_auth_id_key
-    return hashlib.sha256(f"{key_id}\x00{api_key}".encode()).hexdigest()
+    secret = f"{key_id}\x00{api_key}".encode()
+    return hashlib.pbkdf2_hmac("sha256", secret, _FINGERPRINT_SALT, _FINGERPRINT_ITERATIONS).hex()
 
 
 def _lifespan_auth_headers(ctx: Any) -> dict[str, str]:
