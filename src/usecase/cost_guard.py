@@ -49,10 +49,7 @@ from mcp.types import ClientCapabilities, ElicitationCapability
 from config.config import get_config
 from entities.MCPContext import MCPContext
 from usecase.audit import create_cost_guard_audit_event, emit_audit_event
-from usecase.credential_broker import (
-    get_current_credential_selection,
-    select_xsiam_credentials,
-)
+from usecase.credential_broker import select_xsiam_credentials
 from usecase.dataset_query import QueryTimeframe
 from usecase.identity import resolve_mcp_context
 from usecase.log_policy import authorize_dataset
@@ -563,6 +560,7 @@ class GuardTicket:
     # Set by the executor just before the start request, so a query that never reached XSIAM is not debited.
     submitted: bool = False
     credential_fingerprint: str | None = None
+    fetch_fingerprint: str | None = None
 
 
 _quota: dict[str, _QuotaObservation] = {}
@@ -780,16 +778,14 @@ async def finish_query(ctx: Any, ticket: GuardTicket, response: dict[str, Any]) 
 
 
 async def _fetched_with_ticket_credential(ticket: GuardTicket) -> bool:
-    """True when the credential get_fetcher used is the one the cache key was built from.
+    """True when the key the fetcher submitted with is the one the cache key was built from.
 
     get_fetcher selects the credential again at submission. If a key changed while the query
     waited, the reply is not cached, so it can never be served under the other key's identity.
     """
-    used = get_current_credential_selection()
-    if used is None or ticket.credential_fingerprint is None:
+    if ticket.fetch_fingerprint is None or ticket.credential_fingerprint is None:
         return False
-    fingerprint = await _credential_fingerprint_async(used.auth_headers)
-    return hmac.compare_digest(fingerprint, ticket.credential_fingerprint)
+    return hmac.compare_digest(ticket.fetch_fingerprint, ticket.credential_fingerprint)
 
 
 def _timed_out(response: dict[str, Any]) -> bool:
@@ -1501,6 +1497,10 @@ def _credential_fingerprint(auth_headers: dict[str, str]) -> str:
     key_id = auth_headers.get("X-XDR-AUTH-ID")
     if not (api_key and key_id):
         api_key, key_id = config.papi_auth_header_key, config.papi_auth_id_key
+    return _key_fingerprint(key_id, api_key)
+
+
+def _key_fingerprint(key_id: Any, api_key: Any) -> str:
     secret = f"{key_id}\x00{api_key}".encode()
     return hashlib.pbkdf2_hmac("sha256", secret, _FINGERPRINT_SALT, _FINGERPRINT_ITERATIONS).hex()
 
@@ -1508,6 +1508,21 @@ def _credential_fingerprint(auth_headers: dict[str, str]) -> str:
 async def _credential_fingerprint_async(auth_headers: dict[str, str]) -> str:
     # PBKDF2 takes a few milliseconds; run it off the event loop.
     return await asyncio.to_thread(_credential_fingerprint, auth_headers)
+
+
+async def record_fetch_credential(ticket: GuardTicket, fetcher: Any) -> None:
+    """Fingerprint the key the fetcher will submit with, for the cache check in finish_query.
+
+    Read from the fetcher itself, not from settings or the broker again, so a key that
+    changed and changed back while the query ran cannot match.
+    """
+    if ticket.cache_key is None:
+        return
+    api_key = getattr(fetcher, "api_key", None)
+    key_id = getattr(fetcher, "api_key_id", None)
+    if not (api_key and key_id):
+        return
+    ticket.fetch_fingerprint = await asyncio.to_thread(_key_fingerprint, key_id, api_key)
 
 
 def _cache_enabled() -> bool:

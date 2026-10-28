@@ -16,7 +16,7 @@ from entities.MCPContext import MCPContext
 from service.cortex_mcp import audit_middleware
 from usecase import cost_guard, xql_executor
 from usecase.builtin_components import datasets, issues, logs
-from usecase.credential_broker import CredentialBrokerError
+from usecase.credential_broker import CredentialBrokerError, select_xsiam_credentials
 from usecase.dataset_query import QueryTimeframe
 
 DAY_MS = 86_400_000
@@ -62,6 +62,8 @@ def _success(rows=None, **reply):
 def guard_settings(monkeypatch):
     config = get_config()
     monkeypatch.setattr(config, "identity_auth_mode", "none")
+    monkeypatch.setattr(config, "papi_auth_header_key", "synthetic-default-key")
+    monkeypatch.setattr(config, "papi_auth_id_key", "9")
     monkeypatch.setattr(config, "cost_guard_dataset_tiers", TIERS)
     monkeypatch.setattr(config, "cost_guard_approval_threshold_units", 1.0)
     monkeypatch.setattr(config, "cost_guard_reserve_units", 10.0)
@@ -88,12 +90,24 @@ def audit_events(monkeypatch):
     return events
 
 
+def _bind_credentials(fetcher, ctx):
+    """Give a fake fetcher the key the real get_fetcher would choose for this context."""
+    principal = ctx.request_context.lifespan_context
+    selection = select_xsiam_credentials(principal, principal.auth_headers)
+    api_key = selection.auth_headers.get("Authorization")
+    key_id = selection.auth_headers.get("X-XDR-AUTH-ID")
+    if not (api_key and key_id):
+        api_key, key_id = get_config().papi_auth_header_key, get_config().papi_auth_id_key
+    fetcher.api_key, fetcher.api_key_id = api_key, key_id
+    return fetcher
+
+
 @pytest.fixture
 def fetcher(monkeypatch):
     holder = SimpleNamespace(fetcher=SequenceFetcher([]))
 
     async def fake_get_fetcher(ctx):
-        return holder.fetcher
+        return _bind_credentials(holder.fetcher, ctx) if ctx is not None else holder.fetcher
 
     monkeypatch.setattr(xql_executor, "get_fetcher", fake_get_fetcher)
     return holder
@@ -1056,8 +1070,6 @@ async def test_cache_misses_after_the_server_key_rotates_with_the_broker_disable
 
 @pytest.mark.asyncio
 async def test_reply_is_not_cached_when_the_key_changes_before_submission(monkeypatch):
-    from usecase.credential_broker import select_xsiam_credentials
-
     monkeypatch.setattr(get_config(), "xsiam_credential_broker_enabled", True)
     monkeypatch.setattr(
         get_config(),
@@ -1071,10 +1083,29 @@ async def test_reply_is_not_cached_when_the_key_changes_before_submission(monkey
     async def rotating_get_fetcher(ctx):
         # A key rotated while the query waited for a slot; get_fetcher selects again.
         monkeypatch.setenv("ACME_TEST_KEY", "synthetic-key-two")
-        select_xsiam_credentials(ctx.request_context.lifespan_context, {})
-        return SequenceFetcher([_success()])
+        return _bind_credentials(SequenceFetcher([_success()]), ctx)
 
     monkeypatch.setattr(xql_executor, "get_fetcher", rotating_get_fetcher)
+    response = await xql_executor.run_xql_query(ctx, "dataset = acme_alerts | fields alert_id | limit 5", 5, timeframe=_days(1))
+
+    assert response["quota"]["cached"] is False
+    assert len(cost_guard._cache) == 0
+
+
+@pytest.mark.asyncio
+async def test_reply_fetched_with_another_server_key_is_not_cached_after_the_key_changes_back(monkeypatch):
+    monkeypatch.setattr(get_config(), "xsiam_credential_broker_enabled", False)
+    monkeypatch.setattr(get_config(), "papi_auth_header_key", "synthetic-server-key-a")
+    ctx = _ctx()
+
+    async def a_b_a_get_fetcher(ctx):
+        # The server key is B when the fetcher is built and A again before the reply is recorded.
+        monkeypatch.setattr(get_config(), "papi_auth_header_key", "synthetic-server-key-b")
+        fetcher = _bind_credentials(SequenceFetcher([_success()]), ctx)
+        monkeypatch.setattr(get_config(), "papi_auth_header_key", "synthetic-server-key-a")
+        return fetcher
+
+    monkeypatch.setattr(xql_executor, "get_fetcher", a_b_a_get_fetcher)
     response = await xql_executor.run_xql_query(ctx, "dataset = acme_alerts | fields alert_id | limit 5", 5, timeframe=_days(1))
 
     assert response["quota"]["cached"] is False

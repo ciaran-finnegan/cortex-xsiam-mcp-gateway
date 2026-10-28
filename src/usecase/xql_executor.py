@@ -74,6 +74,7 @@ async def _submit_and_poll(
     async with _query_semaphore():
         with cost_guard.track_slot():
             fetcher = await get_fetcher(ctx)
+            await cost_guard.record_fetch_credential(ticket, fetcher)
             request_data: dict[str, Any] = {"query": query, "timeframe": timeframe}
 
             ticket.submitted = True
