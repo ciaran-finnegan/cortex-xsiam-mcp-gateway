@@ -155,7 +155,9 @@ production hardening in the roadmap.
 
 | Tool | Purpose | Current control |
 | --- | --- | --- |
-| `get_dataset_query_guidance` | Return compact instructions for LLM agents querying XSIAM datasets. | Tool policy and audit. |
+| `set_engagement`, `get_engagement` | Set and read the session's engagement mode and investigation scope. | Tool policy, scope validation, principal-bound state; modes only narrow access. |
+| `record_fact`, `get_engagement_log` | Record findings tied to executed queries and read the case or session log. | Tool policy, principal-scoped case store, evidence must be a query this engagement ran. |
+| `get_dataset_query_guidance` | Return compact instructions for LLM agents querying XSIAM datasets, for the current mode. | Tool policy and audit. |
 | `list_log_datasets` | Discover datasets the current principal is allowed to query. | Tool policy, dataset allowlist policy, capped output. |
 | `discover_log_fields` | Run a bounded XQL sample against one allowed dataset and return observed fields. | Tool policy, dataset allowlist policy, capped output, no sample values. |
 | `query_dataset` | Execute a typed row or aggregate plan for one explicit dataset. | Tool policy, dataset policy, compiler allowlists, output budgets. |
@@ -179,7 +181,8 @@ production hardening in the roadmap.
 The primary enterprise path is agent-driven:
 
 1. The user asks a plain-English question.
-2. The LLM agent calls `get_dataset_query_guidance`.
+2. The LLM agent calls `set_engagement` with a mode and scope, then
+   `get_dataset_query_guidance`.
 3. The agent calls `list_log_datasets` to find allowed candidate datasets.
 4. The agent calls `discover_log_fields` for one candidate dataset to learn
    observed field names and types from a bounded XQL sample.
@@ -193,7 +196,8 @@ agent while keeping the MCP server focused on policy, compact discovery, XQL
 execution, and audit logging. The server does not accept natural-language log
 queries.
 
-See [Agent Log Search](docs/AGENT_LOG_SEARCH.md) and
+See [Agent Log Search](docs/AGENT_LOG_SEARCH.md),
+[Engagement Modes](docs/ENGAGEMENT_MODES.md), and
 [Claude Code/Codex Log Search Testing](docs/CLAUDE_CODE_LOG_SEARCH_TESTING.md).
 
 ### Raw XQL

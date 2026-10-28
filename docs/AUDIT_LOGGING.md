@@ -25,12 +25,18 @@ Important fields:
 | `tool` | MCP tool name. |
 | `principal.id` | Human or service principal known to the server. |
 | `principal.groups` | Groups/app roles known to the server. |
+| `engagement.mode` | Engagement mode in effect: `incident_response`, `threat_hunt`, `operations`, or `unset`. The end event of `set_engagement` records the new mode. |
+| `engagement.case_id` | Validated case id of the engagement, or `null`. |
 | `request.argument_names` | Names of supplied tool arguments. |
 | `request.argument_hash` | SHA-256 hash of the redacted argument object. |
 | `request.dataset` | Dataset when present. |
 | `request.query_sha256` | SHA-256 hash of raw XQL when present. |
 | `xsiam.profile_name` | Configured nonsecret name of the XSIAM credential profile selected for the request. |
 | `xsiam.matched_group` | Verified group that selected the credential profile, when profile brokering is enabled. |
+| `request.engagement_mode`, `request.scope_counts` | `set_engagement` mode and scope list sizes. Scope values and notes are never logged. |
+| `request.fact_key`, `request.evidence_query_id` | `record_fact` key and evidence query; the fact value is never logged. |
+| `result.previous_mode` | Mode before a `set_engagement` call. |
+| `result.xsiam_credential_profile` | Credential profile selected during this request only. |
 | `error.message_sha256` | SHA-256 of exception text; raw exception messages are not emitted. |
 
 Raw XQL is not logged by default because it can contain sensitive indicators,
@@ -56,6 +62,10 @@ group, and SHA-256 of the API key ID; API key values are never included.
   "principal": {
     "id": "analyst@example.com",
     "groups": ["Tier1"]
+  },
+  "engagement": {
+    "mode": "incident_response",
+    "case_id": "IR-2026-001"
   },
   "request": {
     "argument_names": ["dataset", "fields", "filters", "limit", "mode"],

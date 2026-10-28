@@ -10,6 +10,7 @@ import httpx
 
 from config.config import get_config
 from entities.MCPContext import MCPContext
+from usecase.engagement import ENGAGEMENT_MODES, SCOPE_LISTS, normalize_audit_token
 
 logger = logging.getLogger("cortex_xsiam_mcp.audit")
 
@@ -80,6 +81,23 @@ def summarize_tool_arguments(tool_name: str, arguments: dict[str, Any] | None) -
     if tool_name == "execute_xql_query" and "query" not in arguments:
         summary["raw_xql_requested"] = True
 
+    if tool_name == "set_engagement":
+        # Scope values, window, and notes stay out of the event; argument_hash covers them.
+        mode = arguments.get("mode")
+        summary["engagement_mode"] = mode if mode in ENGAGEMENT_MODES else "invalid"
+        summary["case_id"] = normalize_audit_token(arguments.get("case_id"))
+        summary["scope_counts"] = {
+            name: len(arguments[name]) for name in SCOPE_LISTS if isinstance(arguments.get(name), list)
+        }
+        summary["window_provided"] = arguments.get("window") is not None
+        summary["notes_provided"] = arguments.get("notes") is not None
+    if tool_name == "record_fact":
+        summary["fact_key"] = normalize_audit_token(arguments.get("key"))
+        summary["evidence_query_id"] = normalize_audit_token(arguments.get("evidence_query_id"))
+        summary["confidence"] = arguments.get("confidence") if arguments.get("confidence") in ("low", "medium", "high") else "invalid"
+    if tool_name == "get_engagement_log":
+        summary["case_id"] = normalize_audit_token(arguments.get("case_id"))
+
     return summary
 
 
@@ -109,6 +127,10 @@ def create_tool_audit_event(
         "principal": {
             "id": principal.principal_id,
             "groups": list(principal.groups),
+        },
+        "engagement": {
+            "mode": principal.mode,
+            "case_id": principal.case_id,
         },
         "request": summarize_tool_arguments(tool_name, arguments),
     }

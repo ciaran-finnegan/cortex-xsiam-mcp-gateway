@@ -1,11 +1,10 @@
 import json
 import os
-from types import SimpleNamespace
 
 import pytest
+from fake_context import fake_context
 
 from config.config import get_config
-from entities.MCPContext import MCPContext
 from usecase.builtin_components import datasets, logs
 from usecase.dataset_query import (
     QueryMetric,
@@ -39,20 +38,13 @@ def _configure_live_context(monkeypatch, values):
     monkeypatch.setattr(config, "xsiam_credential_broker_enabled", False)
     monkeypatch.setattr(config, "log_search_dataset_policy", '{"LiveTest":["*"]}')
     monkeypatch.setattr(config, "dataset_query_cursor_secret", "ephemeral-live-test-cursor-secret")
-    state = {}
-    return SimpleNamespace(
-        request_context=SimpleNamespace(
-            lifespan_context=MCPContext(
-                auth_headers={
-                    "Authorization": values["api_key"],
-                    "X-XDR-AUTH-ID": values["api_key_id"],
-                },
-                principal_id="live-test-principal",
-                groups=("LiveTest",),
-            )
-        ),
-        set_state=lambda key, value: state.__setitem__(key, value),
-        get_state=lambda key: state.get(key),
+    return fake_context(
+        principal_id="live-test-principal",
+        groups=("LiveTest",),
+        auth_headers={
+            "Authorization": values["api_key"],
+            "X-XDR-AUTH-ID": values["api_key_id"],
+        },
     )
 
 

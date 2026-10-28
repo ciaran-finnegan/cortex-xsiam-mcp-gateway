@@ -5,6 +5,7 @@ import time
 from typing import Any
 
 from config.config import get_config
+from usecase.engagement import record_query_telemetry
 from usecase.fetcher import get_fetcher
 from usecase.xql_builder import MAX_XQL_RESULT_LIMIT
 
@@ -12,6 +13,50 @@ _semaphores: dict[tuple[int, int], asyncio.Semaphore] = {}
 
 
 async def run_xql_query(
+    ctx,
+    query: str,
+    result_limit: int,
+    *,
+    timeframe: dict[str, int] | None = None,
+    poll_interval_seconds: float = 1,
+    timeout_seconds: int = 60,
+) -> dict[str, Any]:
+    """Run one XQL query and record its dataset, window, rows, units, and duration in the engagement log.
+
+    Recording is telemetry only: it never blocks or alters a query. Duration uses
+    its own clock so it stays independent of the polling deadline.
+    """
+    started = time.monotonic()
+    try:
+        response = await _run_xql_query(
+            ctx,
+            query,
+            result_limit,
+            timeframe=timeframe,
+            poll_interval_seconds=poll_interval_seconds,
+            timeout_seconds=timeout_seconds,
+        )
+    except Exception as e:
+        await record_query_telemetry(
+            ctx,
+            query=query,
+            timeframe=timeframe,
+            response=None,
+            duration_ms=(time.monotonic() - started) * 1000,
+            error=e,
+        )
+        raise
+    await record_query_telemetry(
+        ctx,
+        query=query,
+        timeframe=timeframe,
+        response=response,
+        duration_ms=(time.monotonic() - started) * 1000,
+    )
+    return response
+
+
+async def _run_xql_query(
     ctx,
     query: str,
     result_limit: int,
