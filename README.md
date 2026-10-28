@@ -162,6 +162,7 @@ production hardening in the roadmap.
 | `continue_dataset_query` | Retrieve one bounded next page using an opaque keyset cursor. | Cursor encryption, principal/group/policy binding, policy recheck. |
 | `get_xql_help` | Return one compact XQL/typed-query recipe to the client agent. | No tenant data; tool policy and audit. |
 | `search_logs` | Compatibility wrapper for simple typed row searches. | Explicit dataset, required fields, dataset policy; no raw query argument. |
+| `validate_xql` | Check raw XQL before it runs: limit, dataset, field names, enum and address comparisons, timeframe; deterministic fixes and docs links. Optional one-hour `limit 1` probe. | Tool policy, dataset policy before any lookup; probe needs the raw-XQL grants. |
 | `execute_xql_query` | Execute analyst-authored raw XQL. | Tool policy, privileged groups, and an all-datasets policy grant. |
 | `get_xql_query_quota` | Retrieve XQL query quota usage. | Tool policy and audit. |
 | `get_issues` | Search XSIAM issues/alerts. | Tool policy and audit. |
@@ -213,6 +214,11 @@ requires both membership in `RAW_XQL_PRIVILEGED_GROUPS` and a `*` dataset grant.
 It also requires a terminal numeric `| limit N` stage, which the server clamps
 to its result policy before submitting the query. Routine Claude Code/Codex
 workflows should use `query_dataset`.
+
+Call `validate_xql` before `execute_xql_query`. It returns problems with
+deterministic fixes and a documentation link for each, and failed queries now
+return a safe error class (`unknown_field`, `syntax_error`, and so on) instead of
+only a hash. See [XQL Validation](docs/XQL_VALIDATION.md).
 
 ### Structured Search
 

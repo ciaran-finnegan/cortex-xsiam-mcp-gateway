@@ -165,6 +165,7 @@ class Settings(BaseSettings):
         32768,
         validation_alias="XQL_MAX_QUERY_CHARS",
     )
+    xql_enum_fields: str = Field("{}", validation_alias="XQL_ENUM_FIELDS")
 
     # --- Audit Settings ---
     audit_log_enabled: bool = Field(True, validation_alias="AUDIT_LOG_ENABLED")

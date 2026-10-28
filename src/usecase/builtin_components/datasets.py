@@ -21,6 +21,8 @@ from usecase.dataset_query import (
 from usecase.identity import resolve_mcp_context
 from usecase.log_policy import DatasetAuthorizationError, ensure_dataset_authorized
 from usecase.xql_discovery import extract_xql_rows
+from usecase.xql_docs import DOCS_GUIDANCE, help_topic_docs
+from usecase.xql_errors import xql_error_details
 from usecase.xql_executor import run_xql_query
 from usecase.xql_results import bound_result_rows, result_metadata
 
@@ -61,8 +63,19 @@ async def get_dataset_query_guidance() -> dict[str, Any]:
 async def get_xql_help(
     topic: Annotated[XQLHelpTopic, Field(description="Narrow XQL or structured-query topic.")],
 ) -> dict[str, Any]:
-    """Return a compact, generic, tested XQL recipe for one topic."""
-    return {"success": True, "topic": topic, **_XQL_HELP[topic]}
+    """Return a compact, generic, tested XQL recipe for one topic.
+
+    Each topic carries a docs URL on the vendor's public Cortex documentation site. Clients
+    connected to the Cortex documentation MCP server should fetch that page rather than rely
+    on this summary. The gateway itself never contacts the documentation site.
+    """
+    return {
+        "success": True,
+        "topic": topic,
+        **_XQL_HELP[topic],
+        "docs": help_topic_docs(topic),
+        "docs_guidance": DOCS_GUIDANCE,
+    }
 
 
 async def query_dataset(
@@ -179,6 +192,7 @@ async def _execute_plan(
             "mode": plan.mode,
             "query_id": response.get("query_id"),
             "error": response["error"],
+            **xql_error_details(response),
         }
 
     safe_limit = compiled.page_limit

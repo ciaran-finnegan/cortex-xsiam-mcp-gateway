@@ -116,6 +116,9 @@ export TOOL_ACCESS_POLICY='{
 Tool policy is enforced for every MCP tool invocation. Dataset policy still
 runs inside discovery and query tools.
 
+`validate_xql` is granted like any other tool; the default policy gives it to
+`Admin` and `Security` only. Its optional probe also requires the raw-XQL grants.
+
 ## Structured Dataset Query Limits
 
 | Variable | Default | Description |
@@ -132,6 +135,7 @@ runs inside discovery and query tools.
 | `DATASET_QUERY_CURSOR_TTL_SECONDS` | `900` | Cursor validity period. |
 | `XQL_MAX_CONCURRENT_QUERIES` | `4` | Process-level XQL concurrency, hard-capped at XSIAM's four-query limit. |
 | `XQL_MAX_QUERY_CHARS` | `32768` | Maximum compiled or privileged raw XQL length. |
+| `XQL_ENUM_FIELDS` | `{}` | JSON object mapping dataset names or glob patterns to enum-backed field names, for `validate_xql`. Adds to the built-in vendor-standard list. Example: `{"sample_*": ["event_category"]}`. |
 
 Cursor state is bound to principal, tenant, auth source, groups, query plan, and
 the current dataset-policy hash. A policy or identity change invalidates the
