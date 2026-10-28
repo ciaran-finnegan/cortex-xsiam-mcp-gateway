@@ -24,13 +24,15 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture(autouse=True)
 def _reset_learning_state():
-    from usecase import learned_store, learning_observers
+    from usecase import learned_store, learning_journal, learning_observers
 
     learned_store.reset_state()
     learning_observers.reset_state()
+    learning_journal.reset_state()
     yield
     learned_store.reset_state()
     learning_observers.reset_state()
+    learning_journal.reset_state()
 
 
 @pytest.fixture
@@ -45,7 +47,7 @@ def pack(tmp_path, monkeypatch):
 
 @pytest.fixture
 def audit_events(monkeypatch):
-    from usecase import learned_store, replay
+    from usecase import learner
     from usecase.builtin_components import learning as learning_tools
 
     events = []
@@ -53,7 +55,7 @@ def audit_events(monkeypatch):
     async def capture(event):
         events.append(json.loads(json.dumps(event, default=str)))
 
-    for module in (learned_store, replay, learning_tools):
+    for module in (learner, learning_tools):
         monkeypatch.setattr(module, "emit_audit_event", capture)
     return events
 

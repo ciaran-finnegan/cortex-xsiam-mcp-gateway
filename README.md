@@ -166,7 +166,7 @@ production hardening in the roadmap.
 | `get_xql_query_quota` | Retrieve XQL query quota usage. | Tool policy and audit. |
 | `get_learned_facts` | Return tier-1 tenant facts the gateway measured (schema, enum-like and absent fields, costs, timings). Also `tenant://learned/{kind}`. | Tool policy, dataset policy, trust labels; see [Learning](docs/LEARNING.md). |
 | `learning_digest` | List what was learned, promoted, demoted, expired and reverted, with evidence. | Tool policy, dataset policy, audit. |
-| `revert_learned` | Revert one learned fact. | `LEARNING_ADMIN_GROUPS`, dataset policy, audit. |
+| `revert_learned` | Request the revert of one learned fact; hidden at once, applied by the learner. | `LEARNING_ADMIN_GROUPS`, dataset policy, audit. |
 | `get_issues` | Search XSIAM issues/alerts. | Tool policy and audit. |
 | `get_cases` | Search XSIAM cases/incidents. | Tool policy and audit. |
 | `get_tenant_info` | Retrieve tenant/license information. | Tool policy and audit. |

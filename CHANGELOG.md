@@ -5,14 +5,19 @@ This project follows a lightweight changelog format until stable releases begin.
 ## Unreleased
 
 - Added tier-1 learning: measured tenant facts (schema, enum-like fields, absent
-  fields, cost table, timings, helper usage) written to `<TENANT_PACK_DIR>/learned/`
-  from queries the gateway already runs, with query-id evidence, confidence,
-  expiry, contradiction demotion, a forgery guard, and a
-  `cortex_xsiam_mcp.learning` audit event per write.
+  fields, cost table, timings, helper usage) in `<TENANT_PACK_DIR>/learned/`,
+  derived from queries the gateway already runs, with query-id evidence,
+  confidence, expiry, contradiction demotion and a forgery guard.
+- Gateway observers only append to a per-process journal; a separate learner
+  process (`python -m learner`, run by a timer) is the single writer of fact
+  files, audits each run, and runs UTC-scheduled engagement-close, nightly
+  (expiry, cost recalibration from the query history as a capped `learner`
+  principal) and weekly (digest, replay scoring, step mining) jobs, plus a deploy
+  canary.
 - Added `get_learned_facts`, the `tenant://learned/{kind}` resource,
   `learning_digest`, admin-only `revert_learned`, and the `LEARNING_ENABLED`
-  kill switch.
-- Added the tier-2 replay foundation: a bounded per-case result cache and
+  kill switch for both processes.
+- Added the tier-2 replay foundation: an opt-in bounded per-case result cache and
   `replay_engagement`, plus a synthetic IOC-flood triage agent-evaluation case.
 - Classified XSIAM unknown-field failures (`error_class`, `unknown_field`) when
   the field already appears in the submitted query.

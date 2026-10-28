@@ -12,6 +12,10 @@ tokens or identifiers and evidence must be query ids this process received from 
 so text from result rows cannot become a fact, and a hand-edited entry that fails
 validation is ignored.
 
+Writers: gateway processes never write these files. They append observations to the learning
+journal (``learning_journal``) and the learner process (``usecase.learner``) is the single
+writer, holding the store lock while it folds the journal in.
+
 Lifecycle: a confirmation raises confidence; a contradiction demotes the entry at once
 (confidence 0, not served) and it is promoted again only after ``PROMOTE_STREAK``
 consecutive confirmations; entries expire after ``LEARNING_SCHEMA_TTL_DAYS`` (schema,
@@ -19,10 +23,9 @@ enum and absent-field facts) or ``LEARNING_COST_TTL_DAYS`` (cost, timing and hel
 facts) without a confirmation. A human revert leaves a tombstone that stops the same
 fact being re-learned until it expires.
 
-Writes are serialised in-process with an asyncio lock and across processes with a
-non-blocking file lock. Each write is audited before it is committed, so when audit
-export fails closed nothing is written. ``LEARNING_ENABLED=false`` freezes every
-automatic write; a human revert still works while learning is frozen.
+The learner audits each run's changes before committing them, so when audit export fails
+closed nothing is written. ``LEARNING_ENABLED=false`` stops the observers and the learner; a
+human revert request is still recorded and hidden on read while learning is frozen.
 """
 
 import asyncio
@@ -47,9 +50,7 @@ except ImportError:  # pragma: no cover - the gateway runs on POSIX hosts and co
     fcntl = None
 
 from config.config import get_config
-from entities.MCPContext import MCPContext
 from pkg.util import MAIN_DIR
-from usecase.audit import create_learning_audit_event, emit_audit_event
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ LIFECYCLE_ACTIONS = frozenset({"learned", "promoted", "demoted", "expired", "rev
 FIELD_TYPES = frozenset({"string", "integer", "number", "boolean", "array", "object", "mixed"})
 WINDOW_BUCKETS = ("le_1h", "le_6h", "le_24h", "le_7d", "le_30d", "gt_30d", "unspecified")
 SELECTIVITY_CLASSES = ("sample", "unfiltered", "filtered", "selective")
-UNITS_SOURCES = frozenset({"query_cost", "remaining_quota_delta"})
+UNITS_SOURCES = frozenset({"query_cost", "remaining_quota_delta", "query_history"})
 TIMING_METRICS = frozenset({"tool_duration_ms", "step_gap_ms"})
 TOOL_OUTCOMES = frozenset({"success", "error"})
 
@@ -90,6 +91,8 @@ MAX_CHANGES_LOG_BYTES = 2 * 1024 * 1024
 MAX_ISSUED_QUERY_IDS = 10_000
 MAX_NOTE_FILES = 500
 MAX_NOTE_FILE_BYTES = 512 * 1024
+MAX_REVERT_JOURNAL_BYTES = 1024 * 1024
+MAX_DIGEST_ITEMS_PER_ACTION = 100
 LOCK_ATTEMPTS = 40
 LOCK_RETRY_SECONDS = 0.05
 
@@ -111,6 +114,13 @@ _KIND_PREFIX = {
     "helper_usage": "hlp",
 }
 _PREFIX_KIND = {prefix: kind for kind, prefix in _KIND_PREFIX.items()}
+# Field names come from log sources an attacker may influence. A name built from these words
+# reads as an instruction to an agent, so it is never stored, even though it is a valid identifier.
+_INSTRUCTION_WORDS = frozenset({"ignore", "disregard", "jailbreak", "instruction", "instructions"})
+_INSTRUCTION_HINTS = frozenset(
+    {"previous", "prompt", "assistant", "override", "verified", "trust", "rules", "system", "mark", "execute"}
+)
+_WORD_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
 _ENTRY_KEYS = frozenset(
     {
         "entry_id",
@@ -224,6 +234,17 @@ def _identifier(value: Any) -> None:
         _refuse("expected a short identifier")
 
 
+def looks_like_instruction(name: str) -> bool:
+    words = [word.lower() for word in _WORD_RE.findall(name)]
+    return any(word in _INSTRUCTION_WORDS for word in words) or sum(word in _INSTRUCTION_HINTS for word in words) >= 2
+
+
+def _field_name(value: Any) -> None:
+    _identifier(value)
+    if looks_like_instruction(value):
+        _refuse("field name reads as an instruction")
+
+
 def _token(value: Any) -> None:
     if not isinstance(value, str) or not TOKEN_RE.match(value):
         _refuse("expected a short token")
@@ -276,9 +297,9 @@ def _samples(maximum: float):
 
 
 _FACT_SPECS: dict[str, dict[str, Any]] = {
-    "schema": {"field": _identifier, "type": _one_of(FIELD_TYPES)},
-    "enum_fields": {"field": _identifier, "operator": _one_of(frozenset({"contains"}))},
-    "absent_fields": {"field": _identifier},
+    "schema": {"field": _field_name, "type": _one_of(FIELD_TYPES)},
+    "enum_fields": {"field": _field_name, "operator": _one_of(frozenset({"contains"}))},
+    "absent_fields": {"field": _field_name},
     "cost_table": {
         "window_bucket": _one_of(WINDOW_BUCKETS),
         "selectivity": _one_of(SELECTIVITY_CLASSES),
@@ -372,7 +393,7 @@ def validate_observation(observation: Observation, *, require_issued: bool = Tru
         if observation.effect not in {"confirm", "contradict"}:
             _refuse("schema kinds accept only confirm or contradict observations")
         if observation.effect == "contradict":
-            _check_shape({"field": observation.fact.get("field")}, {"field": _identifier})
+            _check_shape({"field": observation.fact.get("field")}, {"field": _field_name})
         else:
             validate_fact(observation.kind, observation.fact)
     if observation.kind in SCHEMA_KINDS or observation.kind == "cost_table":
@@ -709,6 +730,8 @@ def ensure_private_dir(path: Path, root: Path) -> None:
         if current.is_symlink():
             raise LearnedStoreError("Refusing to use a symbolic link inside TENANT_PACK_DIR")
         current.mkdir(mode=0o700, exist_ok=True)
+        if current.stat().st_mode & 0o077:
+            current.chmod(0o700)
 
 
 class LearnedStore:
@@ -790,12 +813,19 @@ class LearnedStore:
         path = self.changes_path
         if path.is_symlink():
             raise LearnedStoreError("Learned change log must not be a symbolic link")
-        lines = [json.dumps(change, sort_keys=True, separators=(",", ":")) for change in changes]
-        existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-        combined = [*existing, *lines]
-        while combined and len("\n".join(combined).encode()) > MAX_CHANGES_LOG_BYTES:
-            combined = combined[len(combined) // 2 :]
-        write_private_file(path, "\n".join(combined) + "\n")
+        payload = "".join(json.dumps(change, sort_keys=True, separators=(",", ":")) + "\n" for change in changes)
+        size = path.stat().st_size if path.exists() else 0
+        if size + len(payload.encode()) > MAX_CHANGES_LOG_BYTES:
+            # Keep the newer half so the digest still covers recent weeks.
+            existing = path.read_text(encoding="utf-8").splitlines() if size else []
+            kept = existing[len(existing) // 2 :]
+            write_private_file(path, "".join(line + "\n" for line in kept) + payload)
+            return
+        descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            os.write(descriptor, payload.encode())
+        finally:
+            os.close(descriptor)
 
     def read_changes(self, since: datetime) -> list[dict[str, Any]]:
         path = self.changes_path
@@ -860,130 +890,108 @@ def validate_entry_change(change: Any) -> None:
     validate_evidence(change.get("evidence"), require_issued=False)
 
 
-# --- Write paths ---
+# --- Revert requests ---
 
 
-async def record_observations(
-    observations: list[Observation],
+def revert_in_entries(
+    entries: dict[str, dict[str, Any]],
+    entry_id: str,
     *,
-    principal: MCPContext,
-    trigger: str,
-) -> list[dict[str, Any]]:
-    """Validate and apply observations, audit the write, then commit it. Never raises.
+    requested_by_sha256: str,
+    now: datetime,
+) -> dict[str, Any] | None:
+    """Turn an entry into a tombstone on a human's request. Returns the change, or None when there is nothing to revert."""
+    entry = entries.get(entry_id)
+    if entry is None or entry["status"] == "reverted":
+        return None
+    entry["status"] = "reverted"
+    entry["streak"] = 0
+    entry["confidence"] = 0.0
+    entry["status_changed_at"] = iso_timestamp(now)
+    entry["expires_at"] = iso_timestamp(now + ttl_for(entry["kind"]))
+    entry["reverted_by_sha256"] = requested_by_sha256
+    return _change("reverted", entry, now)
 
-    This is the only automatic write path. It does nothing when learning is frozen or no
-    tenant pack is configured, and it refuses observations whose evidence is not a query
-    id returned by XSIAM to this process.
-    """
-    config = get_config()
-    if not config.learning_enabled or not observations:
-        return []
-    try:
-        store = get_learned_store()
-    except LearnedStoreError as e:
-        logger.warning("Learning disabled: %s", e)
-        return []
-    if store is None:
-        return []
 
-    accepted = []
-    for observation in observations:
-        try:
-            validate_observation(observation)
-        except LearnedFactRefused as e:
-            logger.info("Refused learned observation for %s: %s", observation.kind, e)
+def journal_dir(pack_root: Path) -> Path:
+    return pack_root / "learned" / "journal"
+
+
+def pending_revert_ids() -> frozenset[str]:
+    """Entry ids with a revert request in the journal. Read paths hide them before the learner applies them."""
+    root = get_pack_root()
+    if root is None:
+        return frozenset()
+    directory = journal_dir(root)
+    if directory.is_symlink() or not directory.is_dir():
+        return frozenset()
+    pending: set[str] = set()
+    budget = MAX_REVERT_JOURNAL_BYTES
+    for path in sorted(directory.glob("reverts-*.jsonl")):
+        if path.is_symlink() or not path.is_file():
             continue
-        accepted.append(observation)
-    if not accepted:
-        return []
-
-    try:
-        async with store.locked():
-            now = now_utc()
-            states: dict[str, dict[str, dict[str, Any]]] = {}
-            changes: list[dict[str, Any]] = []
-            for observation in accepted:
-                if observation.kind not in states:
-                    states[observation.kind] = store.load(observation.kind)
-                    changes.extend(sweep_entries(states[observation.kind], now))
-                changes.extend(
-                    apply_observation(
-                        states[observation.kind],
-                        observation,
-                        now,
-                        max_entries=config.learning_max_entries_per_kind,
-                    )
-                )
-            if not changes:
-                return []
-            await emit_audit_event(
-                create_learning_audit_event(operation="observe", principal=principal, changes=changes, trigger=trigger)
-            )
-            for kind, entries in states.items():
-                store.save(kind, entries)
-            store.append_changes([change for change in changes if change["action"] in LIFECYCLE_ACTIONS])
-            return changes
-    except Exception as e:
-        # Includes AuditExportError under AUDIT_LOG_FAIL_CLOSED: an unaudited change is never committed.
-        logger.warning("Learned store write skipped: %s", type(e).__name__)
-        return []
+        size = path.stat().st_size
+        if size > budget:
+            logger.warning("Revert journal exceeds the read budget; some requests are applied only by the learner")
+            break
+        budget -= size
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            entry_id = record.get("entry_id") if isinstance(record, dict) else None
+            if record.get("type") == "revert" and isinstance(entry_id, str) and ENTRY_ID_RE.match(entry_id):
+                pending.add(entry_id)
+    return frozenset(pending)
 
 
-async def sweep_expired(*, principal: MCPContext) -> list[dict[str, Any]]:
-    """Remove expired entries of every kind with an audited write. No-op while learning is frozen."""
-    if not get_config().learning_enabled:
-        return []
-    store = get_learned_store()
-    if store is None:
-        return []
-    async with store.locked():
-        now = now_utc()
-        states = {kind: store.load(kind) for kind in KINDS}
-        changes = [change for kind in KINDS for change in sweep_entries(states[kind], now)]
-        if not changes:
-            return []
-        await emit_audit_event(
-            create_learning_audit_event(operation="expire", principal=principal, changes=changes, trigger="sweep")
+def build_digest(store: "LearnedStore", since: datetime, visible) -> dict[str, Any]:
+    """Group lifecycle changes since a moment, newest first, keeping those whose dataset ``visible`` allows."""
+    grouped: dict[str, list[dict[str, Any]]] = {action: [] for action in sorted(LIFECYCLE_ACTIONS)}
+    for change in reversed(store.read_changes(since)):
+        if visible(change.get("dataset")):
+            grouped[change["action"]].append(digest_item(change))
+    confirmed: dict[str, int] = {}
+    for kind in KINDS:
+        count = sum(
+            1
+            for entry in read_entries(kind)
+            if entry["confirmations"] > 1 and _timestamp(entry["last_seen"]) >= since and visible(entry.get("dataset"))
         )
-        for kind in {change["kind"] for change in changes}:
-            store.save(kind, states[kind])
-        store.append_changes(changes)
-        return changes
+        if count:
+            confirmed[kind] = count
+    return {
+        "since": iso_timestamp(since),
+        "summary": {action: len(items) for action, items in grouped.items()},
+        "changes": {action: items[:MAX_DIGEST_ITEMS_PER_ACTION] for action, items in grouped.items()},
+        "confirmed_entries": confirmed,
+    }
 
 
-async def revert_entry(entry_id: str, *, principal: MCPContext) -> dict[str, Any]:
-    """Revert one entry on a human's instruction, leaving a tombstone. Works while learning is frozen.
-
-    Raises LearnedFactRefused for an unknown or already reverted entry and
-    LearnedStoreError when no tenant pack is configured.
-    """
-    kind = kind_of_entry_id(entry_id)
-    if kind is None:
-        raise LearnedFactRefused("entry_id is not a learned entry id")
-    store = get_learned_store()
-    if store is None:
-        raise LearnedStoreError("TENANT_PACK_DIR is not configured")
-    async with store.locked():
-        now = now_utc()
-        entries = store.load(kind)
-        entry = entries.get(entry_id)
-        if entry is None:
-            raise LearnedFactRefused(f"No learned entry {entry_id}")
-        if entry["status"] == "reverted":
-            raise LearnedFactRefused(f"Learned entry {entry_id} is already reverted")
-        entry["status"] = "reverted"
-        entry["streak"] = 0
-        entry["confidence"] = 0.0
-        entry["status_changed_at"] = iso_timestamp(now)
-        entry["expires_at"] = iso_timestamp(now + ttl_for(kind))
-        entry["reverted_by_sha256"] = hashlib.sha256(principal.principal_id.encode()).hexdigest()
-        change = _change("reverted", entry, now)
-        await emit_audit_event(
-            create_learning_audit_event(operation="revert", principal=principal, changes=[change], trigger="revert_learned")
+def digest_item(change: dict[str, Any]) -> dict[str, Any]:
+    item = {
+        key: change[key]
+        for key in (
+            "at",
+            "entry_id",
+            "kind",
+            "dataset",
+            "fact",
+            "previous_fact",
+            "evidence",
+            "source_class",
+            "confirmations",
+            "contradictions",
+            "confidence",
+            "status",
+            "expires_at",
         )
-        store.save(kind, entries)
-        store.append_changes([change])
-        return change
+        if key in change
+    }
+    if change["action"] in {"learned", "promoted", "demoted"}:
+        item["revert_with"] = {"tool": "revert_learned", "entry_id": change["entry_id"]}
+    return item
 
 
 # --- Read paths ---
@@ -996,10 +1004,12 @@ def read_entries(kind: str, *, include_inactive: bool = False) -> list[dict[str,
         return []
     now = now_utc()
     entries = store.snapshot(kind).values()
+    pending = pending_revert_ids()
     return [
         entry
         for entry in entries
-        if _is_live(entry, now) and (include_inactive or entry["status"] == "active")
+        if _is_live(entry, now)
+        and (include_inactive or (entry["status"] == "active" and entry["entry_id"] not in pending))
     ]
 
 

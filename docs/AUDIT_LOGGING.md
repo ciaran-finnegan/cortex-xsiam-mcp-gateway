@@ -42,22 +42,26 @@ group, and SHA-256 of the API key ID; API key values are never included.
 
 ## Learning Events
 
-Writes to the tier-1 learned store use `event_type=cortex_xsiam_mcp.learning`
-and schema version `1.0`. One event is emitted per write, before the write is
-committed; under `AUDIT_LOG_FAIL_CLOSED=true` a failed export cancels the write.
+Changes to the tier-1 learned store use `event_type=cortex_xsiam_mcp.learning`
+and schema version `1.0`. The learner process is the only writer of fact files.
+It emits one event per run that changes anything or runs a scheduled job, before
+committing; under `AUDIT_LOG_FAIL_CLOSED=true` a failed export cancels the run
+and the journal is read again next time.
 
 | Field | Description |
 | --- | --- |
-| `operation` | `observe`, `expire`, `revert`, `cache_result`, or `read` (resource read). |
-| `trigger` | What caused it: `xql_query`, `field_catalog`, `tool:<name>`, `sweep`, `revert_learned`, or `resource`. |
-| `principal.id`, `principal.groups` | The principal whose call produced the observation, or the admin who reverted. |
+| `operation` | Learner: `tick`, `nightly`, `weekly`. Gateway: `revert_requested`, `read` (resource read). |
+| `trigger` | `learner`, `revert_learned`, or `resource`. |
+| `principal.id`, `principal.groups` | The learner principal (`LEARNER_PRINCIPAL_ID`), or the admin or reader in the gateway. |
 | `actions` | Count of changes per action. |
 | `changes[]` | Up to 100 changes: `entry_id`, `kind`, `dataset`, `action` (`learned`, `confirmed`, `promoted`, `demoted`, `expired`, `reverted`), `fact`, `previous_fact` on a value change, `evidence` query ids, `confirmations`, `contradictions`, `confidence`, `status`, `expires_at`. |
 | `changes_truncated` | True when more than 100 changes were made. |
-| `details` | For `cache_result`: case id, tool, position, bytes, cache note, query ids. For `read`: kind, success, count. |
+| `details` | Learner: the run report (journal records read, engagements processed, jobs and their results), cached results, fact links, and `observed_by`, the principals whose calls produced the observations. Gateway: the entry for a revert request; kind, success and count for a read. |
 
-Facts are validated short tokens and identifiers; result text and filter
-literals never appear in these events. See [Learning](LEARNING.md).
+The learner's nightly query of `xql_query_center_history` also emits a normal
+`cortex_xsiam_mcp.tool_invocation` event for the learner principal. Facts are
+validated short tokens and identifiers; result text and filter literals never
+appear in these events. See [Learning](LEARNING.md).
 
 ## Example Event
 

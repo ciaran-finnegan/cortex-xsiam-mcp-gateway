@@ -15,19 +15,18 @@ from usecase.base_module import BaseModule
 from usecase.identity import parse_csv, resolve_mcp_context
 from usecase.learned_store import (
     KINDS,
-    LIFECYCLE_ACTIONS,
     LearnedFactRefused,
     LearnedStoreError,
+    build_digest,
     find_entry,
     get_learned_store,
     get_pack_root,
-    iso_timestamp,
+    pending_revert_ids,
     read_entries,
-    revert_entry,
-    sweep_expired,
     trust_label,
     verified_notes,
 )
+from usecase.learning_journal import journal_revert
 from usecase.log_policy import (
     DatasetAuthorizationError,
     authorize_dataset,
@@ -69,6 +68,16 @@ def _learning_state() -> dict[str, Any]:
     return {"configured": get_pack_root() is not None, "enabled": get_config().learning_enabled}
 
 
+def _served_entry(entry: dict[str, Any], notes: dict[str, str]) -> dict[str, Any]:
+    served = {key: entry[key] for key in _SERVED_KEYS}
+    if entry.get("dataset") is None:
+        # Timing and helper facts span datasets; their evidence ids could point at queries on
+        # datasets the caller is not allowed to see, so only the count is served.
+        served["evidence"] = {"query_ids_withheld": len(entry["evidence"])}
+    served["trust"] = trust_label(entry, notes)
+    return served
+
+
 def _dataset_visible(principal: MCPContext, dataset: str | None) -> bool:
     return dataset is None or authorize_dataset(principal, dataset).allowed
 
@@ -89,7 +98,7 @@ def learned_facts_view(principal: MCPContext, kind: str, dataset: str | None = N
             continue
         if not _dataset_visible(principal, entry.get("dataset")):
             continue
-        served.append({**{key: entry[key] for key in _SERVED_KEYS}, "trust": trust_label(entry, notes)})
+        served.append(_served_entry(entry, notes))
     return {
         "success": True,
         "kind": kind,
@@ -128,6 +137,8 @@ async def get_learned_facts(
         return {"success": False, "error": str(e)}
     except (LearnedStoreError, LearnedFactRefused, ValueError) as e:
         return {"success": False, "error": str(e)}
+    except OSError as e:
+        return {"success": False, "error": f"Learned store unavailable: {type(e).__name__}"}
 
 
 async def learned_facts_resource(kind: str, ctx: Context) -> str:
@@ -143,6 +154,8 @@ async def learned_facts_resource(kind: str, ctx: Context) -> str:
             view = learned_facts_view(principal, kind)
         except (LearnedStoreError, LearnedFactRefused, ValueError) as e:
             view = {"success": False, "error": str(e)}
+        except OSError as e:
+            view = {"success": False, "error": f"Learned store unavailable: {type(e).__name__}"}
     await emit_audit_event(
         create_learning_audit_event(
             operation="read",
@@ -160,84 +173,43 @@ async def learned_facts_resource(kind: str, ctx: Context) -> str:
     return json.dumps(view, sort_keys=True)
 
 
-def _digest_item(change: dict[str, Any]) -> dict[str, Any]:
-    item = {
-        key: change[key]
-        for key in (
-            "at",
-            "entry_id",
-            "kind",
-            "dataset",
-            "fact",
-            "previous_fact",
-            "evidence",
-            "source_class",
-            "confirmations",
-            "contradictions",
-            "confidence",
-            "status",
-            "expires_at",
-        )
-        if key in change
-    }
-    if change["action"] in {"learned", "promoted", "demoted"}:
-        item["revert_with"] = {"tool": "revert_learned", "entry_id": change["entry_id"]}
-    return item
-
-
 def _is_learning_admin(principal: MCPContext) -> bool:
     admin_groups = parse_csv(get_config().learning_admin_groups)
     return any(group in admin_groups for group in principal.groups)
+
+
+def _learner_runs() -> dict[str, Any]:
+    from usecase.learner import load_state
+
+    try:
+        state = load_state(get_pack_root())
+    except (LearnedStoreError, OSError, TypeError):
+        return {}
+    return {key: state[key] for key in ("last_tick", "last_nightly", "last_weekly")}
 
 
 async def learning_digest(
     ctx: Context,
     days: Annotated[int, Field(ge=1, le=90, description="Look-back window in days.")] = 7,
 ) -> dict[str, Any]:
-    """List what the gateway learned, promoted, demoted, expired and reverted in the last N days, with evidence.
-
-    Also removes expired entries first (an audited write, skipped while learning is frozen).
-    """
+    """List what the learner learned, promoted, demoted, expired and reverted in the last N days, with evidence."""
     principal = resolve_mcp_context(ctx)
-    state = _learning_state()
-    if not state["configured"]:
-        return {"success": True, "days": days, "learning": state, "changes": {}, "summary": {}}
     try:
-        await sweep_expired(principal=principal)
-    except Exception as e:
-        logger.warning("Expiry sweep skipped: %s", type(e).__name__)
-    try:
-        store = get_learned_store()
+        state = _learning_state()
+        if not state["configured"]:
+            return {"success": True, "days": days, "learning": state, "changes": {}, "summary": {}}
         since = learned_store.now_utc() - timedelta(days=days)
-        changes = [
-            change
-            for change in reversed(store.read_changes(since))
-            if _dataset_visible(principal, change.get("dataset"))
-        ]
-        grouped: dict[str, list[dict[str, Any]]] = {action: [] for action in sorted(LIFECYCLE_ACTIONS)}
-        for change in changes:
-            grouped[change["action"]].append(_digest_item(change))
-        confirmed: dict[str, int] = {}
-        for kind in KINDS:
-            count = sum(
-                1
-                for entry in read_entries(kind)
-                if entry["confirmations"] > 1
-                and entry["last_seen"] >= iso_timestamp(since)
-                and _dataset_visible(principal, entry.get("dataset"))
-            )
-            if count:
-                confirmed[kind] = count
+        digest = build_digest(get_learned_store(), since, lambda dataset: _dataset_visible(principal, dataset))
+        pending = sorted(pending_revert_ids())
     except (LearnedStoreError, OSError) as e:
         return {"success": False, "error": f"Learned store unavailable: {type(e).__name__}"}
     return {
         "success": True,
         "days": days,
-        "since": iso_timestamp(since),
         "learning": state,
-        "summary": {action: len(items) for action, items in grouped.items()},
-        "changes": {action: items[:MAX_DIGEST_ITEMS_PER_ACTION] for action, items in grouped.items()},
-        "confirmed_entries": confirmed,
+        **digest,
+        "pending_reverts": pending[:100],
+        "learner": _learner_runs(),
         "revert": {
             "tool": "revert_learned",
             "allowed_for_caller": _is_learning_admin(principal),
@@ -251,7 +223,11 @@ async def revert_learned(
     ctx: Context,
     entry_id: Annotated[str, Field(description="Learned entry id from learning_digest or get_learned_facts.")],
 ) -> dict[str, Any]:
-    """Revert one learned fact. Restricted to LEARNING_ADMIN_GROUPS. The fact is hidden and not re-learned until it expires."""
+    """Revert one learned fact. Restricted to LEARNING_ADMIN_GROUPS.
+
+    The fact stops being served at once; the learner records the revert on its next run, and the
+    fact is not re-learned until the tombstone expires.
+    """
     principal = resolve_mcp_context(ctx)
     if not _is_learning_admin(principal):
         groups = ", ".join(parse_csv(get_config().learning_admin_groups)) or "<none>"
@@ -260,19 +236,36 @@ async def revert_learned(
             "error": f"Principal {principal.principal_id} is not allowed to revert learned facts; requires one of: {groups}",
         }
     try:
+        if get_pack_root() is None:
+            return {"success": False, "error": "TENANT_PACK_DIR is not configured"}
         entry = find_entry(entry_id)
-        if entry is not None and not _dataset_visible(principal, entry.get("dataset")):
+        if entry is None:
+            return {"success": False, "error": "No learned entry with that entry_id"}
+        if not _dataset_visible(principal, entry.get("dataset")):
             return {
                 "success": False,
                 "error": f"Principal {principal.principal_id} is not allowed to change facts for dataset {entry['dataset']}",
             }
-        change = await revert_entry(entry_id, principal=principal)
-    except (LearnedFactRefused, LearnedStoreError) as e:
-        return {"success": False, "error": str(e)}
+        if entry["status"] == "reverted" or entry_id in pending_revert_ids():
+            return {"success": False, "error": f"Learned entry {entry_id} is already reverted"}
+        if not await journal_revert(entry_id, principal=principal):
+            return {"success": False, "error": "Revert request could not be recorded"}
+    except (LearnedFactRefused, LearnedStoreError, OSError) as e:
+        return {"success": False, "error": f"Learned store unavailable: {type(e).__name__}"}
+    await emit_audit_event(
+        create_learning_audit_event(
+            operation="revert_requested",
+            principal=principal,
+            changes=[],
+            trigger="revert_learned",
+            details={"entry_id": entry_id, "kind": entry["kind"], "dataset": entry.get("dataset"), "fact": entry["fact"]},
+        )
+    )
     return {
         "success": True,
-        "reverted": _digest_item(change),
-        "note": "The fact is no longer served and will not be re-learned before expires_at.",
+        "entry_id": entry_id,
+        "status": "revert_pending",
+        "note": "The fact is no longer served. The learner records the revert on its next run; the fact is not re-learned until the tombstone expires.",
     }
 
 

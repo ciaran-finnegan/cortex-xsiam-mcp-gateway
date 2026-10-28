@@ -7,9 +7,13 @@
   the same engagement.
 - ``discover_log_fields`` (and any field-cache fill) calls :func:`observe_field_catalog` with
   field names and value types.
-- ``LearningMiddleware`` calls :func:`begin_tool_call` and :func:`end_tool_call`: helper usage,
-  tool durations and the gap between query-running steps of one engagement, plus the
-  engagement result cache used by replay.
+- ``LearningMiddleware`` calls :func:`begin_tool_call` and :func:`end_tool_call`: one step
+  record per query-running tool call (tool, times, query ids, units, outcome, and the bounded
+  result when the engagement has a case), from which the learner derives helper usage,
+  timings and the replay cache.
+
+Observers only append to the learning journal (``learning_journal``); the learner process is
+the single writer of fact files.
 
 Observers read the query text the gateway submitted, response metadata, row counts, field
 names and value types. They never read result cell values. Filter literals are held only as
@@ -24,10 +28,12 @@ import time
 from collections import OrderedDict
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from config.config import get_config
 from entities.MCPContext import MCPContext
+from usecase import learned_store
 from usecase.audit import stable_hash
 from usecase.credential_broker import get_current_credential_selection
 from usecase.identity import (
@@ -38,15 +44,17 @@ from usecase.identity import (
 from usecase.learned_store import (
     FIELD_TYPES,
     IDENTIFIER_RE,
-    MAX_EVIDENCE,
-    TOKEN_RE,
     Observation,
     get_pack_root,
     is_issued_query_id,
-    record_observations,
     register_query_id,
 )
-from usecase.replay import current_case_id, record_fact_link, record_tool_step
+from usecase.learning_journal import (
+    journal_fact_link,
+    journal_observations,
+    journal_tool_step,
+)
+from usecase.replay import current_case_id
 from usecase.xql_discovery import MAX_DISCOVERY_FIELD_COUNT, extract_xql_rows
 
 logger = logging.getLogger(__name__)
@@ -55,7 +63,6 @@ HOUR_MS = 3_600_000
 DAY_MS = 86_400_000
 ENUM_PAIR_TTL_SECONDS = 3600
 MAX_PENDING_ENUM_PAIRS = 2000
-MAX_TRACKED_ENGAGEMENTS = 1000
 MAX_ERROR_TEXT_CHARS = 4000
 
 _IDENT = r"[A-Za-z_][A-Za-z0-9_.]*"
@@ -299,6 +306,7 @@ class ToolCallObservation:
     tool: str
     principal: MCPContext
     engagement_key: str
+    started_at: datetime
     started_monotonic: float
     query_ids: list[str] = field(default_factory=list)
     units: list[float] = field(default_factory=list)
@@ -307,14 +315,12 @@ class ToolCallObservation:
 _current_call: ContextVar[ToolCallObservation | None] = ContextVar("learning_tool_call", default=None)
 _last_remaining: dict[str, float] = {}
 _pending_enum_pairs: OrderedDict[tuple[str, ...], tuple[str, float]] = OrderedDict()
-_last_step: OrderedDict[str, tuple[str, float, str]] = OrderedDict()
 
 
 def reset_state() -> None:
-    """Forget in-memory pairing and step state. For tests."""
+    """Forget in-memory quota and pairing state. For tests."""
     _last_remaining.clear()
     _pending_enum_pairs.clear()
-    _last_step.clear()
 
 
 def _principal(ctx: Any) -> MCPContext:
@@ -488,7 +494,7 @@ async def observe_xql_execution(
                 observations.append(
                     Observation("schema", fact, (query_id,), "query_error_class", parsed.dataset, effect="contradict")
                 )
-        await record_observations(observations, principal=principal, trigger="xql_query")
+        journal_observations(observations, principal=principal, trigger="xql_query")
     except Exception as e:
         logger.warning("Learning observer skipped an XQL result: %s", type(e).__name__)
 
@@ -527,7 +533,7 @@ async def observe_field_catalog(
             )
         call = _current_call.get()
         principal = call.principal if call is not None else _principal(ctx)
-        await record_observations(observations, principal=principal, trigger="field_catalog")
+        journal_observations(observations, principal=principal, trigger="field_catalog")
     except Exception as e:
         logger.warning("Learning observer skipped a field catalog: %s", type(e).__name__)
 
@@ -539,6 +545,7 @@ def begin_tool_call(tool: str, ctx: Any) -> Token:
             tool=tool,
             principal=principal,
             engagement_key=engagement_key(ctx, principal),
+            started_at=learned_store.now_utc(),
             started_monotonic=time.monotonic(),
         )
     except Exception as e:
@@ -554,69 +561,40 @@ async def end_tool_call(
     payload: Any,
     arguments: dict[str, Any] | None,
 ) -> None:
-    """Record helper usage, timings and the result cache for one finished tool call. Never raises."""
+    """Journal one finished tool call for the learner: the step, and any engagement fact link. Never raises.
+
+    The learner derives helper usage, tool durations and the gaps between steps from these records
+    when the engagement closes, so every replica's steps are combined in one place.
+    """
     call = _current_call.get()
     _current_call.reset(token)
     if call is None:
         return
     try:
-        ended = time.monotonic()
         outcome = "success" if outcome == "success" else "error"
         case_id = current_case_id()
         if call.tool == "record_fact" and outcome == "success" and case_id and isinstance(arguments, dict):
-            await record_fact_link(case_id, key=arguments.get("key"), evidence_query_id=arguments.get("evidence_query_id"))
-        if not call.query_ids or not TOKEN_RE.match(call.tool):
+            journal_fact_link(
+                engagement_key=call.engagement_key,
+                case_id=case_id,
+                key=arguments.get("key"),
+                evidence_query_id=arguments.get("evidence_query_id"),
+            )
+        if not call.query_ids:
             return
-        duration_ms = (ended - call.started_monotonic) * 1000
-        evidence = tuple(call.query_ids[-MAX_EVIDENCE:])
-        observations = [
-            Observation(
-                "helper_usage",
-                {"tool": call.tool, "outcome": outcome, "queries": len(call.query_ids)},
-                evidence,
-                "tool_call_outcome",
-                effect="measure",
-            ),
-            Observation(
-                "timings",
-                {"metric": "tool_duration_ms", "tool": call.tool, "previous_tool": None, "duration_ms": duration_ms},
-                evidence,
-                "tool_step_timing",
-                effect="measure",
-            ),
-        ]
-        previous = _last_step.get(call.engagement_key)
-        if previous is not None and call.started_monotonic >= previous[1]:
-            observations.append(
-                Observation(
-                    "timings",
-                    {
-                        "metric": "step_gap_ms",
-                        "tool": call.tool,
-                        "previous_tool": previous[0],
-                        "duration_ms": (call.started_monotonic - previous[1]) * 1000,
-                    },
-                    (previous[2], call.query_ids[0]),
-                    "tool_step_timing",
-                    effect="measure",
-                )
-            )
-        _last_step[call.engagement_key] = (call.tool, ended, call.query_ids[-1])
-        _last_step.move_to_end(call.engagement_key)
-        while len(_last_step) > MAX_TRACKED_ENGAGEMENTS:
-            _last_step.popitem(last=False)
-        await record_observations(observations, principal=call.principal, trigger=f"tool:{call.tool}")
-        if case_id:
-            await record_tool_step(
-                case_id,
-                tool=call.tool,
-                arguments=arguments,
-                payload=payload,
-                query_ids=call.query_ids,
-                units=sum(call.units) if len(call.units) == len(call.query_ids) else None,
-                duration_ms=duration_ms,
-                outcome=outcome,
-                principal=call.principal,
-            )
+        journal_tool_step(
+            principal=call.principal,
+            engagement_key=call.engagement_key,
+            case_id=case_id,
+            tool=call.tool,
+            started_at=call.started_at,
+            ended_at=learned_store.now_utc(),
+            duration_ms=(time.monotonic() - call.started_monotonic) * 1000,
+            query_ids=call.query_ids,
+            units=sum(call.units) if len(call.units) == len(call.query_ids) else None,
+            outcome=outcome,
+            arguments=arguments,
+            payload=payload,
+        )
     except Exception as e:
         logger.warning("Learning observer skipped a tool call: %s", type(e).__name__)

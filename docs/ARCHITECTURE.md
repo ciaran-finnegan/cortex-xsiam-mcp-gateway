@@ -49,6 +49,10 @@ flowchart LR
 | `src/usecase/audit.py` | Builds audit events and optionally exports them to Cortex XSIAM. |
 | `src/service/cortex_mcp/audit_middleware.py` | Emits audit events for every MCP tool invocation. |
 | `src/entities/MCPContext.py` | Holds auth headers and principal metadata. |
+| `src/usecase/learning_observers.py`, `src/usecase/learning_journal.py` | Gateway side of tier-1 learning: observe queries and tool calls, append validated records to the per-process journal. |
+| `src/service/cortex_mcp/learning_middleware.py` | Tracks each authorized tool call for the journal. |
+| `src/usecase/learner.py`, `src/learner/__main__.py` | The learner process (`python -m learner`): single writer of fact files, scheduled jobs, canary. See [Learning](LEARNING.md). |
+| `src/usecase/learned_store.py`, `src/usecase/replay.py` | Fact validation, lifecycle and read hooks; the replay cache and `replay_engagement`. |
 
 ## Current Request Flow
 

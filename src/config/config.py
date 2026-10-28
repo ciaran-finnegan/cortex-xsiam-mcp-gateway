@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     log_search_default_principal_id: str = Field("service-account", validation_alias="LOG_SEARCH_DEFAULT_PRINCIPAL_ID")
     log_search_default_groups: str = Field("", validation_alias="LOG_SEARCH_DEFAULT_GROUPS")
     log_search_dataset_policy: str = Field(
-        '{"Security": ["*"], "SOC": ["xdr_data"], "Tier1": ["xdr_data"]}',
+        '{"Security": ["*"], "SOC": ["xdr_data"], "Tier1": ["xdr_data"], "learner": ["xql_query_center_history"]}',
         validation_alias="LOG_SEARCH_DATASET_POLICY",
     )
     raw_xql_privileged_groups: str = Field(
@@ -54,7 +54,8 @@ class Settings(BaseSettings):
             '"get_xql_query_quota","get_cases","get_issues","get_learned_facts"],'
             '"Tier1":["get_log_search_guidance","list_log_datasets","discover_log_fields","search_logs",'
             '"get_dataset_query_guidance","get_xql_help","query_dataset","continue_dataset_query",'
-            '"get_xql_query_quota","get_cases","get_issues","get_learned_facts"]}'
+            '"get_xql_query_quota","get_cases","get_issues","get_learned_facts"],'
+            '"learner":["query_dataset","discover_log_fields"]}'
         ),
         validation_alias="TOOL_ACCESS_POLICY",
     )
@@ -184,6 +185,7 @@ class Settings(BaseSettings):
         validation_alias="LEARNING_COST_MIN_OBSERVATIONS",
     )
     learning_admin_groups: str = Field("Admin", validation_alias="LEARNING_ADMIN_GROUPS")
+    learning_result_cache_enabled: bool = Field(False, validation_alias="LEARNING_RESULT_CACHE_ENABLED")
     learning_result_max_bytes: int = Field(
         262144,
         ge=1024,
@@ -195,6 +197,34 @@ class Settings(BaseSettings):
         ge=1024,
         le=104857600,
         validation_alias="LEARNING_RESULT_CACHE_MAX_BYTES",
+    )
+    learning_journal_max_bytes: int = Field(
+        67108864,
+        ge=65536,
+        le=1073741824,
+        validation_alias="LEARNING_JOURNAL_MAX_BYTES",
+    )
+
+    # --- Learner Process Settings (schedules are UTC) ---
+    learner_principal_id: str = Field("learning-service", validation_alias="LEARNER_PRINCIPAL_ID")
+    learner_groups: str = Field("learner", validation_alias="LEARNER_GROUPS")
+    learner_daily_unit_cap: float = Field(0.5, ge=0, le=100, validation_alias="LEARNER_DAILY_UNIT_CAP")
+    learner_reserve_units: float = Field(20.0, ge=0, validation_alias="LEARNER_RESERVE_UNITS")
+    learner_daily_quota_units: float = Field(0.0, ge=0, validation_alias="LEARNER_DAILY_QUOTA_UNITS")
+    learner_engagement_close_sla_minutes: int = Field(
+        15,
+        ge=1,
+        le=1440,
+        validation_alias="LEARNER_ENGAGEMENT_CLOSE_SLA_MINUTES",
+    )
+    learner_engagement_idle_hours: int = Field(24, ge=1, le=720, validation_alias="LEARNER_ENGAGEMENT_IDLE_HOURS")
+    learner_nightly_utc: str = Field("13:30", validation_alias="LEARNER_NIGHTLY_UTC")
+    learner_weekly_utc: str = Field("MON 20:00", validation_alias="LEARNER_WEEKLY_UTC")
+    learner_recalibration_max_ids: int = Field(
+        100,
+        ge=1,
+        le=500,
+        validation_alias="LEARNER_RECALIBRATION_MAX_IDS",
     )
 
     # --- Audit Settings ---

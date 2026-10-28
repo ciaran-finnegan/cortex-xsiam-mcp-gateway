@@ -1,11 +1,12 @@
 import json
 import stat
+from datetime import UTC, datetime
 
 import pytest
-from learning_helpers import ctx, pack_text, success, use_fetcher
+from learning_helpers import ctx, settle, success, use_fetcher
 
 from config.config import get_config
-from usecase import learning_observers, replay, xql_executor
+from usecase import learner, learning_journal, learning_observers, replay, xql_executor
 from usecase.learned_store import LearnedStoreError
 from usecase.replay import replay_engagement
 
@@ -22,9 +23,13 @@ TRIAGE_BY_RULE = {
 }
 TRIAGE_BY_HOST = {**TRIAGE_BY_RULE, "group_by": ["host_name"]}
 FIELD_CHECK = {"dataset": "xdr_data", "field_name_contains": "hash"}
+FIRST_RESULT = {
+    "rows": [{"alert_name": "Synthetic IOC rule", "alerts": 412}],
+    "continuation": {"available": True, "cursor": "opaque-principal-bound-cursor"},
+}
 
 
-async def _step(tool, arguments, query, response, payload, outcome="success"):
+async def _step(tool, arguments, query, payload, outcome="success"):
     token = learning_observers.begin_tool_call(tool, ctx())
     await xql_executor.run_xql_query(ctx(), query, 10, timeframe={"relativeTime": 86_400_000})
     await learning_observers.end_tool_call(token, outcome=outcome, payload=payload, arguments=arguments)
@@ -43,6 +48,7 @@ async def _fact(key, evidence_query_id):
 @pytest.fixture
 def recorded_ioc_flood(pack, audit_events, clock, monkeypatch):
     """A synthetic IOC-flood triage: alerts by rule, alerts by host, a field check, two engagement facts."""
+    monkeypatch.setattr(get_config(), "learning_result_cache_enabled", True)
     monkeypatch.setattr(learning_observers, "current_case_id", lambda: CASE_ID)
     use_fetcher(
         monkeypatch,
@@ -53,23 +59,18 @@ def recorded_ioc_flood(pack, audit_events, clock, monkeypatch):
         ],
     )
 
-    async def build():
+    async def build(run_learner=True):
         await _step(
             "query_dataset",
             TRIAGE_BY_RULE,
             'dataset = alerts | filter (alert_source contains "SYNTH_IOC") | comp count() as alerts by alert_name | limit 10',
-            None,
-            {
-                "rows": [{"alert_name": "Synthetic IOC rule", "alerts": 412}],
-                "continuation": {"available": True, "cursor": "opaque-principal-bound-cursor"},
-            },
+            FIRST_RESULT,
         )
         await _fact("ioc.flood.top_rule", "q-r1")
         await _step(
             "query_dataset",
             TRIAGE_BY_HOST,
             'dataset = alerts | filter (alert_source contains "SYNTH_IOC") | comp count() as alerts by host_name | limit 10',
-            None,
             {"rows": [{"host_name": "synthetic-host-01", "alerts": 377}]},
         )
         await _fact("ioc.flood.top_host", "q-r2")
@@ -77,11 +78,18 @@ def recorded_ioc_flood(pack, audit_events, clock, monkeypatch):
             "discover_log_fields",
             FIELD_CHECK,
             "dataset = xdr_data | limit 25",
-            None,
             {"fields": [{"name": "action_file_sha256", "type": "string"}]},
         )
+        if run_learner:
+            return await settle()
+        await learning_journal.flush()
+        return None
 
     return build
+
+
+def _manifest(pack):
+    return json.loads((pack / "engagements" / CASE_ID / "results" / "manifest.json").read_text())
 
 
 @pytest.mark.asyncio
@@ -116,8 +124,7 @@ async def test_replay_of_candidate_sequence_compares_with_the_recorded_baseline(
 
     assert report["sequence"] == "candidate"
     assert (report["cache_hits"], report["cache_misses"]) == (1, 1)
-    assert report["queries"] == 1
-    assert report["units"] == 0.4
+    assert (report["queries"], report["units"]) == (1, 0.4)
     assert report["facts_reached"] == ["ioc.flood.top_rule"]
     assert report["facts_missed"] == ["ioc.flood.top_host"]
     assert report["misses"][0]["position"] == 1
@@ -132,11 +139,16 @@ async def test_replay_of_candidate_sequence_compares_with_the_recorded_baseline(
 
 
 @pytest.mark.asyncio
-async def test_result_cache_holds_bounded_results_without_cursors_or_argument_values(pack, recorded_ioc_flood, audit_events):
-    await recorded_ioc_flood()
+async def test_the_learner_writes_the_cache_with_bounded_results_and_no_argument_values(
+    pack, recorded_ioc_flood, audit_events
+):
+    await recorded_ioc_flood(run_learner=False)
+    assert not (pack / "engagements").exists()
+
+    await settle()
 
     results = pack / "engagements" / CASE_ID / "results"
-    manifest = json.loads((results / "manifest.json").read_text())
+    manifest = _manifest(pack)
     assert [step["tool"] for step in manifest["steps"]] == ["query_dataset", "query_dataset", "discover_log_fields"]
     assert manifest["steps"][0]["query_ids"] == ["q-r1"]
     assert manifest["steps"][0]["argument_names"] == sorted(TRIAGE_BY_RULE)
@@ -144,28 +156,37 @@ async def test_result_cache_holds_bounded_results_without_cursors_or_argument_va
         {"key": "ioc.flood.top_rule", "evidence_query_id": "q-r1"},
         {"key": "ioc.flood.top_host", "evidence_query_id": "q-r2"},
     ]
-    first = json.loads((results / "0000.json").read_text())
-    assert first["continuation"] == {"available": True}
+    assert json.loads((results / "0000.json").read_text())["continuation"] == {"available": True}
     assert "SYNTH_IOC" not in (results / "manifest.json").read_text()
-    assert "synthetic" not in (results / "manifest.json").read_text()
     for path in results.iterdir():
-        if path.name != ".lock":
-            assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert (pack / "engagements" / ".gitignore").read_text() == "*/results/\n"
-    cache_events = [event for event in audit_events if event["operation"] == "cache_result"]
-    assert [event["details"]["position"] for event in cache_events] == [0, 1, 2]
-    assert cache_events[0]["details"]["case_id"] == CASE_ID
+    (event,) = [event for event in audit_events if event["details"].get("cached_results_count")]
+    assert [item["position"] for item in event["details"]["cached_results"]] == [0, 1, 2]
+    assert [link["key"] for link in event["details"]["fact_links"]] == ["ioc.flood.top_rule", "ioc.flood.top_host"]
+
+
+@pytest.mark.asyncio
+async def test_result_cache_is_off_by_default(pack, recorded_ioc_flood, monkeypatch):
+    monkeypatch.setattr(get_config(), "learning_result_cache_enabled", False)
+
+    await recorded_ioc_flood()
+
+    assert not (pack / "engagements").exists()
+    journal = "".join(path.read_text() for path in (pack / "learned" / "journal").iterdir())
+    assert "synthetic-host-01" not in journal
+    assert '"cache_note":"cache_disabled"' in journal
 
 
 @pytest.mark.asyncio
 async def test_result_cache_is_capped_and_capped_steps_replay_as_misses(pack, recorded_ioc_flood, monkeypatch):
-    first_result = {"rows": [{"alert_name": "Synthetic IOC rule", "alerts": 412}], "continuation": {"available": True}}
+    first_result = {"rows": FIRST_RESULT["rows"], "continuation": {"available": True}}
     first_size = len(json.dumps(first_result, sort_keys=True, separators=(",", ":")).encode())
     monkeypatch.setattr(get_config(), "learning_result_cache_max_bytes", first_size)
 
     await recorded_ioc_flood()
 
-    manifest = json.loads((pack / "engagements" / CASE_ID / "results" / "manifest.json").read_text())
+    manifest = _manifest(pack)
     assert [step["cache_note"] for step in manifest["steps"]] == [None, "cache_full", "cache_full"]
     assert manifest["bytes"] == first_size
     report = replay_engagement(CASE_ID)
@@ -179,19 +200,52 @@ async def test_oversized_results_are_not_cached(pack, recorded_ioc_flood, monkey
 
     await recorded_ioc_flood()
 
-    manifest = json.loads((pack / "engagements" / CASE_ID / "results" / "manifest.json").read_text())
-    assert {step["cache_note"] for step in manifest["steps"]} == {"result_too_large"}
+    assert {step["cache_note"] for step in _manifest(pack)["steps"]} == {"result_too_large"}
     assert not list((pack / "engagements" / CASE_ID / "results").glob("0*.json"))
 
 
 @pytest.mark.asyncio
-async def test_result_cache_writes_nothing_while_learning_is_frozen(pack, recorded_ioc_flood, monkeypatch):
-    monkeypatch.setattr(get_config(), "learning_enabled", False)
-
+async def test_unissued_fact_link_evidence_is_not_recorded(pack, recorded_ioc_flood):
     await recorded_ioc_flood()
+    await _fact("ioc.flood.forged", "q-never-issued")
+    await settle()
 
-    assert not (pack / "engagements").exists()
-    assert pack_text(pack) == ""
+    assert [link["key"] for link in _manifest(pack)["facts"]] == ["ioc.flood.top_rule", "ioc.flood.top_host"]
+
+
+@pytest.mark.asyncio
+async def test_weekly_job_scores_replays_and_the_canary_catches_a_regression(pack, recorded_ioc_flood, clock):
+    await recorded_ioc_flood()
+    clock["now"] = datetime(2026, 10, 5, 20, 1, tzinfo=UTC)
+
+    weekly = await settle("weekly")
+
+    assert weekly["jobs"]["weekly"]["cases_scored"] == 1
+    digest = json.loads((pack / "learned" / "digests" / "2026-10-05.json").read_text())
+    assert digest["replay_scores"][CASE_ID]["facts_reached"] == 2
+    assert digest["step_sequences"] == [
+        {"count": 1, "sequence": "query_dataset>query_dataset"},
+        {"count": 1, "sequence": "query_dataset>discover_log_fields"},
+    ]
+    assert learner.load_state(pack)["step_sequences"] == {}
+    assert (await learner.run("canary"))["ok"] is True
+
+    (pack / "engagements" / CASE_ID / "results" / "0001.json").unlink()
+    canary = await learner.run("canary")
+
+    assert canary["ok"] is False
+    assert canary["regressions"][0]["case_id"] == CASE_ID
+
+
+def test_canary_exit_code(pack, monkeypatch):
+    from learner.__main__ import main
+
+    async def failing(command, now=None):
+        return {"command": "canary", "ok": False, "regressions": [{"case_id": CASE_ID}]}
+
+    monkeypatch.setattr(learner, "run", failing)
+
+    assert main(["canary"]) == 1
 
 
 @pytest.mark.asyncio
@@ -217,9 +271,11 @@ def test_replay_needs_a_tenant_pack(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_no_case_means_no_result_cache(pack, audit_events, clock, monkeypatch):
+    monkeypatch.setattr(get_config(), "learning_result_cache_enabled", True)
     monkeypatch.setattr(learning_observers, "current_case_id", lambda: None)
     use_fetcher(monkeypatch, [success("q-n1", [{"n": 1}], cost=0.2)])
 
-    await _step("query_dataset", TRIAGE_BY_RULE, "dataset = alerts | limit 1", None, {"rows": []})
+    await _step("query_dataset", TRIAGE_BY_RULE, "dataset = alerts | limit 1", {"rows": []})
+    await settle()
 
     assert not (pack / "engagements").exists()

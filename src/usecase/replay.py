@@ -1,10 +1,11 @@
 """Bounded engagement result cache and offline replay: the foundation for tier-2 learning.
 
-While an engagement has a case id, each tool call that ran XSIAM queries is recorded in
+While an engagement has a case id, the gateway journals each query-running tool call with
+the already-bounded result it returned, and the learner writes it to
 ``<TENANT_PACK_DIR>/engagements/<case_id>/results/``: a manifest of steps (tool, argument
-hash, query ids, units, duration, outcome) and the already-bounded result the gateway
-returned, capped per result and per case. Successful ``record_fact`` calls add a link
-from the fact key to its evidence query id; fact values are not copied.
+hash, query ids, units, duration, outcome) and one file per result, capped per result and
+per case. Successful ``record_fact`` calls add a link from the fact key to its evidence
+query id; fact values are not copied.
 
 ``replay_engagement`` re-runs the recorded sequence, or a candidate sequence, against
 that cache and reports the queries, units and engagement facts it reaches. It never
@@ -19,16 +20,10 @@ import re
 from functools import lru_cache
 from typing import Any
 
-from config.config import get_config
-from entities.MCPContext import MCPContext
 from usecase import learned_store
-from usecase.audit import create_learning_audit_event, emit_audit_event, stable_hash
+from usecase.audit import stable_hash
 from usecase.learned_store import (
-    QUERY_ID_RE,
-    TOKEN_RE,
     LearnedStoreError,
-    directory_lock,
-    ensure_private_dir,
     get_pack_root,
     write_private_file,
 )
@@ -113,140 +108,17 @@ class ResultCache:
             raise LearnedStoreError("Invalid result file name")
         return self.case_dir(case_id) / result_file
 
-    def locked(self, case_id: str):
-        return directory_lock(self.pack_root, self.case_dir(case_id))
-
 
 def get_result_cache() -> ResultCache | None:
     root = get_pack_root()
     return ResultCache(root) if root is not None else None
 
 
-def _ignore_results_in_pack_history(pack_root) -> None:
+def ignore_results_in_pack_history(pack_root) -> None:
     """Keep cached tenant results out of the tenant pack's own git history."""
     ignore = pack_root / "engagements" / ".gitignore"
     if not ignore.exists() and not ignore.is_symlink():
         write_private_file(ignore, "*/results/\n")
-
-
-def _bounded_payload(payload: Any) -> Any:
-    """Copy a tool result for the cache, dropping continuation cursors that are bound to a live principal."""
-    if not isinstance(payload, dict):
-        return payload
-    cached = dict(payload)
-    continuation = cached.get("continuation")
-    if isinstance(continuation, dict) and "cursor" in continuation:
-        cached["continuation"] = {key: value for key, value in continuation.items() if key != "cursor"}
-    return cached
-
-
-async def record_tool_step(
-    case_id: str,
-    *,
-    tool: str,
-    arguments: dict[str, Any] | None,
-    payload: Any,
-    query_ids: list[str],
-    units: float | None,
-    duration_ms: float,
-    outcome: str,
-    principal: MCPContext,
-) -> dict[str, Any] | None:
-    """Record one query-running tool call and its bounded result. Never raises; returns the step or None."""
-    config = get_config()
-    if not config.learning_enabled:
-        return None
-    try:
-        cache = get_result_cache()
-        if cache is None or not TOKEN_RE.match(tool):
-            return None
-        ids = [item for item in query_ids if isinstance(item, str) and QUERY_ID_RE.match(item)][:MAX_STEP_QUERY_IDS]
-        if not ids:
-            return None
-        async with cache.locked(case_id):
-            manifest = cache.load_manifest(case_id)
-            if len(manifest["steps"]) >= MAX_CACHED_STEPS:
-                return None
-            position = len(manifest["steps"])
-            step: dict[str, Any] = {
-                "position": position,
-                "tool": tool,
-                "arguments_sha256": arguments_hash(arguments),
-                "argument_names": sorted(str(name) for name in (arguments or {}))[:50],
-                "query_ids": ids,
-                "units": round(units, 6) if isinstance(units, (int, float)) else None,
-                "duration_ms": round(duration_ms, 3),
-                "outcome": outcome if outcome in {"success", "error"} else "error",
-                "recorded_at": learned_store.iso_timestamp(learned_store.now_utc()),
-                "principal_sha256": stable_hash(principal.principal_id),
-                "result_file": None,
-                "result_bytes": 0,
-                "cache_note": None,
-            }
-            encoded = json.dumps(_bounded_payload(payload), sort_keys=True, separators=(",", ":"), default=str)
-            size = len(encoded.encode())
-            if size > config.learning_result_max_bytes:
-                step["cache_note"] = "result_too_large"
-            elif manifest["bytes"] + size > config.learning_result_cache_max_bytes:
-                step["cache_note"] = "cache_full"
-            else:
-                step["result_file"] = f"{position:04d}.json"
-                step["result_bytes"] = size
-            details = {
-                "case_id": case_id,
-                "tool": tool,
-                "position": position,
-                "result_bytes": step["result_bytes"],
-                "cache_note": step["cache_note"],
-                "query_ids": ids[:10],
-            }
-            await emit_audit_event(
-                create_learning_audit_event(
-                    operation="cache_result",
-                    principal=principal,
-                    changes=[],
-                    trigger=f"tool:{tool}",
-                    details=details,
-                )
-            )
-            ensure_private_dir(cache.case_dir(case_id), cache.pack_root)
-            _ignore_results_in_pack_history(cache.pack_root)
-            if step["result_file"]:
-                write_private_file(cache.result_path(case_id, step["result_file"]), encoded)
-                manifest["bytes"] += size
-            manifest.setdefault("created_at", step["recorded_at"])
-            manifest["steps"].append(step)
-            cache.save_manifest(case_id, manifest)
-            return step
-    except Exception as e:
-        logger.warning("Engagement result not cached: %s", type(e).__name__)
-        return None
-
-
-async def record_fact_link(case_id: str, *, key: Any, evidence_query_id: Any) -> bool:
-    """Link an engagement fact key to its evidence query id so replay can tell which facts a sequence reaches."""
-    if not get_config().learning_enabled:
-        return False
-    if not isinstance(key, str) or not FACT_KEY_RE.match(key):
-        return False
-    if not isinstance(evidence_query_id, str) or not QUERY_ID_RE.match(evidence_query_id):
-        return False
-    try:
-        cache = get_result_cache()
-        if cache is None:
-            return False
-        async with cache.locked(case_id):
-            manifest = cache.load_manifest(case_id)
-            link = {"key": key, "evidence_query_id": evidence_query_id}
-            if link in manifest["facts"] or len(manifest["facts"]) >= MAX_MANIFEST_FACTS:
-                return False
-            manifest["facts"].append(link)
-            ensure_private_dir(cache.case_dir(case_id), cache.pack_root)
-            cache.save_manifest(case_id, manifest)
-            return True
-    except Exception as e:
-        logger.warning("Engagement fact link not recorded: %s", type(e).__name__)
-        return False
 
 
 def _candidate_key(item: Any) -> tuple[str, str]:
