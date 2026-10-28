@@ -90,6 +90,7 @@ _RAW_TEXT_RE = re.compile(r"\b_raw_log\b|\bto_json_string\s*\(", re.IGNORECASE)
 _PATTERN_RE = re.compile(r"\bcontains\b|~=|\bregextract\s*\(|\bregexcapture\s*\(", re.IGNORECASE)
 _DATASET_EQ_RE = re.compile(r"(?<![\w.])(?:dataset|preset)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
 _DATASET_IN_RE = re.compile(r"(?<![\w.])dataset\s+in\s*\(([^)]*)\)", re.IGNORECASE)
+_MAIN_DATASET_RE = re.compile(r"(?<![\w.])dataset\s*=\s*([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
 _UNION_NAME_RE = re.compile(r"(?<![\w.])union\s+([A-Za-z_][A-Za-z0-9_]*)\b(?!\s*\()", re.IGNORECASE)
 _STAGE_KEYWORD_RE = re.compile(r"(?:^|\|)\s*([A-Za-z_]+)")
 _CONFIG_RE = re.compile(r"(?<![\w.])config\b[^|)]*", re.IGNORECASE)
@@ -1116,9 +1117,10 @@ def build_alternatives(
             )
         )
 
-    host_field = _host_field(shape)
-    if servers and host_field and not shape.host_scoped:
-        rewritten = _insert_host_filter(stripped, host_field, servers[:MAX_HOST_FILTER_VALUES])
+    target = _host_filter_target(shape, stripped)
+    if servers and target and not shape.host_scoped:
+        position, host_field = target
+        rewritten = _insert_host_filter(stripped, position, host_field, servers[:MAX_HOST_FILTER_VALUES])
         if rewritten:
             alternatives.append(
                 _alternative(
@@ -1229,24 +1231,27 @@ def _rewrite_config_timeframe(stripped: str, days: int) -> str:
     return "".join(pieces)
 
 
-def _host_field(shape: QueryShape) -> str | None:
-    host_fields = _parse_dataset_lists(get_config().cost_guard_host_fields, "COST_GUARD_HOST_FIELDS")
-    for dataset in shape.datasets:
-        if dataset_tier(dataset)[0] != "heavy":
-            continue
-        fields = host_fields.get(dataset.lower())
-        if fields:
-            return fields[0]
-    return None
+def _host_filter_target(shape: QueryShape, stripped: str) -> tuple[int, str] | None:
+    """Return where to insert a host filter and on which field, or None.
 
-
-def _insert_host_filter(stripped: str, host_field: str, servers: list[str]) -> str | None:
-    masked = _mask_strings(stripped)
-    match = re.search(r"(?<![\w.])dataset\s*=\s*[A-Za-z_][A-Za-z0-9_]*", masked, re.IGNORECASE)
-    if not match:
+    A host filter only scopes the dataset whose stage it follows, so it is offered only when
+    the query's main dataset is the only heavy dataset it reads. A heavy dataset reached
+    through a join or union would otherwise stay unscoped while the estimate assumed it was.
+    """
+    heavy = [dataset for dataset in shape.datasets if dataset_tier(dataset)[0] == "heavy"]
+    if len(heavy) != 1:
         return None
+    match = _MAIN_DATASET_RE.search(_mask_strings(stripped))
+    if not match or match.group(1).lower() != heavy[0].lower():
+        return None
+    host_fields = _parse_dataset_lists(get_config().cost_guard_host_fields, "COST_GUARD_HOST_FIELDS")
+    fields = host_fields.get(heavy[0].lower())
+    return (match.end(), fields[0]) if fields else None
+
+
+def _insert_host_filter(stripped: str, position: int, host_field: str, servers: list[str]) -> str:
     values = ", ".join(format_xql_value(server) for server in servers)
-    return f"{stripped[: match.end()]} | filter {host_field} in ({values}){stripped[match.end():]}"
+    return f"{stripped[:position]} | filter {host_field} in ({values}){stripped[position:]}"
 
 
 def _aggregate_rewrite(stripped: str) -> str | None:

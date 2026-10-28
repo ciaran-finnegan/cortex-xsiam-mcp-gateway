@@ -856,6 +856,43 @@ async def test_cheaper_dataset_alternative_is_offered_only_when_authorized(monke
     assert withheld == []
 
 
+def _host_filter_kinds(query, servers=("srv-app-01",)):
+    shape = cost_guard.parse_query(query)
+    alternatives = cost_guard.build_alternatives(
+        query,
+        shape,
+        cost_guard.normalize_timeframe(_days(30)),
+        principal=MCPContext(auth_headers={}, principal_id="analyst@example.test", groups=("Security",)),
+        servers=list(servers),
+        policy=cost_guard.current_policy(),
+    )
+    return [alt for alt in alternatives if alt["kind"] == "host_filter"]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        'dataset = acme_flow_logs | filter dest_ip = "192.0.2.10" '
+        "| join (dataset = xdr_data | fields agent_hostname, action_remote_ip) as ep ep.action_remote_ip = dest_ip "
+        "| limit 25",
+        "dataset = acme_alerts | union xdr_data | limit 25",
+        'dataset = xdr_data | filter action_remote_ip = "192.0.2.10" | union amazon_aws_raw | limit 25',
+    ],
+)
+def test_host_filter_is_not_offered_when_it_would_not_scope_every_heavy_dataset(query):
+    assert _host_filter_kinds(query) == []
+
+
+def test_host_filter_follows_the_main_heavy_dataset_stage():
+    query = 'config timeframe = 7d | dataset = xdr_data | filter action_remote_ip = "192.0.2.10" | limit 25'
+
+    (host,) = _host_filter_kinds(query, servers=("srv-app-01", "srv-db-01"))
+
+    assert host["xql"].startswith(
+        'config timeframe = 7d | dataset = xdr_data | filter agent_hostname in ("srv-app-01", "srv-db-01") | filter'
+    )
+
+
 def test_narrower_window_rewrites_a_longer_config_timeframe():
     query = "config timeframe = 30d | dataset = xdr_data | filter action_remote_ip = \"192.0.2.10\" | limit 5"
     shape = cost_guard.parse_query(query)
