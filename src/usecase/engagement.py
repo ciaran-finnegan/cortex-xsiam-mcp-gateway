@@ -28,12 +28,17 @@ from usecase.xql_results import result_metadata
 logger = logging.getLogger(__name__)
 
 EngagementMode = Literal["incident_response", "threat_hunt", "operations", "unset"]
+EngagementSource = Literal["human", "agent_inferred", "header"]
 FactConfidence = Literal["low", "medium", "high"]
 ResultShape = Literal["aggregate", "rows"]
 
 UNSET_MODE = "unset"
 ENGAGEMENT_MODES: tuple[str, ...] = ("incident_response", "threat_hunt", "operations", UNSET_MODE)
+ENGAGEMENT_SOURCES: tuple[str, ...] = ("human", "agent_inferred", "header")
 ENGAGEMENT_TOOL_NAMES: tuple[str, ...] = ("set_engagement", "get_engagement", "record_fact", "get_engagement_log")
+ENGAGEMENT_NUDGE = (
+    "No engagement set: infer the mode from the request or ask the user one short question, then call set_engagement."
+)
 SCOPE_LISTS: tuple[str, ...] = ("iocs", "internal", "front_ends", "servers")
 
 MAX_NOTES_CHARS = 2000
@@ -55,7 +60,9 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _XQL_DATASET = re.compile(r"^\s*dataset\s*=\s*([A-Za-z0-9_]+)", re.IGNORECASE)
 
 # Conservative defaults. Units are XSIAM compute units. The cost guard reads
-# these through get_mode_policy(); this module only records spend.
+# these through get_mode_policy(); this module only records spend. The unset
+# mode has no row of its own: it inherits the operations row, the most
+# conservative, including any operations override.
 DEFAULT_MODE_POLICY: dict[str, dict[str, Any]] = {
     "incident_response": {
         "default_window_ms": 86_400_000,
@@ -78,14 +85,6 @@ DEFAULT_MODE_POLICY: dict[str, dict[str, Any]] = {
         "approval_threshold_units": 1.0,
         "session_budget_units": 5.0,
         "reserve_units": 20.0,
-        "default_result_shape": "aggregate",
-        "heavy_tools_hidden": ["execute_xql_query"],
-    },
-    UNSET_MODE: {
-        "default_window_ms": 3_600_000,
-        "approval_threshold_units": 1.0,
-        "session_budget_units": 3.0,
-        "reserve_units": 25.0,
         "default_result_shape": "aggregate",
         "heavy_tools_hidden": ["execute_xql_query"],
     },
@@ -117,6 +116,7 @@ class Engagement(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mode: EngagementMode = UNSET_MODE
+    source: EngagementSource | None = None
     case_id: str | None = None
     iocs: list[str] = Field(default_factory=list)
     internal: list[str] = Field(default_factory=list)
@@ -133,6 +133,7 @@ class EngagementScope:
 
     mode: str = UNSET_MODE
     case_id: str | None = None
+    source: str | None = None
     tool_name: str | None = None
 
 
@@ -181,8 +182,12 @@ def _parse_mode_policy(raw_policy: str, max_timeframe_ms: int) -> dict[str, Mode
         override = overrides.get(mode, {})
         if not isinstance(override, dict):
             raise ValueError(f"ENGAGEMENT_MODE_POLICY entry for {mode} must be an object")
+        if mode == UNSET_MODE:
+            settings = {**DEFAULT_MODE_POLICY["operations"], **overrides.get("operations", {}), **override}
+        else:
+            settings = {**DEFAULT_MODE_POLICY[mode], **override}
         try:
-            policy = ModePolicy.model_validate({**DEFAULT_MODE_POLICY[mode], **override})
+            policy = ModePolicy.model_validate(settings)
         except ValidationError as e:
             raise ValueError(f"Invalid ENGAGEMENT_MODE_POLICY entry for {mode}: {e.errors()[0]['msg']}") from e
         if max_timeframe_ms > 0 and policy.default_window_ms > max_timeframe_ms:
@@ -211,7 +216,7 @@ def apply_engagement(principal: MCPContext) -> MCPContext:
     scope = _active_scope.get()
     if scope is None:
         return principal
-    return replace(principal, mode=scope.mode, case_id=scope.case_id)
+    return replace(principal, mode=scope.mode, case_id=scope.case_id, engagement_source=scope.source)
 
 
 async def enter_engagement_scope(ctx: Any, principal: MCPContext | None, tool_name: str | None) -> Token:
@@ -222,6 +227,7 @@ async def enter_engagement_scope(ctx: Any, principal: MCPContext | None, tool_na
             engagement = await load_engagement(ctx, principal)
             scope.mode = engagement.mode
             scope.case_id = engagement.case_id
+            scope.source = engagement.source
         except Exception as e:
             logger.warning("Engagement state unavailable; using unset mode: %s", type(e).__name__)
     return _active_scope.set(scope)
@@ -294,6 +300,7 @@ async def set_session_engagement(
     if scope is not None:
         scope.mode = engagement.mode
         scope.case_id = engagement.case_id
+        scope.source = engagement.source
     return {
         "engagement": engagement,
         "previous_mode": previous.mode,
@@ -525,6 +532,7 @@ def _telemetry_principal(ctx: Any) -> MCPContext | None:
 def build_engagement(
     *,
     mode: str,
+    source: str = "agent_inferred",
     case_id: str | None = None,
     iocs: list[str] | None = None,
     internal: list[str] | None = None,
@@ -536,6 +544,8 @@ def build_engagement(
     """Validate set_engagement input. Returns the engagement and the names of omitted fields."""
     if mode not in ENGAGEMENT_MODES:
         raise EngagementError(f"mode must be one of: {', '.join(ENGAGEMENT_MODES)}")
+    if source not in ENGAGEMENT_SOURCES:
+        raise EngagementError(f"source must be one of: {', '.join(ENGAGEMENT_SOURCES)}")
     limit = get_config().engagement_max_scope_items
     lists = {"iocs": iocs, "internal": internal, "front_ends": front_ends, "servers": servers}
     omitted = {name for name, values in lists.items() if values is None}
@@ -545,6 +555,7 @@ def build_engagement(
         omitted.add("notes")
     engagement = Engagement(
         mode=mode,
+        source=source,
         case_id=validate_case_id(case_id) if case_id is not None else None,
         iocs=validate_scope_list("iocs", iocs or [], limit=limit, allow_hashes=True),
         internal=validate_scope_list("internal", internal or [], limit=limit),
@@ -607,6 +618,11 @@ def normalize_scope_value(value: Any, *, allow_hashes: bool = False) -> str | No
         # Rejects malformed IPv4 such as 10.0.0.256 rather than storing it as a hostname.
         return None
     return hostname
+
+
+def needs_user_confirmation(engagement: Engagement) -> bool:
+    """An agent-inferred mode stays unconfirmed until set_engagement records it from the human or a header."""
+    return engagement.mode != UNSET_MODE and engagement.source == "agent_inferred"
 
 
 def normalize_audit_token(value: Any) -> str | None:

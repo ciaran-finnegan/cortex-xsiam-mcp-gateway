@@ -126,7 +126,7 @@ advertised in `tools/list`.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `ENGAGEMENT_STORE_DIR` | empty | Optional absolute directory for principal-scoped case files. Must be outside the repository and any git working tree; startup fails otherwise. Empty keeps engagements in session state only. |
-| `ENGAGEMENT_MODE_POLICY` | empty | JSON per-mode overrides of default window, approval threshold, session budget, reserve units, default result shape, and hidden tools. Empty uses the built-in defaults. |
+| `ENGAGEMENT_MODE_POLICY` | empty | JSON per-mode overrides of default window, approval threshold, session budget, reserve units, default result shape, and hidden tools. Empty uses the built-in defaults. `unset` inherits the `operations` row. |
 | `ENGAGEMENT_MAX_SCOPE_ITEMS` | `100` | Maximum entries per scope list in `set_engagement`; valid range 1-1000. |
 
 Modes only narrow what `TOOL_ACCESS_POLICY` grants. See

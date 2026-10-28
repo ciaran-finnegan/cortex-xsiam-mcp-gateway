@@ -509,13 +509,14 @@ async def test_every_audit_event_carries_mode_and_case_and_engagement_args_are_n
 
     assert all("engagement" in event for event in server.events)
     first_start, first_end, set_start, set_end, last_start, last_end = server.events
-    assert first_start["engagement"] == {"mode": "unset", "case_id": None}
-    assert set_start["engagement"] == {"mode": "unset", "case_id": None}
-    assert set_end["engagement"] == {"mode": "incident_response", "case_id": "IR-9"}
+    assert first_start["engagement"] == {"mode": "unset", "case_id": None, "source": None}
+    assert set_start["engagement"] == {"mode": "unset", "case_id": None, "source": None}
+    assert set_end["engagement"] == {"mode": "incident_response", "case_id": "IR-9", "source": "agent_inferred"}
     assert set_end["result"]["previous_mode"] == "unset"
     assert set_end["request"]["engagement_mode"] == "incident_response"
+    assert set_end["request"]["engagement_source"] == "agent_inferred"
     assert set_end["request"]["scope_counts"] == {"iocs": 1}
-    assert last_start["engagement"] == {"mode": "incident_response", "case_id": "IR-9"}
+    assert last_start["engagement"] == {"mode": "incident_response", "case_id": "IR-9", "source": "agent_inferred"}
     serialized = json.dumps(server.events)
     assert "203.0.113.99" not in serialized
     assert "secret-ish note" not in serialized
@@ -704,6 +705,7 @@ async def test_tier1_cannot_reach_ungranted_tool_or_dataset_in_any_mode(gateway,
 def test_default_mode_policy_is_conservative():
     table = get_mode_policy_table()
     assert set(table) == set(ENGAGEMENT_MODES)
+    assert table["unset"] == table["operations"]
     assert "execute_xql_query" in table["unset"].heavy_tools_hidden
     assert table["unset"].session_budget_units <= min(policy.session_budget_units for policy in table.values())
     assert table["unset"].reserve_units >= max(policy.reserve_units for policy in table.values())
@@ -715,6 +717,66 @@ def test_mode_policy_overrides_merge_per_mode(monkeypatch):
     assert get_mode_policy("threat_hunt").session_budget_units == 9
     assert get_mode_policy("threat_hunt").default_result_shape == "aggregate"
     assert get_mode_policy("incident_response").session_budget_units == 25
+
+
+def test_unset_inherits_the_operations_row_including_overrides(monkeypatch):
+    monkeypatch.setattr(get_config(), "engagement_mode_policy", json.dumps({"operations": {"session_budget_units": 2}}))
+    assert get_mode_policy("unset") == get_mode_policy("operations")
+    assert get_mode_policy("unset").session_budget_units == 2
+    monkeypatch.setattr(
+        get_config(),
+        "engagement_mode_policy",
+        json.dumps({"operations": {"session_budget_units": 2}, "unset": {"reserve_units": 30}}),
+    )
+    assert get_mode_policy("unset").session_budget_units == 2
+    assert get_mode_policy("unset").reserve_units == 30
+
+
+@pytest.mark.asyncio
+async def test_agent_inferred_mode_asks_for_confirmation_until_recorded_from_the_human(gateway):
+    server = gateway()
+    async with Client(server) as client:
+        unset = _payload(await client.call_tool("get_engagement", {}))
+        inferred = _payload(await client.call_tool("set_engagement", {"mode": "operations"}))
+        pending = _payload(await client.call_tool("get_engagement", {}))
+        await client.call_tool("set_engagement", {"mode": "operations", "source": "human"})
+        confirmed = _payload(await client.call_tool("get_engagement", {}))
+        await client.call_tool("set_engagement", {"mode": "threat_hunt", "source": "header"})
+        from_header = _payload(await client.call_tool("get_engagement", {}))
+        invalid = await client.call_tool(
+            "set_engagement", {"mode": "operations", "source": "admin"}, raise_on_error=False
+        )
+
+    assert unset["confirm_with_user"] is False
+    assert inferred["engagement"]["source"] == "agent_inferred"
+    assert inferred["confirm_with_user"] is True
+    assert pending["confirm_with_user"] is True
+    assert confirmed["engagement"]["source"] == "human"
+    assert confirmed["confirm_with_user"] is False
+    assert from_header["confirm_with_user"] is False
+    assert invalid.is_error
+    with pytest.raises(EngagementError, match="source must be one of"):
+        build_engagement(mode="operations", source="admin")
+
+
+@pytest.mark.asyncio
+async def test_results_carry_a_one_line_nudge_only_while_unset(gateway):
+    server = gateway(fetcher=QueryFetcher())
+    query = {"dataset": "host_inventory", "fields": ["host_name"]}
+    async with Client(server) as client:
+        unset_query = await client.call_tool("query_dataset", query)
+        unset_guidance = await client.call_tool("get_dataset_query_guidance", {})
+        engagement_read = await client.call_tool("get_engagement", {})
+        await client.call_tool("set_engagement", {"mode": "operations"})
+        set_query = await client.call_tool("query_dataset", query)
+
+    assert unset_query.content[-1].text == engagement.ENGAGEMENT_NUDGE
+    assert "\n" not in engagement.ENGAGEMENT_NUDGE
+    assert _payload(unset_query)["success"] is True
+    assert unset_query.structured_content == _payload(unset_query)
+    assert unset_guidance.content[-1].text == engagement.ENGAGEMENT_NUDGE
+    assert all(block.text != engagement.ENGAGEMENT_NUDGE for block in engagement_read.content)
+    assert all(block.text != engagement.ENGAGEMENT_NUDGE for block in set_query.content)
 
 
 @pytest.mark.asyncio
@@ -747,7 +809,13 @@ async def test_server_instructions_and_mode_specific_guidance(gateway):
     assert server.instructions == SERVER_INSTRUCTIONS
     for mode in ("incident_response", "threat_hunt", "operations"):
         assert mode in SERVER_INSTRUCTIONS
-    assert "Call set_engagement first" in SERVER_INSTRUCTIONS
+    instructions = " ".join(SERVER_INSTRUCTIONS.split())
+    for cue in ("indicator list", "alert storm", "are we talking to X", "why is X failing", "firewall", "look for", "hunt", "hypothesis"):
+        assert cue in instructions, cue
+    assert "ask the user one short question before the first query" in instructions
+    assert "Never ask the user to fill in a form" in instructions
+    assert 'source="agent_inferred"' in instructions
+    assert "confirm_with_user" in instructions
 
     async with Client(server) as client:
         assert client.initialize_result.instructions == SERVER_INSTRUCTIONS

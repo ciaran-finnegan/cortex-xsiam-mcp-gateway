@@ -19,6 +19,12 @@ This project follows a lightweight changelog format until stable releases begin.
 - Every XQL query now records dataset, window, rows, units, duration, and tool
   in the engagement log.
 - Added server `instructions` and mode-specific `get_dataset_query_guidance`.
+  The agent infers the mode from the opening request or asks the user one short
+  question; `set_engagement` takes a `source` (`human`, `agent_inferred`,
+  `header`), and `get_engagement` returns `confirm_with_user` while the mode is
+  agent-inferred. `unset` inherits the `operations` defaults, and results carry
+  a one-line nudge until an engagement is set. `source` is audited with mode
+  and case id.
 - Fixed un-awaited FastMCP `ctx.set_state` / `ctx.get_state` calls, so the
   selected credential profile now reaches the audit result; it is now
   request-scoped. Tests use a real FastMCP context or an async fake pinned to

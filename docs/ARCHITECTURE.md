@@ -49,6 +49,7 @@ flowchart LR
 | `src/usecase/audit.py` | Builds audit events and optionally exports them to Cortex XSIAM. |
 | `src/service/cortex_mcp/audit_middleware.py` | Emits audit events for every MCP tool invocation and loads the caller's engagement for the call. |
 | `src/service/cortex_mcp/tool_policy_middleware.py` | Enforces tool policy and engagement-mode narrowing on calls and on `tools/list`. |
+| `src/service/cortex_mcp/engagement_middleware.py` | Appends a one-line set-the-engagement nudge to tool results while no engagement is set. |
 | `src/usecase/engagement.py` | Engagement modes, scope validation, mode policy, session and case logs, query telemetry. |
 | `src/entities/MCPContext.py` | Holds auth headers, principal metadata, and the engagement mode and case id. |
 

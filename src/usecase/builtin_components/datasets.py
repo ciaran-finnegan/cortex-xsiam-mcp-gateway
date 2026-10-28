@@ -295,8 +295,9 @@ _MODE_WORKFLOWS: dict[str, tuple[str, ...]] = {
         "Raw XQL is hidden in this mode.",
     ),
     "unset": (
-        "Call set_engagement with incident_response, threat_hunt, or operations before querying.",
-        "Until then the most conservative defaults apply and heavy tools are hidden.",
+        "Before querying, infer the mode from the request or ask the user one short question, then call set_engagement.",
+        "Indicators, an alert storm, or 'are we talking to X' is incident_response; 'why is X failing, blocked, or slow' is operations; 'look for' or a hypothesis is threat_hunt.",
+        "Until then the operations defaults apply and heavy tools are hidden.",
     ),
 }
 

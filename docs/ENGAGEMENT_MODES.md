@@ -5,8 +5,28 @@ It holds a mode, an optional case id, the investigation scope, recorded facts,
 and a log of every XQL query the session ran. Agents set scope once instead of
 re-sending indicator lists with every query.
 
-The MCP server sends `instructions` at initialization that tell clients to call
-`set_engagement` first.
+The mode is inferred or asked for, never a form the user fills in. The MCP
+server sends `instructions` at initialization that tell the agent to set the
+engagement before the first query.
+
+## Choosing The Mode
+
+| Opening request | Mode |
+| --- | --- |
+| An indicator list, an alert storm, or "are we talking to X" | `incident_response` |
+| "Why is X failing / blocked / slow", or a firewall or integration diagnosis | `operations` |
+| "Look for", "hunt", or a hypothesis to test | `threat_hunt` |
+
+When the request makes the mode obvious, the agent records it with
+`set_engagement(source="agent_inferred")`. Otherwise it asks the user one short
+question before the first query and records the answer with `source="human"`.
+`source="header"` records a mode supplied by a client or gateway header.
+
+While the mode is `agent_inferred`, `get_engagement` and `set_engagement` return
+`confirm_with_user: true`. The agent confirms the mode with the user in passing
+and records it again with `source="human"`, which clears the flag. `source` is
+provenance declared by the caller: it is audited and never used for
+authorization. It defaults to `agent_inferred`.
 
 ## Modes
 
@@ -17,8 +37,15 @@ The MCP server sends `instructions` at initialization that tell clients to call
 | `operations` | Health, volume, and coverage questions. | 1 h | `aggregate` | `execute_xql_query` |
 | `unset` | Every session until `set_engagement` is called. | 1 h | `aggregate` | `execute_xql_query` |
 
+`unset` has no row of its own. It inherits the `operations` row, the most
+conservative, including any `operations` override.
+
 `get_dataset_query_guidance` returns the workflow for the current mode under
-`engagement.workflow`, alongside the generic query workflow.
+`engagement.workflow`, alongside the generic query workflow. While no engagement
+is set, every tool result except the engagement tools ends with a one-line
+text block telling the agent to infer or ask for the mode and call
+`set_engagement`. The nudge is a separate content block, so payloads and output
+schemas are unchanged.
 
 ## Modes Only Narrow Access
 
@@ -49,8 +76,8 @@ skips listing gains nothing.
 
 | Tool | Purpose |
 | --- | --- |
-| `set_engagement(mode, case_id, iocs, internal, front_ends, servers, window, notes)` | Set mode and scope for this session. Omitted fields are restored from an existing case; an explicit empty list clears one. |
-| `get_engagement()` | Current scope, the mode's policy, and this session's recorded spend against the mode budget. |
+| `set_engagement(mode, source, case_id, iocs, internal, front_ends, servers, window, notes)` | Record mode, source, and scope for this session. Omitted scope fields are restored from an existing case; an explicit empty list clears one. |
+| `get_engagement()` | Current scope, `confirm_with_user`, the mode's policy, and this session's recorded spend against the mode budget. |
 | `record_fact(key, value, evidence_query_id, confidence)` | Record a finding. `evidence_query_id` must be a query this engagement ran. |
 | `get_engagement_log(case_id)` | Facts and the query log for a case, or for this session when `case_id` is omitted. |
 
@@ -156,16 +183,17 @@ defaults above:
 ENGAGEMENT_MODE_POLICY='{"threat_hunt":{"session_budget_units":10,"heavy_tools_hidden":["execute_xql_query"]}}'
 ```
 
-Default units are a conservative starting point. Tune them to the tenant's
-daily XQL quota.
+An `unset` entry is applied on top of the inherited `operations` row. Default
+units are a conservative starting point. Tune them to the tenant's daily XQL
+quota.
 
 ## Audit
 
-Every audit event carries `engagement.mode` and `engagement.case_id`. The start
-event records the mode before the call; the end event records the mode after it,
-so a `set_engagement` end event shows the new mode and `result.previous_mode`.
-`set_engagement` requests log the mode, case id, and scope list sizes, never
-scope values or notes. `record_fact` requests log the key, evidence query id,
+Every audit event carries `engagement.mode`, `engagement.case_id`, and
+`engagement.source`. The start event records the engagement before the call; the
+end event records it after the call, so a `set_engagement` end event shows the
+new mode and source and `result.previous_mode`. `set_engagement` requests log
+the mode, source, case id, and scope list sizes, never scope values or notes. `record_fact` requests log the key, evidence query id,
 and confidence, never the value.
 
 ## Continuation Cursors

@@ -12,3 +12,5 @@ class MCPContext:
     # the groups above grant; they never widen it.
     mode: str = "unset"
     case_id: str | None = None
+    # Who chose the mode: human, agent_inferred, or header. Provenance only; never used for authorization.
+    engagement_source: str | None = None

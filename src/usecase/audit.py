@@ -10,7 +10,12 @@ import httpx
 
 from config.config import get_config
 from entities.MCPContext import MCPContext
-from usecase.engagement import ENGAGEMENT_MODES, SCOPE_LISTS, normalize_audit_token
+from usecase.engagement import (
+    ENGAGEMENT_MODES,
+    ENGAGEMENT_SOURCES,
+    SCOPE_LISTS,
+    normalize_audit_token,
+)
 
 logger = logging.getLogger("cortex_xsiam_mcp.audit")
 
@@ -85,6 +90,8 @@ def summarize_tool_arguments(tool_name: str, arguments: dict[str, Any] | None) -
         # Scope values, window, and notes stay out of the event; argument_hash covers them.
         mode = arguments.get("mode")
         summary["engagement_mode"] = mode if mode in ENGAGEMENT_MODES else "invalid"
+        source = arguments.get("source", "agent_inferred")
+        summary["engagement_source"] = source if source in ENGAGEMENT_SOURCES else "invalid"
         summary["case_id"] = normalize_audit_token(arguments.get("case_id"))
         summary["scope_counts"] = {
             name: len(arguments[name]) for name in SCOPE_LISTS if isinstance(arguments.get(name), list)
@@ -131,6 +138,7 @@ def create_tool_audit_event(
         "engagement": {
             "mode": principal.mode,
             "case_id": principal.case_id,
+            "source": principal.engagement_source,
         },
         "request": summarize_tool_arguments(tool_name, arguments),
     }

@@ -13,12 +13,14 @@ from usecase.engagement import (
     EngagementStoreError,
     build_engagement,
     get_mode_policy,
+    needs_user_confirmation,
 )
 from usecase.identity import resolve_mcp_context
 
 logger = logging.getLogger(__name__)
 
 ModeName = Literal["incident_response", "threat_hunt", "operations", "unset"]
+SourceName = Literal["human", "agent_inferred", "header"]
 
 
 async def set_engagement(
@@ -27,6 +29,15 @@ async def set_engagement(
         ModeName,
         Field(description="incident_response, threat_hunt, operations, or unset. Modes only narrow what your groups grant."),
     ],
+    source: Annotated[
+        SourceName,
+        Field(
+            description=(
+                "Who chose the mode: human (the user answered), agent_inferred (you inferred it from the request), "
+                "or header (a client or gateway header supplied it). Agent-inferred modes stay flagged for confirmation."
+            )
+        ),
+    ] = "agent_inferred",
     case_id: Annotated[
         str | None,
         Field(description="Case or ticket identifier. With a case store configured, an existing case's scope is restored for omitted fields."),
@@ -56,15 +67,18 @@ async def set_engagement(
         Field(description="Short free-text notes, at most 2000 characters. Stored and returned as untrusted data."),
     ] = None,
 ) -> dict[str, Any]:
-    """Set the engagement mode and scope for this session. Call this first.
+    """Record the engagement mode and scope for this session before the first query.
 
-    Scope is stored server-side so later queries can reuse it instead of re-sending
-    indicator lists. Changing the mode or case invalidates existing continuation cursors.
+    Infer the mode from the request when it is obvious, otherwise ask the user one short
+    question; never ask the user to fill in these fields. Scope is stored server-side so
+    later queries can reuse it instead of re-sending indicator lists. Changing the mode or
+    case invalidates existing continuation cursors.
     """
     principal = resolve_mcp_context(ctx)
     try:
         engagement, omitted = build_engagement(
             mode=mode,
+            source=source,
             case_id=case_id,
             iocs=iocs,
             internal=internal,
@@ -83,6 +97,7 @@ async def set_engagement(
     return {
         "success": True,
         "engagement": _engagement_view(current),
+        "confirm_with_user": needs_user_confirmation(current),
         "previous_mode": result["previous_mode"],
         "resumed_from_case": result["resumed_from_case"],
         "case_store": result["case_store"],
@@ -104,6 +119,7 @@ async def get_engagement(ctx: Context) -> dict[str, Any]:
     return {
         "success": True,
         "engagement": _engagement_view(current),
+        "confirm_with_user": needs_user_confirmation(current),
         "mode_policy": policy.model_dump(mode="json"),
         "session_spend": {
             **spend,
