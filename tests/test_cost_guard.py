@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from entities.MCPContext import MCPContext
 from service.cortex_mcp import audit_middleware
 from usecase import cost_guard, xql_executor
 from usecase.builtin_components import datasets, issues, logs
+from usecase.credential_broker import CredentialBrokerError
 from usecase.dataset_query import QueryTimeframe
 
 DAY_MS = 86_400_000
@@ -299,7 +301,7 @@ def test_timeout_is_capped_at_the_ceiling_and_the_approved_ceiling(monkeypatch):
 async def test_execute_xql_query_timeout_is_capped_unless_an_analyst_approves(monkeypatch, audit_events):
     timeouts = []
 
-    async def fake_submit(ctx, query, safe_limit, *, timeframe, poll_interval_seconds, timeout_seconds):
+    async def fake_submit(ctx, query, safe_limit, *, timeframe, poll_interval_seconds, timeout_seconds, ticket):
         timeouts.append(timeout_seconds)
         return _success()
 
@@ -483,6 +485,7 @@ async def test_query_that_raises_stays_debited(monkeypatch):
     _observe(30.0)
 
     async def broken(ctx, query, safe_limit, **kwargs):
+        kwargs["ticket"].submitted = True
         raise RuntimeError("connection reset")
 
     monkeypatch.setattr(xql_executor, "_submit_and_poll", broken)
@@ -491,6 +494,33 @@ async def test_query_that_raises_stays_debited(monkeypatch):
         await xql_executor.run_xql_query(_ctx(), "dataset = acme_alerts | limit 5", 5, timeframe=_days(1))
 
     assert cost_guard._known_remaining(cost_guard.tenant_quota_key()) == pytest.approx(29.6)
+    assert cost_guard._inflight[cost_guard.tenant_quota_key()] == {}
+
+
+@pytest.mark.asyncio
+async def test_query_cancelled_before_submission_is_released_without_a_debit(monkeypatch):
+    _observe(30.0)
+    started = asyncio.Event()
+
+    class BlockingFetcher:
+        async def send_request(self, path, data):
+            raise AssertionError("cancelled query must not reach XSIAM")
+
+    async def fake_get_fetcher(ctx):
+        started.set()
+        await asyncio.Event().wait()
+        return BlockingFetcher()
+
+    monkeypatch.setattr(xql_executor, "get_fetcher", fake_get_fetcher)
+    task = asyncio.create_task(
+        xql_executor.run_xql_query(_ctx(), "dataset = acme_alerts | limit 5", 5, timeframe=_days(1))
+    )
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert cost_guard._known_remaining(cost_guard.tenant_quota_key()) == 30.0
     assert cost_guard._inflight[cost_guard.tenant_quota_key()] == {}
 
 
@@ -946,6 +976,37 @@ async def test_cache_expires_and_skips_failures(monkeypatch, fetcher):
     assert fresh["quota"]["cached"] is False
     assert expired["quota"]["cached"] is False
     assert len(fetcher.fetcher.requests) == 3
+
+
+@pytest.mark.asyncio
+async def test_cache_is_not_served_once_the_credential_broker_rejects_the_principal(monkeypatch, fetcher):
+    monkeypatch.setattr(get_config(), "xsiam_credential_broker_enabled", True)
+    monkeypatch.setattr(
+        get_config(),
+        "xsiam_credential_profiles",
+        '{"Security":{"priority":10,"profile_name":"security-readonly","api_key_env":"ACME_TEST_KEY","api_key_id_env":"ACME_TEST_KEY_ID"}}',
+    )
+    monkeypatch.setenv("ACME_TEST_KEY", "synthetic-key")
+    monkeypatch.setenv("ACME_TEST_KEY_ID", "1")
+    fetcher.fetcher = SequenceFetcher([_success(), _success()])
+    query = "dataset = acme_alerts | fields alert_id | limit 5"
+
+    await xql_executor.run_xql_query(_ctx(), query, 5, timeframe=_days(1))
+    cached = await xql_executor.run_xql_query(_ctx(), query, 5, timeframe=_days(1))
+    monkeypatch.delenv("ACME_TEST_KEY")
+    with pytest.raises(CredentialBrokerError):
+        await xql_executor.run_xql_query(_ctx(), query, 5, timeframe=_days(1))
+    monkeypatch.setenv("ACME_TEST_KEY", "synthetic-key")
+    monkeypatch.setattr(
+        get_config(),
+        "xsiam_credential_profiles",
+        '{"Security":{"priority":10,"profile_name":"security-rotated","api_key_env":"ACME_TEST_KEY","api_key_id_env":"ACME_TEST_KEY_ID"}}',
+    )
+    reprofiled = await xql_executor.run_xql_query(_ctx(), query, 5, timeframe=_days(1))
+
+    assert cached["quota"]["cached"] is True
+    assert reprofiled["quota"]["cached"] is False
+    assert len(fetcher.fetcher.requests) == 2
 
 
 @pytest.mark.asyncio

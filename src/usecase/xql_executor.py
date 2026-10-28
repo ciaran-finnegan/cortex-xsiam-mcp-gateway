@@ -53,6 +53,7 @@ async def run_xql_query(
             timeframe=ticket.timeframe_api,
             poll_interval_seconds=poll_interval_seconds,
             timeout_seconds=ticket.timeout_seconds,
+            ticket=ticket,
         )
     except BaseException:
         cost_guard.abandon(ticket)
@@ -68,12 +69,14 @@ async def _submit_and_poll(
     timeframe: dict[str, int],
     poll_interval_seconds: float,
     timeout_seconds: int,
+    ticket: cost_guard.GuardTicket,
 ) -> dict[str, Any]:
     async with _query_semaphore():
         with cost_guard.track_slot():
             fetcher = await get_fetcher(ctx)
             request_data: dict[str, Any] = {"query": query, "timeframe": timeframe}
 
+            ticket.submitted = True
             start_response = await fetcher.send_request(
                 "/xql/start_xql_query/",
                 data={"request_data": request_data},

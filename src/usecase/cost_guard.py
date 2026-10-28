@@ -47,6 +47,7 @@ from mcp.types import ClientCapabilities, ElicitationCapability
 from config.config import get_config
 from entities.MCPContext import MCPContext
 from usecase.audit import create_cost_guard_audit_event, emit_audit_event
+from usecase.credential_broker import select_xsiam_credentials
 from usecase.dataset_query import QueryTimeframe
 from usecase.identity import resolve_mcp_context
 from usecase.log_policy import authorize_dataset
@@ -554,6 +555,8 @@ class GuardTicket:
     approval_method: str | None = None
     reservation: int | None = None
     cached_response: dict[str, Any] | None = None
+    # Set by the executor just before the start request, so a query that never reached XSIAM is not debited.
+    submitted: bool = False
 
 
 _quota: dict[str, _QuotaObservation] = {}
@@ -609,14 +612,17 @@ def _debit_remaining(quota_key: str, units: float) -> None:
 
 
 def abandon(ticket: GuardTicket) -> None:
-    """Release a query that ended without a reply, assuming it spent its whole estimate.
+    """Release a query that ended without a reply.
 
-    XSIAM keeps running a query the gateway stopped waiting for, and its cost is never
-    reported back, so the estimate stays debited until the next quota reading from XSIAM.
+    Once the start request has gone out, XSIAM may keep running the query and its cost is
+    never reported back, so the estimate stays debited until the next quota reading from
+    XSIAM. A query cancelled before submission, for example while waiting for a slot, is
+    released without a debit.
     """
     if ticket.reservation is not None:
         release(ticket)
-        _debit_remaining(ticket.quota_key, ticket.estimate.high_units)
+        if ticket.submitted:
+            _debit_remaining(ticket.quota_key, ticket.estimate.high_units)
 
 
 # --- Decisions ---
@@ -656,7 +662,10 @@ async def prepare_query(
     if not config.cost_guard_enabled:
         return ticket
 
-    ticket.cache_key = _cache_key(principal, query, ticket.timeframe_api, result_limit)
+    # Check credential eligibility first, so a principal the broker would now reject cannot
+    # read a result cached while it was eligible. Raises CredentialBrokerError.
+    selection = select_xsiam_credentials(principal, _lifespan_auth_headers(ctx))
+    ticket.cache_key = _cache_key(principal, query, ticket.timeframe_api, result_limit, selection.profile_name)
     cached = _cache_lookup(ticket.cache_key)
     if cached is not None:
         cached["quota"].update(
@@ -1359,13 +1368,23 @@ async def _engagement_servers(ctx: Any, principal: MCPContext) -> list[str]:
     return [server for server in servers if isinstance(server, str) and server]
 
 
-def _cache_key(principal: MCPContext, query: str, timeframe_api: dict[str, int], result_limit: int) -> str:
+def _cache_key(
+    principal: MCPContext,
+    query: str,
+    timeframe_api: dict[str, int],
+    result_limit: int,
+    credential_profile: str,
+) -> str:
+    config = get_config()
+    credential_policy = f"{config.xsiam_credential_broker_enabled}:{config.xsiam_credential_profiles}"
     identity = {
         "principal_id": principal.principal_id,
         "tenant_id": principal.tenant_id,
         "auth_source": principal.auth_source,
         "groups": sorted(principal.groups),
-        "dataset_policy_sha256": hashlib.sha256(get_config().log_search_dataset_policy.encode()).hexdigest(),
+        "dataset_policy_sha256": hashlib.sha256(config.log_search_dataset_policy.encode()).hexdigest(),
+        "credential_profile": credential_profile,
+        "credential_policy_sha256": hashlib.sha256(credential_policy.encode()).hexdigest(),
         "query": query,
         "timeframe": timeframe_api,
         "result_limit": int(result_limit),
@@ -1433,6 +1452,11 @@ def _principal_key(principal: MCPContext) -> str:
         "auth_source": principal.auth_source,
     }
     return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _lifespan_auth_headers(ctx: Any) -> dict[str, str]:
+    lifespan = getattr(getattr(ctx, "request_context", None), "lifespan_context", None)
+    return lifespan.auth_headers if isinstance(lifespan, MCPContext) else {}
 
 
 def tenant_quota_key() -> str:

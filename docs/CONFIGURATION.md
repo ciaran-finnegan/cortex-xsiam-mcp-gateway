@@ -176,8 +176,11 @@ the `actual_units` each result records.
 
 Rules, in order:
 
-1. A cached result for the same principal, query text, timeframe, and limit is
-   returned within `COST_GUARD_CACHE_TTL_SECONDS` without spending quota.
+1. A cached result for the same principal, groups, dataset policy, XSIAM
+   credential profile and profile configuration, query text, timeframe, and
+   limit is returned within `COST_GUARD_CACHE_TTL_SECONDS` without spending
+   quota. The credential broker is checked first, so a principal it now rejects
+   gets no cached result.
 2. While `COST_GUARD_LONG_SLOT_LIMIT` queries have held a query slot longer than
    `COST_GUARD_LONG_SLOT_SECONDS`, new heavy and extreme queries are refused.
 3. Any query whose estimate (the band's high bound), plus the estimates of
@@ -187,9 +190,10 @@ Rules, in order:
    `COST_GUARD_QUOTA_STALE_SECONDS`, the guard reads `/xql/get_quota` and uses
    its `remaining_quota`, or `COST_GUARD_DAILY_QUOTA_UNITS` minus
    `daily_used_quota`. If it still cannot tell, heavy and extreme queries are
-   refused. A query that times out or fails without a reply stays debited at
-   its estimate until the next XSIAM reading, because XSIAM may still be
-   running it.
+   refused. A query that times out or fails without a reply after its start
+   request was sent stays debited at its estimate until the next XSIAM
+   reading, because XSIAM may still be running it. A query cancelled before
+   submission is released without a debit.
 4. A query whose estimate exceeds the approval threshold needs approval. When
    the MCP client supports elicitation, the guard asks the analyst directly with
    the estimate and alternatives. Otherwise, or when that prompt is cancelled,
