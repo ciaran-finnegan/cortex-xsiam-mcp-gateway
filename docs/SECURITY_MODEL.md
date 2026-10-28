@@ -142,6 +142,16 @@ execution fails closed.
 - Large result streaming is not implemented.
 - Live enterprise validation is still required for each tenant-specific Entra,
   gateway, dataset, tool, credential, and audit-export configuration.
+- XQL cost guard limits:
+  - an `approval` argument is an accountability record, not proof that a human
+    typed it; an agent can write one, and only the per-principal daily cap and
+    the reserve bound what it can approve;
+  - approvals given through MCP elicitation are not counted against that cap;
+  - the result cache, approval totals, quota readings, in-flight reservations,
+    and slot timings live in each gateway process, so N replicas allow up to N
+    times the approval cap and can each admit queries against the same reserve;
+  - estimates are heuristics from the query text; XSIAM charges for bytes
+    scanned, which the gateway cannot see before a query runs.
 
 ## Threat Model Summary
 

@@ -55,7 +55,7 @@ async def run_xql_query(
             timeout_seconds=ticket.timeout_seconds,
         )
     except BaseException:
-        cost_guard.release(ticket)
+        cost_guard.abandon(ticket)
         raise
     return await cost_guard.finish_query(ctx, ticket, response)
 

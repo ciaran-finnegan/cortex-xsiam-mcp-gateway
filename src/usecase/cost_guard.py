@@ -47,7 +47,6 @@ from mcp.types import ClientCapabilities, ElicitationCapability
 from config.config import get_config
 from entities.MCPContext import MCPContext
 from usecase.audit import create_cost_guard_audit_event, emit_audit_event
-from usecase.credential_broker import select_xsiam_credentials
 from usecase.dataset_query import QueryTimeframe
 from usecase.identity import resolve_mcp_context
 from usecase.log_policy import authorize_dataset
@@ -594,7 +593,30 @@ def long_running_slot_count() -> int:
 
 
 def observe_remaining_quota(quota_key: str, remaining: float) -> None:
+    """Record a remaining-quota figure read from XSIAM. Its time decides when get_quota is read again."""
     _quota[quota_key] = _QuotaObservation(remaining=float(remaining), day=_utc_day(), observed_at=_monotonic())
+
+
+def _debit_remaining(quota_key: str, units: float) -> None:
+    """Subtract units the gateway knows or assumes it spent, keeping the last XSIAM reading's age.
+
+    Keeping the age means the next refresh still happens on schedule, so spend by other
+    clients that share the tenant budget becomes visible again.
+    """
+    observation = _current_observation(quota_key)
+    if observation is not None:
+        observation.remaining = max(observation.remaining - units, 0.0)
+
+
+def abandon(ticket: GuardTicket) -> None:
+    """Release a query that ended without a reply, assuming it spent its whole estimate.
+
+    XSIAM keeps running a query the gateway stopped waiting for, and its cost is never
+    reported back, so the estimate stays debited until the next quota reading from XSIAM.
+    """
+    if ticket.reservation is not None:
+        release(ticket)
+        _debit_remaining(ticket.quota_key, ticket.estimate.high_units)
 
 
 # --- Decisions ---
@@ -624,7 +646,7 @@ async def prepare_query(
     ticket = GuardTicket(
         principal=principal,
         principal_key=_principal_key(principal),
-        quota_key=_quota_key(ctx, principal),
+        quota_key=tenant_quota_key(),
         tool=tool,
         query_sha256=hashlib.sha256(query.encode()).hexdigest(),
         timeframe_api=normalized.to_api(),
@@ -698,10 +720,15 @@ async def finish_query(ctx: Any, ticket: GuardTicket, response: dict[str, Any]) 
     if actual is None and remaining is not None and previous is not None and previous.remaining >= remaining:
         actual = round(previous.remaining - remaining, 6)
         actual_source = "remaining_quota_delta"
+    debited = None
     if remaining is not None:
         observe_remaining_quota(ticket.quota_key, remaining)
-    elif actual is not None and previous is not None:
-        observe_remaining_quota(ticket.quota_key, max(previous.remaining - actual, 0.0))
+    elif actual is not None:
+        _debit_remaining(ticket.quota_key, actual)
+    elif _timed_out(response):
+        # The query may still be running in XSIAM; assume it spends its whole estimate.
+        debited = ticket.estimate.high_units
+        _debit_remaining(ticket.quota_key, debited)
 
     day_key = (ticket.principal_key, _utc_day())
     if actual is not None:
@@ -712,6 +739,7 @@ async def finish_query(ctx: Any, ticket: GuardTicket, response: dict[str, Any]) 
         **_estimate_fields(ticket.estimate),
         "actual_units": actual,
         "actual_units_source": actual_source,
+        "debited_units": debited,
         "remaining_units": remaining if remaining is not None else _known_remaining(ticket.quota_key),
         "session_spent_units": await _session_spent_units(ctx, ticket, actual),
         "cached": False,
@@ -721,6 +749,10 @@ async def finish_query(ctx: Any, ticket: GuardTicket, response: dict[str, Any]) 
     if ticket.cache_key and not response.get("error") and get_config().cost_guard_cache_ttl_seconds > 0:
         _cache_store(ticket.cache_key, response)
     return response
+
+
+def _timed_out(response: dict[str, Any]) -> bool:
+    return bool(response.get("query_id")) and "timed out" in str(response.get("error", ""))
 
 
 def result_fields(response: dict[str, Any]) -> dict[str, Any]:
@@ -885,6 +917,12 @@ async def _record_argument_approval(context: _RefusalContext, approval_text: str
     cap = float(get_config().cost_guard_approval_daily_cap_units)
     day_key = (context.ticket.principal_key, _utc_day())
     used = _approved_units.get(day_key, 0.0)
+    if cap <= 0:
+        await context.refuse(
+            "approval_cap",
+            "approval arguments are disabled because COST_GUARD_APPROVAL_DAILY_CAP_UNITS is 0",
+            approvable=False,
+        )
     if units > 0 and used + units > cap:
         await context.refuse(
             "approval_cap",
@@ -919,9 +957,10 @@ def _approval_guidance(ctx: Any, principal_key: str, approvable: bool) -> dict[s
     if not approvable:
         return {"accepted": False, "instruction": "Approval cannot override this rule. Use an alternative."}
     config = get_config()
+    elicitation = _client_supports_elicitation(ctx)
     return {
-        "accepted": True,
-        "elicitation": _client_supports_elicitation(ctx),
+        "accepted": elicitation or config.cost_guard_approval_daily_cap_units > 0,
+        "elicitation": elicitation,
         "instruction": (
             "Show the analyst the estimate and alternatives. Only if the analyst types an approval, call the same "
             "tool again with the approval argument set to the analyst's own words. Never write an approval yourself."
@@ -1270,18 +1309,17 @@ async def _fetch_quota_reply(ctx: Any) -> dict[str, Any]:
 def remaining_from_quota_reply(reply: dict[str, Any]) -> float | None:
     """Derive today's remaining units from a get_quota reply.
 
-    ``daily_used_quota`` is today's spend. The daily budget is COST_GUARD_DAILY_QUOTA_UNITS when
-    set, otherwise the annual ``license_quota`` plus ``additional_purchased_quota`` divided by 365.
+    Uses ``remaining_quota`` when the reply carries it, otherwise COST_GUARD_DAILY_QUOTA_UNITS minus
+    ``daily_used_quota``. ``license_quota`` is not used: tenants report it as an annual total or a
+    daily allowance, and guessing wrong either disables the reserve or refuses every query.
     """
-    used = _finite(reply.get("daily_used_quota"))
-    if used is None:
-        return None
+    remaining = _finite(reply.get("remaining_quota"))
+    if remaining is not None:
+        return round(max(remaining, 0.0), 6)
     budget = float(get_config().cost_guard_daily_quota_units)
-    if budget <= 0:
-        annual = _finite(reply.get("license_quota"))
-        if annual is None or annual <= 0:
-            return None
-        budget = (annual + (_finite(reply.get("additional_purchased_quota")) or 0.0)) / 365
+    used = _finite(reply.get("daily_used_quota"))
+    if budget <= 0 or used is None:
+        return None
     return round(max(budget - used, 0.0), 6)
 
 
@@ -1397,11 +1435,14 @@ def _principal_key(principal: MCPContext) -> str:
     return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def _quota_key(ctx: Any, principal: MCPContext) -> str:
-    """Quota is tenant-wide; key observations by the XSIAM credential profile the query will use."""
-    lifespan = getattr(getattr(ctx, "request_context", None), "lifespan_context", None)
-    headers = lifespan.auth_headers if isinstance(lifespan, MCPContext) else {}
-    return select_xsiam_credentials(principal, headers).profile_name
+def tenant_quota_key() -> str:
+    """Key quota observations and reservations by XSIAM tenant.
+
+    The budget is tenant-wide and every credential profile calls the same tenant API URL, so
+    queries from different profiles share one observation and one set of reservations.
+    """
+    url = get_config().papi_url_env_key.strip().lower()
+    return "tenant:" + hashlib.sha256(url.encode()).hexdigest()[:16]
 
 
 def _prune_day_ledgers() -> None:

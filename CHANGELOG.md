@@ -10,6 +10,7 @@ This project follows a lightweight changelog format until stable releases begin.
   alternatives, approval by MCP elicitation or a hashed analyst `approval`
   argument with a per-principal daily cap, `cortex_xsiam_mcp.cost_guard` audit
   events, a `quota` block on every result, and a per-principal result cache.
+  Cache, approval totals, quota readings, and slot timings are per replica.
 - Every query tool now requires a `timeframe`, normalised through
   `QueryTimeframe`; `config timeframe` inside raw XQL is bounded by the same
   maximum. Query timeouts are capped at 120 s, or 300 s with approval.

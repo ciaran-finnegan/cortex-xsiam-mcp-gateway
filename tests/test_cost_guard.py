@@ -34,6 +34,10 @@ def _ctx(groups=("Security",), principal_id="analyst@example.test", elicit=None)
     return ctx
 
 
+def _observe(remaining):
+    cost_guard.observe_remaining_quota(cost_guard.tenant_quota_key(), remaining)
+
+
 def _days(days):
     return {"from_ms": NOW_MS - days * DAY_MS, "to_ms": NOW_MS}
 
@@ -320,7 +324,7 @@ async def test_execute_xql_query_timeout_is_capped_unless_an_analyst_approves(mo
 
 @pytest.mark.asyncio
 async def test_estimate_above_threshold_is_refused_with_structured_alternatives(fetcher, audit_events):
-    cost_guard.observe_remaining_quota("default", 50.0)
+    _observe(50.0)
     query = 'dataset = xdr_data | filter action_remote_ip = "192.0.2.10" | fields agent_hostname, _time | limit 25'
 
     response = json.loads(await issues.execute_xql_query(_ctx(), query, timeframe=_days(30)))
@@ -362,7 +366,7 @@ def test_refusal_payload_is_classified_as_denied_by_the_audit_middleware():
 
 @pytest.mark.asyncio
 async def test_reserve_refuses_any_class_and_approval_cannot_override_it(fetcher, audit_events):
-    cost_guard.observe_remaining_quota("default", 10.2)
+    _observe(10.2)
     light = "dataset = acme_alerts | fields alert_id | limit 5"
 
     response = json.loads(await issues.execute_xql_query(_ctx(), light, timeframe=_days(1), approval="approved by me"))
@@ -375,7 +379,7 @@ async def test_reserve_refuses_any_class_and_approval_cannot_override_it(fetcher
 
 @pytest.mark.asyncio
 async def test_reserve_counts_queries_in_flight():
-    cost_guard.observe_remaining_quota("default", 11.0)
+    _observe(11.0)
     query = "dataset = acme_alerts | fields alert_id | limit 5"
 
     first = await cost_guard.prepare_query(None, query, timeframe=_days(1), result_limit=5, timeout_seconds=60)
@@ -407,7 +411,7 @@ async def test_unknown_remaining_quota_blocks_heavy_queries_only():
 @pytest.mark.asyncio
 async def test_remaining_quota_is_read_from_get_quota_when_unknown(monkeypatch):
     async def quota_reply(ctx):
-        return {"license_quota": 365 * 40.0, "additional_purchased_quota": 0.0, "daily_used_quota": 8.0}
+        return {"license_quota": 365 * 40.0, "remaining_quota": 32.0, "daily_used_quota": 8.0}
 
     monkeypatch.setattr(cost_guard, "_fetch_quota_reply", quota_reply)
     query = 'dataset = xdr_data | filter agent_hostname = "wks-0001" | limit 5'
@@ -416,15 +420,105 @@ async def test_remaining_quota_is_read_from_get_quota_when_unknown(monkeypatch):
         _ctx(), query, timeframe=_days(7), result_limit=5, timeout_seconds=60, approval="analyst ok"
     )
 
-    assert cost_guard._known_remaining("default") == 32.0
+    assert cost_guard._known_remaining(cost_guard.tenant_quota_key()) == 32.0
     assert ticket.approved is True
-    monkeypatch.setattr(get_config(), "cost_guard_daily_quota_units", 9.0)
-    assert cost_guard.remaining_from_quota_reply({"daily_used_quota": 8.0}) == 1.0
+
+
+def test_quota_reply_never_guesses_a_budget_from_license_quota(monkeypatch):
+    annual_or_daily = {"license_quota": 20_000.0, "additional_purchased_quota": 0.0, "daily_used_quota": 8.0}
+
+    assert cost_guard.remaining_from_quota_reply(annual_or_daily) is None
+    monkeypatch.setattr(get_config(), "cost_guard_daily_quota_units", 30.0)
+    assert cost_guard.remaining_from_quota_reply(annual_or_daily) == 22.0
+    assert cost_guard.remaining_from_quota_reply({"remaining_quota": 5.5, "daily_used_quota": 1.0}) == 5.5
+
+
+def test_quota_observations_are_shared_by_every_credential_profile(monkeypatch):
+    monkeypatch.setattr(get_config(), "papi_url_env_key", "https://api-tenant-a.example.test")
+    first = cost_guard.tenant_quota_key()
+    monkeypatch.setattr(get_config(), "xsiam_credential_broker_enabled", True)
+    assert cost_guard.tenant_quota_key() == first
+    monkeypatch.setattr(get_config(), "papi_url_env_key", "https://api-tenant-b.example.test")
+    assert cost_guard.tenant_quota_key() != first
+
+
+@pytest.mark.asyncio
+async def test_reserve_counts_in_flight_queries_across_principals_and_groups():
+    _observe(11.0)
+    query = "dataset = acme_alerts | fields alert_id | limit 5"
+
+    await cost_guard.prepare_query(
+        _ctx(groups=("Tier1",), principal_id="one@example.test"), query, timeframe=_days(1), result_limit=5, timeout_seconds=60
+    )
+    await cost_guard.prepare_query(
+        _ctx(groups=("Security",), principal_id="two@example.test"), query, timeframe=_days(1), result_limit=5, timeout_seconds=60
+    )
+    with pytest.raises(cost_guard.CostGuardRefusal) as refused:
+        await cost_guard.prepare_query(
+            _ctx(groups=("SOC",), principal_id="three@example.test"), query, timeframe=_days(1), result_limit=5, timeout_seconds=60
+        )
+
+    assert refused.value.payload["rule"] == "reserve"
+
+
+@pytest.mark.asyncio
+async def test_timed_out_query_stays_debited_until_xsiam_reports_the_quota(monkeypatch):
+    _observe(30.0)
+
+    async def timed_out(ctx, query, safe_limit, **kwargs):
+        return {"query_id": "query-9", "poll_attempts": 3, "error": "XQL query timed out after 1 seconds"}
+
+    monkeypatch.setattr(xql_executor, "_submit_and_poll", timed_out)
+    query = 'dataset = xdr_data | filter agent_hostname = "wks-0001" | limit 5'
+
+    response = await xql_executor.run_xql_query(_ctx(), query, 5, timeframe=_days(1), approval="analyst ok")
+
+    assert response["quota"]["debited_units"] == 3.6
+    assert cost_guard._known_remaining(cost_guard.tenant_quota_key()) == pytest.approx(26.4)
+    assert cost_guard._inflight[cost_guard.tenant_quota_key()] == {}
+
+
+@pytest.mark.asyncio
+async def test_query_that_raises_stays_debited(monkeypatch):
+    _observe(30.0)
+
+    async def broken(ctx, query, safe_limit, **kwargs):
+        raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(xql_executor, "_submit_and_poll", broken)
+
+    with pytest.raises(RuntimeError):
+        await xql_executor.run_xql_query(_ctx(), "dataset = acme_alerts | limit 5", 5, timeframe=_days(1))
+
+    assert cost_guard._known_remaining(cost_guard.tenant_quota_key()) == pytest.approx(29.6)
+    assert cost_guard._inflight[cost_guard.tenant_quota_key()] == {}
+
+
+@pytest.mark.asyncio
+async def test_local_debits_do_not_postpone_the_quota_refresh(monkeypatch, fetcher):
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr(cost_guard, "_monotonic", lambda: clock["now"])
+    refreshes = []
+
+    async def quota_reply(ctx):
+        refreshes.append(clock["now"])
+        return {"remaining_quota": 20.0}
+
+    monkeypatch.setattr(cost_guard, "_fetch_quota_reply", quota_reply)
+    _observe(40.0)
+    fetcher.fetcher = SequenceFetcher([_success(query_cost=0.1) for _ in range(3)])
+    query = "dataset = acme_alerts | fields alert_id | limit 5"
+
+    for offset in (1, 2):
+        clock["now"] += 200
+        await xql_executor.run_xql_query(_ctx(), query, 5, timeframe=_days(1) | {"to_ms": NOW_MS - offset})
+    assert refreshes == [1_400.0]
+    assert cost_guard._known_remaining(cost_guard.tenant_quota_key()) == pytest.approx(19.9)
 
 
 @pytest.mark.asyncio
 async def test_long_running_slots_refuse_new_heavy_queries(monkeypatch):
-    cost_guard.observe_remaining_quota("default", 50.0)
+    _observe(50.0)
     clock = {"now": 1_000.0}
     monkeypatch.setattr(cost_guard, "_monotonic", lambda: clock["now"])
     heavy = 'dataset = xdr_data | filter agent_hostname = "wks-0001" | limit 5'
@@ -432,7 +526,7 @@ async def test_long_running_slots_refuse_new_heavy_queries(monkeypatch):
 
     with cost_guard.track_slot(), cost_guard.track_slot():
         clock["now"] += 61
-        cost_guard.observe_remaining_quota("default", 50.0)
+        _observe(50.0)
         with pytest.raises(cost_guard.CostGuardRefusal) as refused:
             await cost_guard.prepare_query(
                 None, heavy, timeframe=_days(7), result_limit=5, timeout_seconds=60, approval="analyst ok"
@@ -449,7 +543,7 @@ async def test_long_running_slots_refuse_new_heavy_queries(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_approval_argument_is_hashed_and_counted_against_the_daily_cap(fetcher, audit_events):
-    cost_guard.observe_remaining_quota("default", 50.0)
+    _observe(50.0)
     fetcher.fetcher = SequenceFetcher([_success(remaining_quota=49.0) for _ in range(3)])
     approval_text = "Approved by the on-call analyst for case 42"
     query = 'dataset = xdr_data | filter agent_hostname = "wks-0001" | fields action_process_image_name | limit 5'
@@ -469,7 +563,7 @@ async def test_approval_argument_is_hashed_and_counted_against_the_daily_cap(fet
 
 @pytest.mark.asyncio
 async def test_approval_cap_is_per_principal(audit_events):
-    cost_guard.observe_remaining_quota("default", 50.0)
+    _observe(50.0)
     query = 'dataset = xdr_data | filter agent_hostname = "wks-0001" | limit 5'
 
     async def approve(ctx, offset_ms):
@@ -495,7 +589,7 @@ async def test_approval_cap_is_per_principal(audit_events):
 
 @pytest.mark.asyncio
 async def test_zero_cap_disables_approval_arguments(monkeypatch):
-    cost_guard.observe_remaining_quota("default", 50.0)
+    _observe(50.0)
     monkeypatch.setattr(get_config(), "cost_guard_approval_daily_cap_units", 0.0)
 
     with pytest.raises(cost_guard.CostGuardRefusal) as refused:
@@ -512,8 +606,29 @@ async def test_zero_cap_disables_approval_arguments(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_zero_cap_also_blocks_timeout_extension_approvals(monkeypatch):
+    monkeypatch.setattr(get_config(), "cost_guard_approval_daily_cap_units", 0.0)
+
+    with pytest.raises(cost_guard.CostGuardRefusal) as refused:
+        await cost_guard.prepare_query(
+            None,
+            "dataset = acme_alerts | limit 5",
+            timeframe=_days(1),
+            result_limit=5,
+            timeout_seconds=10_000,
+            approval="agent-written approval",
+        )
+    plain = await cost_guard.prepare_query(
+        None, "dataset = acme_alerts | limit 5", timeframe=_days(1), result_limit=5, timeout_seconds=10_000
+    )
+
+    assert refused.value.payload["rule"] == "approval_cap"
+    assert plain.timeout_seconds == 120
+
+
+@pytest.mark.asyncio
 async def test_elicitation_asks_the_human_and_their_answer_is_the_approval(audit_events):
-    cost_guard.observe_remaining_quota("default", 50.0)
+    _observe(50.0)
     prompts = []
 
     async def elicit(message, response_type):
@@ -541,7 +656,7 @@ async def test_elicitation_asks_the_human_and_their_answer_is_the_approval(audit
 
 @pytest.mark.asyncio
 async def test_declined_elicitation_refuses_even_with_an_approval_argument(audit_events):
-    cost_guard.observe_remaining_quota("default", 50.0)
+    _observe(50.0)
 
     async def decline(message, response_type):
         return DeclinedElicitation()
@@ -562,7 +677,7 @@ async def test_declined_elicitation_refuses_even_with_an_approval_argument(audit
 
 @pytest.mark.asyncio
 async def test_denied_choice_counts_as_declined():
-    cost_guard.observe_remaining_quota("default", 50.0)
+    _observe(50.0)
 
     async def deny(message, response_type):
         return AcceptedElicitation(data="deny")
@@ -581,7 +696,7 @@ async def test_denied_choice_counts_as_declined():
 
 @pytest.mark.asyncio
 async def test_cancelled_elicitation_falls_back_to_an_analyst_approval_argument(audit_events):
-    cost_guard.observe_remaining_quota("default", 50.0)
+    _observe(50.0)
 
     async def cancel(message, response_type):
         return CancelledElicitation()
@@ -602,7 +717,7 @@ async def test_cancelled_elicitation_falls_back_to_an_analyst_approval_argument(
 
 @pytest.mark.asyncio
 async def test_unanswered_elicitation_times_out(monkeypatch, audit_events):
-    cost_guard.observe_remaining_quota("default", 50.0)
+    _observe(50.0)
     monkeypatch.setattr(get_config(), "cost_guard_elicitation_timeout_seconds", 1)
 
     async def never(message, response_type):
@@ -622,7 +737,7 @@ async def test_unanswered_elicitation_times_out(monkeypatch, audit_events):
 
 @pytest.mark.asyncio
 async def test_elicitation_can_be_disabled(monkeypatch, audit_events):
-    cost_guard.observe_remaining_quota("default", 50.0)
+    _observe(50.0)
     monkeypatch.setattr(get_config(), "cost_guard_elicitation_enabled", False)
 
     async def elicit(message, response_type):
@@ -642,7 +757,7 @@ async def test_elicitation_can_be_disabled(monkeypatch, audit_events):
 
 @pytest.mark.asyncio
 async def test_engagement_mode_policy_and_servers_are_used_when_installed(monkeypatch):
-    cost_guard.observe_remaining_quota("default", 50.0)
+    _observe(50.0)
 
     async def load_engagement(ctx, principal):
         return SimpleNamespace(servers=["srv-app-01", "srv-db-01"])
@@ -678,7 +793,7 @@ async def test_engagement_mode_policy_and_servers_are_used_when_installed(monkey
 
 @pytest.mark.asyncio
 async def test_cheaper_dataset_alternative_is_offered_only_when_authorized(monkeypatch):
-    cost_guard.observe_remaining_quota("default", 50.0)
+    _observe(50.0)
     query = 'dataset = amazon_aws_raw | filter eventName = "ConsoleLogin" | limit 5'
 
     async def refuse(groups):
@@ -770,7 +885,7 @@ def test_audit_quota_summary_drops_unexpected_values():
 
 @pytest.mark.asyncio
 async def test_typed_query_refusal_and_dry_run_estimate():
-    cost_guard.observe_remaining_quota("default", 50.0)
+    _observe(50.0)
     arguments = {
         "dataset": "xdr_data",
         "fields": ["agent_hostname"],
@@ -851,7 +966,7 @@ async def test_cached_result_bypasses_refusal_rules(fetcher):
     fetcher.fetcher = SequenceFetcher([_success(remaining_quota=40.0)])
     query = "dataset = acme_alerts | fields alert_id | limit 5"
     await xql_executor.run_xql_query(_ctx(), query, 5, timeframe=_days(1))
-    cost_guard.observe_remaining_quota("default", 1.0)
+    _observe(1.0)
 
     cached = await xql_executor.run_xql_query(_ctx(), query, 5, timeframe=_days(1))
 

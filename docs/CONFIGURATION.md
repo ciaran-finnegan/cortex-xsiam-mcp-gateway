@@ -182,9 +182,14 @@ Rules, in order:
    `COST_GUARD_LONG_SLOT_SECONDS`, new heavy and extreme queries are refused.
 3. Any query whose estimate (the band's high bound), plus the estimates of
    queries in flight, would take the remaining quota below the reserve is
-   refused. Approval never overrides the reserve. When the remaining quota is
-   unknown, the guard reads `/xql/get_quota`; if it still cannot tell, heavy and
-   extreme queries are refused.
+   refused. Approval never overrides the reserve. The remaining quota comes
+   from the last XSIAM reply; when that is missing or older than
+   `COST_GUARD_QUOTA_STALE_SECONDS`, the guard reads `/xql/get_quota` and uses
+   its `remaining_quota`, or `COST_GUARD_DAILY_QUOTA_UNITS` minus
+   `daily_used_quota`. If it still cannot tell, heavy and extreme queries are
+   refused. A query that times out or fails without a reply stays debited at
+   its estimate until the next XSIAM reading, because XSIAM may still be
+   running it.
 4. A query whose estimate exceeds the approval threshold needs approval. When
    the MCP client supports elicitation, the guard asks the analyst directly with
    the estimate and alternatives. Otherwise, or when that prompt is cancelled,
@@ -210,7 +215,8 @@ console, which is not charged to the API quota.
 
 Every result carries `quota`: `estimate_units`, `estimate_class`,
 `estimate_band`, `actual_units` (from `query_cost`, else the drop in
-`remaining_quota`), `actual_units_source`, `remaining_units`,
+`remaining_quota`), `actual_units_source`, `debited_units` (the estimate held
+against a timed-out query), `remaining_units`,
 `session_spent_units`, `cached`, `approved`, and `approval_method`.
 
 | Variable | Default | Description |
@@ -224,8 +230,8 @@ Every result carries `quota`: `estimate_units`, `estimate_class`,
 | `COST_GUARD_CHEAPER_DATASETS` | `{"amazon_aws_raw":["cloud_audit_logs"],"msft_azure_raw":["cloud_audit_logs"]}` | Cheaper datasets for the same question. Catalogue datasets in the same domain that the principal's policy lists are added. |
 | `COST_GUARD_APPROVAL_THRESHOLD_UNITS` | `1.0` | Approval threshold when engagement modes are not installed. Matches the unset mode. |
 | `COST_GUARD_RESERVE_UNITS` | `20.0` | Units kept for automation when engagement modes are not installed. Matches the unset mode. |
-| `COST_GUARD_APPROVAL_DAILY_CAP_UNITS` | `10.0` | Units one principal may approve per UTC day with the `approval` argument. `0` disables the argument. Elicitation approvals are not capped. |
-| `COST_GUARD_DAILY_QUOTA_UNITS` | `0` | Daily budget used with `get_quota`'s `daily_used_quota`. `0` derives it from `license_quota` plus `additional_purchased_quota`, divided by 365. |
+| `COST_GUARD_APPROVAL_DAILY_CAP_UNITS` | `10.0` | Units one principal may approve per UTC day with the `approval` argument. `0` disables the argument, including for timeout extensions. Elicitation approvals are not capped. |
+| `COST_GUARD_DAILY_QUOTA_UNITS` | `0` | The tenant's daily API budget, used with `get_quota`'s `daily_used_quota` when that reply has no `remaining_quota`. `0` means unknown. `license_quota` is never used, because tenants report it either as an annual total or as a daily allowance. |
 | `COST_GUARD_QUOTA_STALE_SECONDS` | `300` | Age after which the last observed `remaining_quota` is refreshed from `get_quota`. |
 | `COST_GUARD_ELICITATION_ENABLED` | `true` | Ask the analyst through MCP elicitation when the client supports it. |
 | `COST_GUARD_ELICITATION_TIMEOUT_SECONDS` | `120` | Time to wait for an answer before treating the prompt as unanswered. |
@@ -236,8 +242,11 @@ Every result carries `quota`: `estimate_units`, `estimate_class`,
 | `XQL_TIMEOUT_CEILING_SECONDS` | `120` | Ceiling for any query timeout, including `execute_xql_query`'s `timeout`. |
 | `XQL_TIMEOUT_APPROVED_CEILING_SECONDS` | `300` | Ceiling once the query is approved. An `approval` on a query below the threshold also lifts the ceiling, recorded with zero units. |
 
-Cache entries, approval totals, quota observations, and slot timings live in
-the gateway process. Each replica keeps its own; size the cap and reserve with
+Quota readings and in-flight reservations are keyed by the XSIAM API URL, so
+every credential profile shares them. Cache entries, approval totals, quota
+readings, reservations, and slot timings live in the gateway process. Each
+replica keeps its own, so N replicas allow up to N times the approval cap and
+can each admit queries against the same reserve; size the cap and reserve with
 the replica count in mind.
 
 ## XSIAM Credential Broker

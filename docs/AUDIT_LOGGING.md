@@ -98,7 +98,8 @@ addition to the tool invocation events. See the cost guard section of
 | `cost_guard.approved_units`, `approved_today_units`, `approval_cap_units` | Units approved, the principal's UTC-day total, and the cap. |
 
 Tool invocation end events also carry `result.quota` (numeric
-`estimate_units`, `actual_units`, `remaining_units`, `session_spent_units`;
+`estimate_units`, `actual_units`, `debited_units`, `remaining_units`,
+`session_spent_units`;
 `estimate_class`, `actual_units_source`, `approval_method` from fixed value
 sets; `cached` and `approved` booleans) and `result.cost_guard_rule` for a
 refusal. A refusal's end event has `outcome=denied`.

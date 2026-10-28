@@ -133,7 +133,7 @@ def _summarize_tool_result(result: ToolResult, fastmcp_context: Any | None = Non
     return summary
 
 
-_QUOTA_NUMBER_FIELDS = ("estimate_units", "actual_units", "remaining_units", "session_spent_units")
+_QUOTA_NUMBER_FIELDS = ("estimate_units", "actual_units", "debited_units", "remaining_units", "session_spent_units")
 _QUOTA_LABEL_FIELDS = {
     "estimate_class": {"light", "medium", "heavy", "extreme"},
     "actual_units_source": {"query_cost", "remaining_quota_delta", "cache"},
