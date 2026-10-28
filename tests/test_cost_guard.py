@@ -517,9 +517,9 @@ async def test_query_cancelled_before_submission_is_released_without_a_debit(mon
     )
     await started.wait()
     task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    (outcome,) = await asyncio.gather(task, return_exceptions=True)
 
+    assert isinstance(outcome, asyncio.CancelledError)
     assert cost_guard._known_remaining(cost_guard.tenant_quota_key()) == 30.0
     assert cost_guard._inflight[cost_guard.tenant_quota_key()] == {}
 
