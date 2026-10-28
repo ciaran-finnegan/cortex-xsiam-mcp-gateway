@@ -872,9 +872,13 @@ def _host_filter_kinds(query, servers=("srv-app-01",)):
 @pytest.mark.parametrize(
     "query",
     [
-        'dataset = acme_flow_logs | filter dest_ip = "192.0.2.10" '
-        "| join (dataset = xdr_data | fields agent_hostname, action_remote_ip) as ep ep.action_remote_ip = dest_ip "
-        "| limit 25",
+        " | ".join(
+            [
+                'dataset = acme_flow_logs | filter dest_ip = "192.0.2.10"',
+                "join (dataset = xdr_data | fields agent_hostname, action_remote_ip) as ep ep.action_remote_ip = dest_ip",
+                "limit 25",
+            ]
+        ),
         "dataset = acme_alerts | union xdr_data | limit 25",
         'dataset = xdr_data | filter action_remote_ip = "192.0.2.10" | union amazon_aws_raw | limit 25',
     ],
