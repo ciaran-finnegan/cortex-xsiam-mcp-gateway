@@ -124,6 +124,27 @@ Collector.
 Raw XQL is hashed by default. Full query logging requires
 `AUDIT_LOG_INCLUDE_QUERY_TEXT=true`.
 
+## Learned Facts
+
+Tier-1 learning writes measured tenant facts to `<TENANT_PACK_DIR>/learned/`
+(see [Learning](LEARNING.md)). Controls:
+
+- facts derive only from query metadata, row counts, classified error classes,
+  field names, value types and timings; result cell values are never read, and
+  filter literals are held only as in-memory hashes;
+- evidence must be query ids XSIAM returned to this process; free text, unknown
+  keys and over-long values are refused on write and ignored on read;
+- an `unknown_field` classification names only a field already present in the
+  submitted query outside string literals;
+- served facts are filtered by dataset policy, carry a trust label and
+  `content_trust: "measured_metadata"`, and the resource requires the
+  `get_learned_facts` tool permission;
+- every write is audited before commit; `LEARNING_ENABLED=false` freezes all
+  automatic writes; reverts are restricted to `LEARNING_ADMIN_GROUPS`;
+- the replay cache holds results the gateway already returned, capped per result
+  and per case, owner-only on disk, git-ignored in the pack, and is not exposed
+  as an MCP tool.
+
 ## Credential Policy
 
 The credential broker does not dynamically provision per-user API keys. It

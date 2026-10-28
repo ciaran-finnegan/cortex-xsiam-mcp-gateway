@@ -40,6 +40,25 @@ The end event uses the credential actually selected during the request, not
 only the server's fallback credential. It records the profile name, matched
 group, and SHA-256 of the API key ID; API key values are never included.
 
+## Learning Events
+
+Writes to the tier-1 learned store use `event_type=cortex_xsiam_mcp.learning`
+and schema version `1.0`. One event is emitted per write, before the write is
+committed; under `AUDIT_LOG_FAIL_CLOSED=true` a failed export cancels the write.
+
+| Field | Description |
+| --- | --- |
+| `operation` | `observe`, `expire`, `revert`, `cache_result`, or `read` (resource read). |
+| `trigger` | What caused it: `xql_query`, `field_catalog`, `tool:<name>`, `sweep`, `revert_learned`, or `resource`. |
+| `principal.id`, `principal.groups` | The principal whose call produced the observation, or the admin who reverted. |
+| `actions` | Count of changes per action. |
+| `changes[]` | Up to 100 changes: `entry_id`, `kind`, `dataset`, `action` (`learned`, `confirmed`, `promoted`, `demoted`, `expired`, `reverted`), `fact`, `previous_fact` on a value change, `evidence` query ids, `confirmations`, `contradictions`, `confidence`, `status`, `expires_at`. |
+| `changes_truncated` | True when more than 100 changes were made. |
+| `details` | For `cache_result`: case id, tool, position, bytes, cache note, query ids. For `read`: kind, success, count. |
+
+Facts are validated short tokens and identifiers; result text and filter
+literals never appear in these events. See [Learning](LEARNING.md).
+
 ## Example Event
 
 ```json

@@ -181,6 +181,25 @@ execution fails closed. When several groups match, the lowest numeric
 Keep `AUDIT_LOG_INCLUDE_QUERY_TEXT=false` unless full query retention has been
 approved. Query hashes are logged by default.
 
+## Tenant Pack And Learning
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `TENANT_PACK_DIR` | empty | Absolute path of the private tenant pack, outside the repository. Empty disables learning and the engagement result cache. |
+| `LEARNING_ENABLED` | `true` | Kill switch for tier-1 learning. `false` freezes every automatic write; human reverts still work. |
+| `LEARNING_SCHEMA_TTL_DAYS` | `30` | Expiry of schema, enum and absent-field facts without a confirmation. |
+| `LEARNING_COST_TTL_DAYS` | `90` | Expiry of cost, timing and helper-usage facts without a confirmation. |
+| `LEARNING_MAX_ENTRIES_PER_KIND` | `5000` | Cap per fact kind; new entries beyond it are refused, not evicted. |
+| `LEARNING_COST_MIN_OBSERVATIONS` | `3` | Observations before the cost guard hook returns a learned cost. |
+| `LEARNING_ADMIN_GROUPS` | `Admin` | Groups allowed to call `revert_learned`, independent of `TOOL_ACCESS_POLICY`. |
+| `LEARNING_RESULT_MAX_BYTES` | `262144` | Largest single tool result kept in the replay cache. |
+| `LEARNING_RESULT_CACHE_MAX_BYTES` | `5242880` | Replay cache size per case. |
+
+The default `TOOL_ACCESS_POLICY` grants `get_learned_facts` to `SOC` and
+`Tier1`; `learning_digest` and `revert_learned` are reached only through `*`
+grants. Members of `LEARNING_ADMIN_GROUPS` also need a dataset policy that covers
+the facts they revert. See [Learning](LEARNING.md).
+
 ## Example `.env`
 
 ```bash

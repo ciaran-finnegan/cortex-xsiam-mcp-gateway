@@ -6,12 +6,46 @@ from typing import Any
 
 from config.config import get_config
 from usecase.fetcher import get_fetcher
+from usecase.learning_observers import classify_xql_failure, observe_xql_execution
 from usecase.xql_builder import MAX_XQL_RESULT_LIMIT
 
 _semaphores: dict[tuple[int, int], asyncio.Semaphore] = {}
 
 
 async def run_xql_query(
+    ctx,
+    query: str,
+    result_limit: int,
+    *,
+    timeframe: dict[str, int] | None = None,
+    poll_interval_seconds: float = 1,
+    timeout_seconds: int = 60,
+) -> dict[str, Any]:
+    """Run one XQL query, then pass its metadata to the learning observers.
+
+    Observing never blocks or alters a query; it reads only the query id, metadata,
+    row count and classified error of the response.
+    """
+    started = time.monotonic()
+    response = await _run_xql_query(
+        ctx,
+        query,
+        result_limit,
+        timeframe=timeframe,
+        poll_interval_seconds=poll_interval_seconds,
+        timeout_seconds=timeout_seconds,
+    )
+    await observe_xql_execution(
+        ctx,
+        query=query,
+        timeframe=timeframe,
+        response=response,
+        duration_ms=(time.monotonic() - started) * 1000,
+    )
+    return response
+
+
+async def _run_xql_query(
     ctx,
     query: str,
     result_limit: int,
@@ -36,7 +70,7 @@ async def run_xql_query(
             data={"request_data": request_data},
         )
         query_id = _extract_query_id(start_response)
-        start_failure = _failure_response(start_response, query_id=query_id, poll_attempts=0)
+        start_failure = _failure_response(start_response, query=query, query_id=query_id, poll_attempts=0)
         if start_failure is not None:
             return start_failure
         if _is_complete(start_response):
@@ -71,6 +105,7 @@ async def run_xql_query(
                 if status in {"FAILED", "FAIL", "ERROR"}:
                     failure = _failure_response(
                         result_response,
+                        query=query,
                         query_id=query_id,
                         poll_attempts=attempts,
                     )
@@ -124,6 +159,7 @@ def _is_complete(response_data: dict[str, Any]) -> bool:
 def _failure_response(
     response_data: dict[str, Any],
     *,
+    query: str,
     query_id: str | None,
     poll_attempts: int,
 ) -> dict[str, Any] | None:
@@ -143,6 +179,10 @@ def _failure_response(
     if detail is not None:
         encoded = json.dumps(detail, sort_keys=True, default=str, separators=(",", ":")).encode()
         result["error_reference_sha256"] = hashlib.sha256(encoded).hexdigest()
+        # Adds error_class and unknown_field only when the field is an identifier the query already contains.
+        classification = classify_xql_failure(detail, query)
+        if classification:
+            result.update(classification)
     return result
 
 

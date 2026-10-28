@@ -123,6 +123,52 @@ def create_tool_audit_event(
     return event
 
 
+MAX_LEARNING_AUDIT_CHANGES = 100
+
+
+def create_learning_audit_event(
+    *,
+    operation: str,
+    principal: MCPContext,
+    changes: list[dict[str, Any]],
+    trigger: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build one audit event for a write to the learned store.
+
+    Each change names the entry, its kind and dataset, the action (learned, confirmed,
+    promoted, demoted, expired, reverted), the evidence query ids and the counters after
+    the change. Facts are short validated tokens, never result text.
+    """
+    config = get_config()
+    actions: dict[str, int] = {}
+    for change in changes:
+        action = str(change.get("action"))
+        actions[action] = actions.get(action, 0) + 1
+    event: dict[str, Any] = {
+        "schema_version": "1.0",
+        "event_type": "cortex_xsiam_mcp.learning",
+        "event_id": str(uuid.uuid4()),
+        "timestamp": datetime.now(UTC).isoformat(),
+        "service": "cortex-xsiam-mcp-gateway",
+        "operation": operation,
+        "transport": config.mcp_transport,
+        "principal": {
+            "id": principal.principal_id,
+            "groups": list(principal.groups),
+        },
+        "change_count": len(changes),
+        "actions": actions,
+        "changes": changes[:MAX_LEARNING_AUDIT_CHANGES],
+        "changes_truncated": len(changes) > MAX_LEARNING_AUDIT_CHANGES,
+    }
+    if trigger:
+        event["trigger"] = trigger
+    if details:
+        event["details"] = details
+    return event
+
+
 def _summarize_error(error: Exception | str) -> dict[str, Any]:
     error_type = type(error).__name__ if isinstance(error, Exception) else "Error"
     message = str(error)

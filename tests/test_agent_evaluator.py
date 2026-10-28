@@ -89,11 +89,16 @@ def _reference_arguments(case):
         fields.extend(field for field in expected.get("required_filter_fields", []) if field not in fields)
         arguments["fields"] = fields
         arguments["filters"] = [
-            {"field": field, "operator": "eq", "value": "expected"}
+            {"field": field, "operator": expected.get("filter_operators", {}).get(field, "eq"), "value": "expected"}
             for field in expected.get("required_filter_fields", [])
         ]
         return arguments
 
+    operators = expected.get("filter_operators", {})
+    arguments["filters"] = [
+        {"field": field, "operator": operators.get(field, "eq"), "value": "expected"}
+        for field in expected.get("required_filter_fields", [])
+    ]
     alias = "result_value"
     metric = {"function": expected["metric"], "alias": alias}
     if expected.get("metric_field"):
@@ -107,3 +112,32 @@ def _reference_arguments(case):
     if expected.get("descending_metric_sort"):
         arguments["order_by"] = [{"field": alias, "direction": "desc"}]
     return arguments
+
+
+def test_agent_evaluator_enforces_learned_enum_and_absent_facts():
+    case = next(case for case in agent_evaluator.load_cases() if case["id"] == "ioc_flood_triage")
+    result = {
+        "id": case["id"],
+        "action": "query",
+        "tool": "query_dataset",
+        "arguments": {
+            "dataset": "alerts",
+            "mode": "aggregate",
+            "filters": [{"field": "alert_source", "operator": "eq", "value": "IOC"}],
+            "metrics": [{"function": "count", "alias": "alerts"}],
+            "group_by": ["host_name", "alert_name"],
+            "order_by": [{"field": "alerts", "direction": "desc"}],
+            "timeframe": {"relative_ms": 86400000},
+            "limit": 10,
+        },
+        "reason": "Equality on an enum-like field",
+    }
+
+    errors = agent_evaluator._validate_case(case, result)
+    assert any("must use contains" in error for error in errors)
+
+    case_with_absent = {**case, "discovered_fields": {"alerts": [*case["discovered_fields"]["alerts"], "hostname"]}}
+    result["arguments"]["filters"][0]["operator"] = "contains"
+    result["arguments"]["group_by"] = ["hostname", "alert_name"]
+    errors = agent_evaluator._validate_case(case_with_absent, result)
+    assert any("learned absent fields ['hostname']" in error for error in errors)

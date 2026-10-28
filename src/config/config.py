@@ -51,10 +51,10 @@ class Settings(BaseSettings):
             '{"Admin":["*"],"Security":["*"],'
             '"SOC":["get_log_search_guidance","list_log_datasets","discover_log_fields","search_logs",'
             '"get_dataset_query_guidance","get_xql_help","query_dataset","continue_dataset_query",'
-            '"get_xql_query_quota","get_cases","get_issues"],'
+            '"get_xql_query_quota","get_cases","get_issues","get_learned_facts"],'
             '"Tier1":["get_log_search_guidance","list_log_datasets","discover_log_fields","search_logs",'
             '"get_dataset_query_guidance","get_xql_help","query_dataset","continue_dataset_query",'
-            '"get_xql_query_quota","get_cases","get_issues"]}'
+            '"get_xql_query_quota","get_cases","get_issues","get_learned_facts"]}'
         ),
         validation_alias="TOOL_ACCESS_POLICY",
     )
@@ -164,6 +164,37 @@ class Settings(BaseSettings):
     xql_max_query_chars: int = Field(
         32768,
         validation_alias="XQL_MAX_QUERY_CHARS",
+    )
+
+    # --- Tenant Pack and Learning Settings ---
+    tenant_pack_dir: str = Field("", validation_alias="TENANT_PACK_DIR")
+    learning_enabled: bool = Field(True, validation_alias="LEARNING_ENABLED")
+    learning_schema_ttl_days: int = Field(30, ge=1, le=365, validation_alias="LEARNING_SCHEMA_TTL_DAYS")
+    learning_cost_ttl_days: int = Field(90, ge=1, le=365, validation_alias="LEARNING_COST_TTL_DAYS")
+    learning_max_entries_per_kind: int = Field(
+        5000,
+        ge=1,
+        le=50000,
+        validation_alias="LEARNING_MAX_ENTRIES_PER_KIND",
+    )
+    learning_cost_min_observations: int = Field(
+        3,
+        ge=1,
+        le=100,
+        validation_alias="LEARNING_COST_MIN_OBSERVATIONS",
+    )
+    learning_admin_groups: str = Field("Admin", validation_alias="LEARNING_ADMIN_GROUPS")
+    learning_result_max_bytes: int = Field(
+        262144,
+        ge=1024,
+        le=4194304,
+        validation_alias="LEARNING_RESULT_MAX_BYTES",
+    )
+    learning_result_cache_max_bytes: int = Field(
+        5242880,
+        ge=1024,
+        le=104857600,
+        validation_alias="LEARNING_RESULT_CACHE_MAX_BYTES",
     )
 
     # --- Audit Settings ---
