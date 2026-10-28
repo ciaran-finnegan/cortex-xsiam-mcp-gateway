@@ -1037,6 +1037,51 @@ async def test_cache_misses_after_a_key_rotation_under_the_same_profile(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_cache_misses_after_the_server_key_rotates_with_the_broker_disabled(monkeypatch, fetcher):
+    monkeypatch.setattr(get_config(), "xsiam_credential_broker_enabled", False)
+    monkeypatch.setattr(get_config(), "papi_auth_header_key", "synthetic-server-key-one")
+    monkeypatch.setattr(get_config(), "papi_auth_id_key", "3")
+    fetcher.fetcher = SequenceFetcher([_success(), _success(), _success()])
+    query = "dataset = acme_alerts | fields alert_id | limit 5"
+
+    await xql_executor.run_xql_query(_ctx(), query, 5, timeframe=_days(1))
+    cached = await xql_executor.run_xql_query(_ctx(), query, 5, timeframe=_days(1))
+    monkeypatch.setattr(get_config(), "papi_auth_header_key", "synthetic-server-key-two")
+    rotated = await xql_executor.run_xql_query(_ctx(), query, 5, timeframe=_days(1))
+
+    assert cached["quota"]["cached"] is True
+    assert rotated["quota"]["cached"] is False
+    assert len(fetcher.fetcher.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_reply_is_not_cached_when_the_key_changes_before_submission(monkeypatch):
+    from usecase.credential_broker import select_xsiam_credentials
+
+    monkeypatch.setattr(get_config(), "xsiam_credential_broker_enabled", True)
+    monkeypatch.setattr(
+        get_config(),
+        "xsiam_credential_profiles",
+        '{"Security":{"priority":10,"profile_name":"security-readonly","api_key_env":"ACME_TEST_KEY","api_key_id_env":"ACME_TEST_KEY_ID"}}',
+    )
+    monkeypatch.setenv("ACME_TEST_KEY", "synthetic-key-one")
+    monkeypatch.setenv("ACME_TEST_KEY_ID", "1")
+    ctx = _ctx()
+
+    async def rotating_get_fetcher(ctx):
+        # A key rotated while the query waited for a slot; get_fetcher selects again.
+        monkeypatch.setenv("ACME_TEST_KEY", "synthetic-key-two")
+        select_xsiam_credentials(ctx.request_context.lifespan_context, {})
+        return SequenceFetcher([_success()])
+
+    monkeypatch.setattr(xql_executor, "get_fetcher", rotating_get_fetcher)
+    response = await xql_executor.run_xql_query(ctx, "dataset = acme_alerts | fields alert_id | limit 5", 5, timeframe=_days(1))
+
+    assert response["quota"]["cached"] is False
+    assert len(cost_guard._cache) == 0
+
+
+@pytest.mark.asyncio
 async def test_cache_can_be_disabled(monkeypatch, fetcher):
     monkeypatch.setattr(get_config(), "cost_guard_cache_ttl_seconds", 0)
     fetcher.fetcher = SequenceFetcher([_success(), _success()])

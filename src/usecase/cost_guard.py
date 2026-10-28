@@ -27,6 +27,7 @@ import asyncio
 import copy
 import fnmatch
 import hashlib
+import hmac
 import importlib
 import itertools
 import json
@@ -48,7 +49,10 @@ from mcp.types import ClientCapabilities, ElicitationCapability
 from config.config import get_config
 from entities.MCPContext import MCPContext
 from usecase.audit import create_cost_guard_audit_event, emit_audit_event
-from usecase.credential_broker import select_xsiam_credentials
+from usecase.credential_broker import (
+    get_current_credential_selection,
+    select_xsiam_credentials,
+)
 from usecase.dataset_query import QueryTimeframe
 from usecase.identity import resolve_mcp_context
 from usecase.log_policy import authorize_dataset
@@ -558,6 +562,7 @@ class GuardTicket:
     cached_response: dict[str, Any] | None = None
     # Set by the executor just before the start request, so a query that never reached XSIAM is not debited.
     submitted: bool = False
+    credential_fingerprint: str | None = None
 
 
 _quota: dict[str, _QuotaObservation] = {}
@@ -668,15 +673,18 @@ async def prepare_query(
     # Check credential eligibility first, so a principal the broker would now reject cannot
     # read a result cached while it was eligible. Raises CredentialBrokerError.
     selection = select_xsiam_credentials(principal, _lifespan_auth_headers(ctx))
-    ticket.cache_key = _cache_key(
-        principal,
-        query,
-        ticket.timeframe_api,
-        result_limit,
-        selection.profile_name,
-        _credential_fingerprint(selection.auth_headers),
-    )
-    cached = _cache_lookup(ticket.cache_key)
+    cached = None
+    if _cache_enabled():
+        ticket.credential_fingerprint = await _credential_fingerprint_async(selection.auth_headers)
+        ticket.cache_key = _cache_key(
+            principal,
+            query,
+            ticket.timeframe_api,
+            result_limit,
+            selection.profile_name,
+            ticket.credential_fingerprint,
+        )
+        cached = _cache_lookup(ticket.cache_key)
     if cached is not None:
         cached["quota"].update(
             {
@@ -765,9 +773,23 @@ async def finish_query(ctx: Any, ticket: GuardTicket, response: dict[str, Any]) 
         "approved": ticket.approved,
         "approval_method": ticket.approval_method,
     }
-    if ticket.cache_key and not response.get("error") and get_config().cost_guard_cache_ttl_seconds > 0:
+    cacheable = ticket.cache_key and not response.get("error") and _cache_enabled()
+    if cacheable and await _fetched_with_ticket_credential(ticket):
         _cache_store(ticket.cache_key, response)
     return response
+
+
+async def _fetched_with_ticket_credential(ticket: GuardTicket) -> bool:
+    """True when the credential get_fetcher used is the one the cache key was built from.
+
+    get_fetcher selects the credential again at submission. If a key changed while the query
+    waited, the reply is not cached, so it can never be served under the other key's identity.
+    """
+    used = get_current_credential_selection()
+    if used is None or ticket.credential_fingerprint is None:
+        return False
+    fingerprint = await _credential_fingerprint_async(used.auth_headers)
+    return hmac.compare_digest(fingerprint, ticket.credential_fingerprint)
 
 
 def _timed_out(response: dict[str, Any]) -> bool:
@@ -1481,6 +1503,16 @@ def _credential_fingerprint(auth_headers: dict[str, str]) -> str:
         api_key, key_id = config.papi_auth_header_key, config.papi_auth_id_key
     secret = f"{key_id}\x00{api_key}".encode()
     return hashlib.pbkdf2_hmac("sha256", secret, _FINGERPRINT_SALT, _FINGERPRINT_ITERATIONS).hex()
+
+
+async def _credential_fingerprint_async(auth_headers: dict[str, str]) -> str:
+    # PBKDF2 takes a few milliseconds; run it off the event loop.
+    return await asyncio.to_thread(_credential_fingerprint, auth_headers)
+
+
+def _cache_enabled() -> bool:
+    config = get_config()
+    return config.cost_guard_cache_ttl_seconds > 0 and config.cost_guard_cache_max_entries > 0
 
 
 def _lifespan_auth_headers(ctx: Any) -> dict[str, str]:
