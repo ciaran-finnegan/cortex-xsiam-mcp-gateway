@@ -20,6 +20,8 @@ from usecase.xql_errors import (
     reset_current_xql_error_class,
 )
 
+ONE_HOUR = {"relativeTime": 3_600_000}
+
 
 class SequenceFetcher:
     def __init__(self, responses):
@@ -108,7 +110,9 @@ async def test_executor_returns_class_field_and_hash_without_upstream_text(monke
     _use_fetcher(monkeypatch, [{"reply": "query-1"}, {"reply": {"status": "FAILED", "error_message": upstream}}])
     token = clear_current_xql_error_class()
     try:
-        response = await xql_executor.run_xql_query(None, "dataset = sample_auth_logs | limit 1", 1, poll_interval_seconds=0)
+        response = await xql_executor.run_xql_query(
+            None, "dataset = sample_auth_logs | limit 1", 1, timeframe=ONE_HOUR, poll_interval_seconds=0
+        )
         recorded = get_current_xql_error_class()
     finally:
         reset_current_xql_error_class(token)
@@ -128,7 +132,7 @@ async def test_executor_keeps_the_hashed_form_for_an_unrecognised_message(monkey
     _use_fetcher(monkeypatch, [{"reply": {"status": "ERROR", "error": upstream}}])
     token = clear_current_xql_error_class()
     try:
-        response = await xql_executor.run_xql_query(None, "dataset = sample_auth_logs | limit 1", 1)
+        response = await xql_executor.run_xql_query(None, "dataset = sample_auth_logs | limit 1", 1, timeframe=ONE_HOUR)
         recorded = get_current_xql_error_class()
     finally:
         reset_current_xql_error_class(token)
@@ -165,7 +169,11 @@ async def test_typed_tools_pass_the_class_through_to_the_agent(monkeypatch):
         fields=["usr_name"],
         timeframe=QueryTimeframe(relative_ms=60_000),
     )
-    compat = json.loads(await logs.search_logs(_ctx(("DataReader",)), dataset="sample_auth_logs", fields=["usr_name"]))
+    compat = json.loads(
+        await logs.search_logs(
+            _ctx(("DataReader",)), dataset="sample_auth_logs", fields=["usr_name"], timeframe=ONE_HOUR
+        )
+    )
 
     for response in (typed, compat):
         assert response["error"] == "xql_validation"
@@ -201,7 +209,7 @@ async def test_audit_middleware_adds_the_class_of_a_failed_query_and_resets_it(m
         events.append(event)
 
     async def call_next(*, context):
-        response = await xql_executor.run_xql_query(None, "dataset = sample_missing | limit 1", 1)
+        response = await xql_executor.run_xql_query(None, "dataset = sample_missing | limit 1", 1, timeframe=ONE_HOUR)
         return ToolResult(structured_content={"success": False, **response})
 
     monkeypatch.setattr(audit_middleware, "emit_audit_event", capture)
