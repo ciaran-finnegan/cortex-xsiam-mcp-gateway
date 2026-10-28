@@ -195,7 +195,10 @@ See [Learning](LEARNING.md) for the design, schedules and deployment.
 | `LEARNING_COST_TTL_DAYS` | `90` | Expiry of cost, timing and helper-usage facts without a confirmation. |
 | `LEARNING_MAX_ENTRIES_PER_KIND` | `5000` | Cap per fact kind; new entries beyond it are refused, not evicted. |
 | `LEARNING_COST_MIN_OBSERVATIONS` | `3` | Observations before the cost guard hook returns a learned cost. |
-| `LEARNING_ADMIN_GROUPS` | `Admin` | Groups allowed to call `revert_learned`, independent of `TOOL_ACCESS_POLICY`. |
+| `LEARNING_ADMIN_GROUPS` | `Admin` | Groups allowed to revert, pin or unpin facts with `revert_learned`, independent of `TOOL_ACCESS_POLICY`. |
+| `LEARNING_VERIFY_MIN_CONFIRMATIONS` | `5` | Confirmations since the last contradiction before a fact is verified automatically. |
+| `LEARNING_VERIFY_MIN_ENGAGEMENTS` | `3` | Distinct engagements those confirmations must come from. |
+| `LEARNING_VERIFY_MIN_DAYS` | `7` | Days the confirmations must span. |
 | `LEARNING_JOURNAL_MAX_BYTES` | `67108864` | Largest journal file per gateway process per day. |
 | `LEARNING_RESULT_CACHE_ENABLED` | `false` | Cache bounded results of a case's tool calls for replay. Cached rows are tenant data. |
 | `LEARNING_RESULT_MAX_BYTES` | `262144` | Largest single tool result kept in the replay cache. |

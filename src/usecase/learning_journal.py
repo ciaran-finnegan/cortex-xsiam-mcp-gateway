@@ -8,8 +8,8 @@ call: an error is logged and the record dropped.
 
 Each process writes its own files, named ``<stream>-<UTC date>-<host hash>-<pid>.jsonl``, so
 replicas never share a file. Streams: ``events`` (observations, tool steps, fact links,
-engagement closes) and ``reverts`` (human revert requests, which read paths honour before
-the learner applies them).
+engagement closes) and ``admin`` (human revert, pin and unpin requests, which read paths
+honour before the learner applies them).
 """
 
 import asyncio
@@ -27,6 +27,8 @@ from entities.MCPContext import MCPContext
 from usecase import learned_store
 from usecase.audit import stable_hash
 from usecase.learned_store import (
+    ADMIN_ACTIONS,
+    ENGAGEMENT_KEY_RE,
     ENTRY_ID_RE,
     QUERY_ID_RE,
     TOKEN_RE,
@@ -180,9 +182,21 @@ async def flush() -> None:
 # --- Records ---
 
 
-def journal_observations(observations: list[Observation], *, principal: MCPContext, trigger: str) -> int:
-    """Queue observations whose evidence this process issued. Returns how many were queued. Never raises."""
+def journal_observations(
+    observations: list[Observation],
+    *,
+    principal: MCPContext,
+    trigger: str,
+    engagement: str | None = None,
+) -> int:
+    """Queue observations whose evidence this process issued. Returns how many were queued. Never raises.
+
+    ``engagement`` is the hashed key of the engagement the observations came from; distinct
+    engagements count towards automatic verification.
+    """
     queued = 0
+    if engagement is not None and not ENGAGEMENT_KEY_RE.match(engagement):
+        engagement = None
     for observation in observations:
         try:
             validate_observation(observation, require_issued=True)
@@ -200,6 +214,7 @@ def journal_observations(observations: list[Observation], *, principal: MCPConte
                 "evidence": list(observation.evidence),
                 "source_class": observation.source_class,
                 "effect": observation.effect,
+                "engagement_key": engagement or observation.engagement,
             }
         )
     return queued
@@ -290,13 +305,13 @@ def journal_engagement_closed(*, engagement_key: str, case_id: str | None) -> bo
     return _enqueue({"type": "engagement_closed", "engagement_key": engagement_key, "case_id": case_id})
 
 
-async def journal_revert(entry_id: str, *, principal: MCPContext) -> bool:
-    """Queue a human revert request and wait until it is on disk. Accepted while learning is frozen."""
-    if not isinstance(entry_id, str) or not ENTRY_ID_RE.match(entry_id):
+async def journal_admin_action(entry_id: str, action: str, *, principal: MCPContext) -> bool:
+    """Queue a human revert, pin or unpin and wait until it is on disk. Accepted while learning is frozen."""
+    if not isinstance(entry_id, str) or not ENTRY_ID_RE.match(entry_id) or action not in ADMIN_ACTIONS:
         return False
     queued = _enqueue(
-        {"type": "revert", "entry_id": entry_id, "principal": _principal_block(principal)},
-        stream="reverts",
+        {"type": "admin", "action": action, "entry_id": entry_id, "principal": _principal_block(principal)},
+        stream="admin",
         even_when_frozen=True,
     )
     await flush()

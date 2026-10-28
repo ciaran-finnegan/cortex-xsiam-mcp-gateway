@@ -14,9 +14,12 @@ This project follows a lightweight changelog format until stable releases begin.
   (expiry, cost recalibration from the query history as a capped `learner`
   principal) and weekly (digest, replay scoring, step mining) jobs, plus a deploy
   canary.
+- Added automatic verification: a fact is labelled `verified` after 5
+  confirmations from 3 distinct engagements over 7 days with no contradiction
+  (all settings); one contradiction drops it back to `learned`.
 - Added `get_learned_facts`, the `tenant://learned/{kind}` resource,
-  `learning_digest`, admin-only `revert_learned`, and the `LEARNING_ENABLED`
-  kill switch for both processes.
+  `learning_digest`, admin-only `revert_learned` (revert, pin, unpin), and the
+  `LEARNING_ENABLED` kill switch for both processes.
 - Added the tier-2 replay foundation: an opt-in bounded per-case result cache and
   `replay_engagement`, plus a synthetic IOC-flood triage agent-evaluation case.
 - Classified XSIAM unknown-field failures (`error_class`, `unknown_field`) when

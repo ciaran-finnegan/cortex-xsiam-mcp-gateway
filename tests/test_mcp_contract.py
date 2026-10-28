@@ -62,4 +62,6 @@ async def test_full_server_exposes_learning_tools_and_resource_template():
     assert {"get_learned_facts", "learning_digest", "revert_learned"}.issubset(tool_names)
     assert "tenant://learned/{kind}" in templates
     revert_schema = (await server.get_tool("revert_learned")).parameters
-    assert set(revert_schema["properties"]) == {"entry_id"}
+    assert set(revert_schema["properties"]) == {"entry_id", "action"}
+    assert revert_schema["required"] == ["entry_id"]
+    assert revert_schema["properties"]["action"]["enum"] == ["revert", "pin", "unpin"]

@@ -55,8 +55,13 @@ def _cost(units=0.5, query_id="q-2", dataset="xdr_data", source="query_cost"):
     )
 
 
-async def _record(*observations, who=None):
-    learning_journal.journal_observations(list(observations), principal=who or principal(), trigger="test")
+E1, E2, E3 = "1" * 64, "2" * 64, "3" * 64
+
+
+async def _record(*observations, who=None, engagement=None):
+    learning_journal.journal_observations(
+        list(observations), principal=who or principal(), trigger="test", engagement=engagement
+    )
     return await settle()
 
 
@@ -837,42 +842,163 @@ def two_datasets(pack, audit_events, clock, monkeypatch):
 @pytest.mark.asyncio
 async def test_get_learned_facts_filters_by_dataset_policy_and_labels_trust(pack, two_datasets):
     await two_datasets()
-    (pack / "notes").mkdir()
-    (pack / "notes" / "alerts.md").write_text("# Alerts\n- verified: schema alerts alert_name  # checked by a human\n")
 
     tier1 = await learning_tools.get_learned_facts(ctx(("Tier1",)), kind="schema")
     security = await learning_tools.get_learned_facts(ctx(("Security",)), kind="schema")
     denied = await learning_tools.get_learned_facts(ctx(("Tier1",)), kind="schema", dataset="alerts")
 
     assert [entry["dataset"] for entry in tier1["entries"]] == ["xdr_data"]
-    assert tier1["entries"][0]["trust"] == {"label": "learned", "confirmations": 2}
+    assert tier1["entries"][0]["trust"] == {"label": "learned", "confirmations": 2, "engagements": 0}
     assert tier1["content_trust"] == "measured_metadata"
-    by_dataset = {entry["dataset"]: entry for entry in security["entries"]}
-    assert by_dataset["alerts"]["trust"] == {"label": "verified", "note": "notes/alerts.md", "confirmations": 1}
+    assert {entry["dataset"] for entry in security["entries"]} == {"xdr_data", "alerts"}
     assert denied["success"] is False and "not allowed" in denied["error"]
 
 
+# --- Automatic verification and pinning ---
+
+
+async def _confirm_on(clock, days, engagement, query_id, field_type="string"):
+    clock["now"] = datetime(2026, 10, 1, tzinfo=UTC) + timedelta(days=days)
+    _issue(query_id)
+    return await _record(_schema(field_type=field_type, query_id=query_id), engagement=engagement)
+
+
 @pytest.mark.asyncio
-async def test_a_note_can_verify_a_fact_by_entry_id(pack, two_datasets):
+async def test_fact_is_verified_after_five_confirmations_in_three_engagements_over_seven_days(pack, audit_events, clock):
+    await _confirm_on(clock, 0, E1, "q-1")
+    await _confirm_on(clock, 2, E1, "q-2")
+    await _confirm_on(clock, 4, E2, "q-3")
+    assert (await _confirm_on(clock, 6, E3, "q-4"))["actions"] == {"confirmed": 1}
+
+    report = await _confirm_on(clock, 7, E3, "q-5")
+
+    assert report["actions"] == {"confirmed": 1, "verified": 1}
+    (entry,) = learned_store.read_entries("schema")
+    assert entry["verified_at"] == "2026-10-08T00:00:00+00:00"
+    assert learned_store.trust_label(entry) == {
+        "label": "verified",
+        "verified_at": "2026-10-08T00:00:00+00:00",
+        "confirmations": 5,
+        "engagements": 3,
+    }
+    assert audit_events[-1]["actions"] == {"confirmed": 1, "verified": 1}
+    assert [change["action"] for change in learned_store.get_learned_store().read_changes(clock["now"] - timedelta(days=30))][-1] == "verified"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "schedule",
+    [
+        [(0, E1), (2, E1), (4, E2), (6, E2), (7, E2)],
+        [(0, E1), (1, E2), (2, E3), (3, E3), (6, E3)],
+        [(0, E1), (3, E2), (6, E3), (8, E3)],
+    ],
+    ids=["two_engagements", "six_days", "four_confirmations"],
+)
+async def test_verification_needs_every_threshold(pack, audit_events, clock, schedule):
+    for index, (days, engagement) in enumerate(schedule):
+        await _confirm_on(clock, days, engagement, f"q-{index}")
+
+    (entry,) = learned_store.read_entries("schema")
+    assert entry["verified_at"] is None
+    assert learned_store.trust_label(entry)["label"] == "learned"
+
+
+@pytest.mark.asyncio
+async def test_a_contradiction_drops_a_verified_fact_to_learned_and_resets_engagements(pack, audit_events, clock):
+    for index, (days, engagement) in enumerate([(0, E1), (2, E1), (4, E2), (6, E3), (7, E3)]):
+        await _confirm_on(clock, days, engagement, f"q-{index}")
+    assert learned_store.read_entries("schema")[0]["verified_at"] is not None
+
+    report = await _confirm_on(clock, 8, E1, "q-c", field_type="integer")
+
+    assert report["actions"] == {"demoted": 1}
+    (entry,) = read_kind(pack, "schema").values()
+    assert (entry["verified_at"], entry["verify_engagements"], entry["verify_window_start"]) == (None, [], None)
+    assert audit_events[-1]["changes"][0]["verified_at"] is None
+    await _confirm_on(clock, 9, E2, "q-d", field_type="integer")
+    await _confirm_on(clock, 10, E2, "q-e", field_type="integer")
+    (served,) = learned_store.read_entries("schema")
+    assert learned_store.trust_label(served) == {"label": "learned", "confirmations": 7, "engagements": 1}
+
+
+@pytest.mark.asyncio
+async def test_verification_thresholds_are_settings(pack, audit_events, clock, monkeypatch):
+    monkeypatch.setattr(get_config(), "learning_verify_min_confirmations", 2)
+    monkeypatch.setattr(get_config(), "learning_verify_min_engagements", 2)
+    monkeypatch.setattr(get_config(), "learning_verify_min_days", 0)
+
+    await _confirm_on(clock, 0, E1, "q-1")
+    report = await _confirm_on(clock, 0, E2, "q-2")
+
+    assert report["actions"] == {"confirmed": 1, "verified": 1}
+
+
+@pytest.mark.asyncio
+async def test_gateway_observations_carry_their_engagement(pack, audit_events, clock, monkeypatch):
+    rows = [{"action_file_path": "c:/synthetic/a.exe"}]
+    use_fetcher(monkeypatch, [success("q-d1", rows), success("q-d2", rows)])
+
+    await logs.discover_log_fields(ctx(principal="first@example.com"), dataset="xdr_data")
+    await logs.discover_log_fields(ctx(principal="second@example.com"), dataset="xdr_data")
+    await settle()
+
+    (entry,) = read_kind(pack, "schema").values()
+    assert len(entry["verify_engagements"]) == 2
+    assert all(len(tag) == 16 for tag in entry["verify_engagements"])
+
+
+@pytest.mark.asyncio
+async def test_pinned_fact_never_expires_and_is_never_demoted(pack, two_datasets, audit_events, clock):
     await two_datasets()
     entry_id = learned_store.make_entry_id("schema", ("xdr_data", "action_file_path"))
-    (pack / "notes").mkdir()
-    (pack / "notes" / "endpoint.md").write_text(f"verified: {entry_id}\n")
 
-    result = await learning_tools.get_learned_facts(ctx(("Tier1",)), kind="schema", dataset="xdr_data")
+    pinned = await learning_tools.revert_learned(ctx(("Admin",)), entry_id=entry_id, action="pin")
+    assert (pinned["success"], pinned["status"]) == (True, "pin_pending")
+    assert learned_store.trust_label(learned_store.find_entry(entry_id))["label"] == "learned"
+    served = {entry["entry_id"]: entry for entry in learned_store.read_entries("schema")}
+    assert learned_store.trust_label(served[entry_id])["label"] == "pinned"
+    assert (await settle())["actions"] == {"pinned": 1}
 
-    assert result["entries"][0]["trust"]["label"] == "verified"
+    _issue("q-x")
+    contradicted = await _record(_schema(field="action_file_path", field_type="integer", query_id="q-x"))
+    assert contradicted["actions"] == {"contradicted": 1}
+    entry = read_kind(pack, "schema")[entry_id]
+    assert (entry["status"], entry["fact"]["type"], entry["contradictions"]) == ("active", "string", 1)
+
+    clock["now"] += timedelta(days=100)
+    await settle("nightly")
+    assert entry_id in read_kind(pack, "schema")
+    assert entry_id in {entry["entry_id"] for entry in learned_store.read_entries("schema")}
+
+    unpinned = await learning_tools.revert_learned(ctx(("Admin",)), entry_id=entry_id, action="unpin")
+    assert unpinned["status"] == "unpin_pending"
+    assert (await settle())["actions"] == {"unpinned": 1}
+    entry = read_kind(pack, "schema")[entry_id]
+    assert entry["pinned"] is False
+    assert entry["expires_at"] == "2027-02-08T00:00:00+00:00"
 
 
 @pytest.mark.asyncio
-async def test_notes_with_unsafe_file_names_verify_nothing(pack, two_datasets):
+async def test_pin_and_unpin_are_admin_only_and_checked(pack, two_datasets, audit_events):
     await two_datasets()
-    (pack / "notes").mkdir()
-    (pack / "notes" / f"{INJECTION}.md").write_text("verified: schema xdr_data action_file_path\n")
+    entry_id = learned_store.make_entry_id("schema", ("xdr_data", "action_file_path"))
 
-    result = await learning_tools.get_learned_facts(ctx(("Tier1",)), kind="schema", dataset="xdr_data")
+    denied = await learning_tools.revert_learned(ctx(("Security",)), entry_id=entry_id, action="pin")
+    not_pinned = await learning_tools.revert_learned(ctx(("Admin",)), entry_id=entry_id, action="unpin")
+    await learning_tools.revert_learned(ctx(("Admin",)), entry_id=entry_id, action="pin")
+    twice = await learning_tools.revert_learned(ctx(("Admin",)), entry_id=entry_id, action="pin")
 
-    assert result["entries"][0]["trust"] == {"label": "learned", "confirmations": 2}
+    assert denied["success"] is False and "not allowed" in denied["error"]
+    assert "not pinned" in not_pinned["error"]
+    assert "already pinned" in twice["error"]
+    assert [event["operation"] for event in audit_events if event.get("operation", "").endswith("_requested")] == [
+        "pin_requested"
+    ]
+    await learning_tools.revert_learned(ctx(("Admin",)), entry_id=entry_id, action="revert")
+    assert (await settle())["actions"] == {"pinned": 1, "reverted": 1}
+    reverted_pin = await learning_tools.revert_learned(ctx(("Admin",)), entry_id=entry_id, action="pin")
+    assert "already reverted" in reverted_pin["error"]
 
 
 @pytest.mark.asyncio

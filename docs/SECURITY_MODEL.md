@@ -146,8 +146,12 @@ Tier-1 learning writes measured tenant facts to `<TENANT_PACK_DIR>/learned/`
 - served facts are filtered by dataset policy, carry a trust label and
   `content_trust: "measured_metadata"`; facts spanning datasets withhold their
   evidence ids; the resource requires the `get_learned_facts` tool permission;
+- verification is automatic and needs repeated confirmation across several
+  engagements over at least a week with no contradiction, so one session cannot
+  verify a fact; one contradiction removes verification;
 - every learner run is audited before commit; `LEARNING_ENABLED=false` stops the
-  observers and the learner; reverts are restricted to `LEARNING_ADMIN_GROUPS`;
+  observers and the learner; revert, pin and unpin are restricted to
+  `LEARNING_ADMIN_GROUPS`;
 - the learner queries XSIAM only as its own `learner` principal under the normal
   dataset and tool policy, within a daily unit cap, and not below the reserve;
 - the replay cache is off by default, holds only results the gateway already

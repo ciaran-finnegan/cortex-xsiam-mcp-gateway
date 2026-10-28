@@ -178,6 +178,14 @@ class Settings(BaseSettings):
         le=50000,
         validation_alias="LEARNING_MAX_ENTRIES_PER_KIND",
     )
+    learning_verify_min_confirmations: int = Field(
+        5,
+        ge=1,
+        le=1000,
+        validation_alias="LEARNING_VERIFY_MIN_CONFIRMATIONS",
+    )
+    learning_verify_min_engagements: int = Field(3, ge=1, le=20, validation_alias="LEARNING_VERIFY_MIN_ENGAGEMENTS")
+    learning_verify_min_days: int = Field(7, ge=0, le=365, validation_alias="LEARNING_VERIFY_MIN_DAYS")
     learning_cost_min_observations: int = Field(
         3,
         ge=1,

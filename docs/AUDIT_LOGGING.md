@@ -50,11 +50,11 @@ and the journal is read again next time.
 
 | Field | Description |
 | --- | --- |
-| `operation` | Learner: `tick`, `nightly`, `weekly`. Gateway: `revert_requested`, `read` (resource read). |
+| `operation` | Learner: `tick`, `nightly`, `weekly`. Gateway: `revert_requested`, `pin_requested`, `unpin_requested`, `read` (resource read). |
 | `trigger` | `learner`, `revert_learned`, or `resource`. |
 | `principal.id`, `principal.groups` | The learner principal (`LEARNER_PRINCIPAL_ID`), or the admin or reader in the gateway. |
 | `actions` | Count of changes per action. |
-| `changes[]` | Up to 100 changes: `entry_id`, `kind`, `dataset`, `action` (`learned`, `confirmed`, `promoted`, `demoted`, `expired`, `reverted`), `fact`, `previous_fact` on a value change, `evidence` query ids, `confirmations`, `contradictions`, `confidence`, `status`, `expires_at`. |
+| `changes[]` | Up to 100 changes: `entry_id`, `kind`, `dataset`, `action` (`learned`, `confirmed`, `promoted`, `demoted`, `verified`, `contradicted`, `pinned`, `unpinned`, `expired`, `reverted`), `fact`, `previous_fact` on a value change, `evidence` query ids, `confirmations`, `contradictions`, `confidence`, `status`, `expires_at`, `verified_at`, `pinned`, `engagements`. Verification and its loss are recorded as `verified` and `demoted` changes. |
 | `changes_truncated` | True when more than 100 changes were made. |
 | `details` | Learner: the run report (journal records read, engagements processed, jobs and their results), cached results, fact links, and `observed_by`, the principals whose calls produced the observations. Gateway: the entry for a revert request; kind, success and count for a read. |
 

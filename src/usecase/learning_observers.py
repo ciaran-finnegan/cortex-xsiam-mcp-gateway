@@ -494,7 +494,7 @@ async def observe_xql_execution(
                 observations.append(
                     Observation("schema", fact, (query_id,), "query_error_class", parsed.dataset, effect="contradict")
                 )
-        journal_observations(observations, principal=principal, trigger="xql_query")
+        journal_observations(observations, principal=principal, trigger="xql_query", engagement=key)
     except Exception as e:
         logger.warning("Learning observer skipped an XQL result: %s", type(e).__name__)
 
@@ -533,7 +533,8 @@ async def observe_field_catalog(
             )
         call = _current_call.get()
         principal = call.principal if call is not None else _principal(ctx)
-        journal_observations(observations, principal=principal, trigger="field_catalog")
+        key = call.engagement_key if call is not None else engagement_key(ctx, principal)
+        journal_observations(observations, principal=principal, trigger="field_catalog", engagement=key)
     except Exception as e:
         logger.warning("Learning observer skipped a field catalog: %s", type(e).__name__)
 

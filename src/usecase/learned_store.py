@@ -18,10 +18,14 @@ writer, holding the store lock while it folds the journal in.
 
 Lifecycle: a confirmation raises confidence; a contradiction demotes the entry at once
 (confidence 0, not served) and it is promoted again only after ``PROMOTE_STREAK``
-consecutive confirmations; entries expire after ``LEARNING_SCHEMA_TTL_DAYS`` (schema,
-enum and absent-field facts) or ``LEARNING_COST_TTL_DAYS`` (cost, timing and helper
-facts) without a confirmation. A human revert leaves a tombstone that stops the same
-fact being re-learned until it expires.
+consecutive confirmations. Verification is automatic: a fact with at least
+LEARNING_VERIFY_MIN_CONFIRMATIONS confirmations from LEARNING_VERIFY_MIN_ENGAGEMENTS distinct
+engagements over LEARNING_VERIFY_MIN_DAYS days, uncontradicted, is labelled ``verified``; one
+contradiction removes that and resets the count. Entries expire after
+``LEARNING_SCHEMA_TTL_DAYS`` (schema, enum and absent-field facts) or
+``LEARNING_COST_TTL_DAYS`` (cost, timing and helper facts) without a confirmation. A human
+may pin a fact (never expires, never demoted) or revert it, which leaves a tombstone that
+stops it being re-learned until it expires.
 
 The learner audits each run's changes before committing them, so when audit export fails
 closed nothing is written. ``LEARNING_ENABLED=false`` stops the observers and the learner; a
@@ -68,7 +72,10 @@ SOURCE_CLASSES = frozenset(
     }
 )
 STATUSES = ("active", "demoted", "reverted")
-LIFECYCLE_ACTIONS = frozenset({"learned", "promoted", "demoted", "expired", "reverted"})
+LIFECYCLE_ACTIONS = frozenset(
+    {"learned", "promoted", "demoted", "expired", "reverted", "verified", "pinned", "unpinned", "contradicted"}
+)
+ADMIN_ACTIONS = ("revert", "pin", "unpin")
 FIELD_TYPES = frozenset({"string", "integer", "number", "boolean", "array", "object", "mixed"})
 WINDOW_BUCKETS = ("le_1h", "le_6h", "le_24h", "le_7d", "le_30d", "gt_30d", "unspecified")
 SELECTIVITY_CLASSES = ("sample", "unfiltered", "filtered", "selective")
@@ -89,8 +96,7 @@ OUTLIER_FLOOR_UNITS = 0.1
 MAX_KIND_FILE_BYTES = 8 * 1024 * 1024
 MAX_CHANGES_LOG_BYTES = 2 * 1024 * 1024
 MAX_ISSUED_QUERY_IDS = 10_000
-MAX_NOTE_FILES = 500
-MAX_NOTE_FILE_BYTES = 512 * 1024
+MAX_VERIFY_ENGAGEMENTS = 20
 MAX_REVERT_JOURNAL_BYTES = 1024 * 1024
 MAX_DIGEST_ITEMS_PER_ACTION = 100
 LOCK_ATTEMPTS = 40
@@ -100,11 +106,8 @@ QUERY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,63}$")
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,63}$")
 ENTRY_ID_RE = re.compile(r"^(sch|enm|abs|cst|tim|hlp)-[0-9a-f]{20}$")
-NOTE_PATH_RE = re.compile(r"^notes/[A-Za-z0-9_./-]{1,120}\.md$")
-_NOTE_LINE_RE = re.compile(
-    r"^\s*(?:[-*]\s+)?verified:\s*(?P<first>\S+)(?:\s+(?P<dataset>\S+)\s+(?P<field>\S+))?\s*(?:#.*)?$",
-    re.IGNORECASE,
-)
+ENGAGEMENT_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
+ENGAGEMENT_TAG_RE = re.compile(r"^[0-9a-f]{16}$")
 _KIND_PREFIX = {
     "schema": "sch",
     "enum_fields": "enm",
@@ -140,13 +143,17 @@ _ENTRY_KEYS = frozenset(
         "status",
         "status_changed_at",
         "reverted_by_sha256",
+        "pinned",
+        "pinned_at",
+        "verified_at",
+        "verify_engagements",
+        "verify_window_start",
     }
 )
 
 _issued_query_ids: OrderedDict[str, None] = OrderedDict()
 _async_locks: dict[tuple[int, str], asyncio.Lock] = {}
 _snapshot_cache: dict[str, tuple[int, int, dict[str, dict[str, Any]]]] = {}
-_notes_cache: dict[str, tuple[tuple[tuple[str, int, int], ...], dict[str, str]]] = {}
 
 
 class LearnedStoreError(RuntimeError):
@@ -163,7 +170,8 @@ class Observation:
 
     For schema, enum and absent-field kinds ``fact`` is the asserted value and ``effect``
     is ``confirm`` or ``contradict``. For cost, timing and helper kinds ``fact`` is one
-    sample and ``effect`` is ``measure``.
+    sample and ``effect`` is ``measure``. ``engagement`` is the hashed engagement key the
+    observation came from; distinct engagements count towards automatic verification.
     """
 
     kind: str
@@ -172,6 +180,7 @@ class Observation:
     source_class: str
     dataset: str | None = None
     effect: str = "confirm"
+    engagement: str | None = None
 
 
 # --- Evidence registry ---
@@ -196,7 +205,6 @@ def reset_state() -> None:
     """Forget issued query ids and cached reads. For tests."""
     _issued_query_ids.clear()
     _snapshot_cache.clear()
-    _notes_cache.clear()
 
 
 # --- Keys and validation (the forgery guard) ---
@@ -400,6 +408,10 @@ def validate_observation(observation: Observation, *, require_issued: bool = Tru
         _identifier(observation.dataset)
     elif observation.dataset is not None:
         _refuse("this kind is not scoped to a dataset")
+    if observation.engagement is not None and (
+        not isinstance(observation.engagement, str) or not ENGAGEMENT_KEY_RE.match(observation.engagement)
+    ):
+        _refuse("engagement must be a hashed engagement key")
 
 
 def validate_entry(entry: Any) -> dict[str, Any]:
@@ -435,6 +447,17 @@ def validate_entry(entry: Any) -> dict[str, Any]:
     reverted_by = entry.get("reverted_by_sha256")
     if reverted_by is not None and (not isinstance(reverted_by, str) or not re.fullmatch(r"[0-9a-f]{64}", reverted_by)):
         _refuse("reverted_by_sha256 must be a sha256 digest")
+    if not isinstance(entry.get("pinned", False), bool):
+        _refuse("pinned must be a boolean")
+    for name in ("pinned_at", "verified_at", "verify_window_start"):
+        if entry.get(name) is not None:
+            _timestamp(entry[name])
+    tags = entry.get("verify_engagements", [])
+    if not isinstance(tags, list) or len(tags) > MAX_VERIFY_ENGAGEMENTS:
+        _refuse("verify_engagements must be a short list")
+    for tag in tags:
+        if not isinstance(tag, str) or not ENGAGEMENT_TAG_RE.match(tag):
+            _refuse("verify_engagements must hold engagement tags")
     return entry
 
 
@@ -489,6 +512,9 @@ def _change(action: str, entry: dict[str, Any], now: datetime) -> dict[str, Any]
     }
     if entry.get("previous_fact") is not None and action == "demoted":
         change["previous_fact"] = entry["previous_fact"]
+    change["pinned"] = bool(entry.get("pinned"))
+    change["verified_at"] = entry.get("verified_at")
+    change["engagements"] = len(entry.get("verify_engagements") or [])
     return change
 
 
@@ -584,23 +610,60 @@ def _is_outlier(kind: str, fact: dict[str, Any], sample: dict[str, Any]) -> bool
     return float(sample["units"]) > OUTLIER_FACTOR * max(fact["high_units"], OUTLIER_FLOOR_UNITS)
 
 
-def _confirm(entry: dict[str, Any], now: datetime) -> dict[str, Any]:
+def _note_engagement(entry: dict[str, Any], observation: Observation, now: datetime) -> None:
+    """Count the observation towards verification: the window opens at the first confirmation after a reset."""
+    if entry.get("verify_window_start") is None:
+        entry["verify_window_start"] = iso_timestamp(now)
+    tags = list(entry.get("verify_engagements") or [])
+    if observation.engagement:
+        tag = observation.engagement[:16]
+        if tag not in tags:
+            tags.append(tag)
+    entry["verify_engagements"] = tags[-MAX_VERIFY_ENGAGEMENTS:]
+
+
+def _maybe_verify(entry: dict[str, Any], now: datetime) -> list[dict[str, Any]]:
+    """Verify an active fact confirmed often enough, across enough engagements, over enough days, uncontradicted."""
+    config = get_config()
+    if entry["status"] != "active" or entry.get("verified_at") is not None or entry.get("verify_window_start") is None:
+        return []
+    span = now - _timestamp(entry["verify_window_start"])
+    if (
+        entry["streak"] >= config.learning_verify_min_confirmations
+        and len(entry.get("verify_engagements") or []) >= config.learning_verify_min_engagements
+        and span >= timedelta(days=config.learning_verify_min_days)
+    ):
+        entry["verified_at"] = iso_timestamp(now)
+        return [_change("verified", entry, now)]
+    return []
+
+
+def _confirm(entry: dict[str, Any], observation: Observation, now: datetime) -> list[dict[str, Any]]:
     entry["confirmations"] += 1
     entry["streak"] += 1
     entry["confidence"] = _confidence(entry["streak"])
+    _note_engagement(entry, observation, now)
     if entry["status"] == "demoted" and entry["streak"] >= PROMOTE_STREAK:
         entry["status"] = "active"
         entry["status_changed_at"] = iso_timestamp(now)
-        return _change("promoted", entry, now)
-    return _change("confirmed", entry, now)
+        changes = [_change("promoted", entry, now)]
+    else:
+        changes = [_change("confirmed", entry, now)]
+    return changes + _maybe_verify(entry, now)
 
 
-def _demote(entry: dict[str, Any], now: datetime, replacement: dict[str, Any] | None = None) -> dict[str, Any]:
+def _contradict(entry: dict[str, Any], now: datetime, replacement: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A contradiction demotes at once and resets verification. A pinned fact is only marked contradicted."""
     entry["contradictions"] += 1
+    if entry.get("pinned"):
+        return _change("contradicted", entry, now)
     entry["streak"] = 0
     entry["confidence"] = 0.0
     entry["status"] = "demoted"
     entry["status_changed_at"] = iso_timestamp(now)
+    entry["verified_at"] = None
+    entry["verify_engagements"] = []
+    entry["verify_window_start"] = None
     if replacement is not None:
         entry["previous_fact"] = entry["fact"]
         entry["fact"] = replacement
@@ -626,7 +689,7 @@ def apply_observation(
         if entry is None:
             return []
         _touch(entry, observation, now)
-        return [_demote(entry, now)]
+        return [_contradict(entry, now)]
 
     if entry is None:
         if len(entries) >= max_entries:
@@ -649,32 +712,38 @@ def apply_observation(
             "source_class": observation.source_class,
             "status": "active",
             "status_changed_at": iso_timestamp(now),
+            "pinned": False,
+            "pinned_at": None,
+            "verified_at": None,
+            "verify_engagements": [],
+            "verify_window_start": None,
         }
+        _note_engagement(entry, observation, now)
         entries[entry_id] = entry
-        return [_change("learned", entry, now)]
+        return [_change("learned", entry, now), *_maybe_verify(entry, now)]
 
     _touch(entry, observation, now)
     if observation.effect == "measure":
         outlier = _is_outlier(observation.kind, entry["fact"], observation.fact)
         entry["fact"] = _merge_sample(observation.kind, entry["fact"], observation.fact)
-        return [_demote(entry, now)] if outlier else [_confirm(entry, now)]
+        return [_contradict(entry, now)] if outlier else _confirm(entry, observation, now)
     if entry["fact"] == observation.fact:
-        return [_confirm(entry, now)]
-    return [_demote(entry, now, replacement=dict(observation.fact))]
+        return _confirm(entry, observation, now)
+    return [_contradict(entry, now, replacement=dict(observation.fact))]
 
 
 def sweep_entries(entries: dict[str, dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
     changes = []
     for entry_id in list(entries):
         entry = entries[entry_id]
-        if _timestamp(entry["expires_at"]) <= now:
+        if not entry.get("pinned") and _timestamp(entry["expires_at"]) <= now:
             del entries[entry_id]
             changes.append(_change("expired", entry, now))
     return changes
 
 
 def _is_live(entry: dict[str, Any], now: datetime) -> bool:
-    return _timestamp(entry["expires_at"]) > now
+    return bool(entry.get("pinned")) or _timestamp(entry["expires_at"]) > now
 
 
 # --- Files ---
@@ -890,49 +959,73 @@ def validate_entry_change(change: Any) -> None:
     validate_evidence(change.get("evidence"), require_issued=False)
 
 
-# --- Revert requests ---
+# --- Admin actions: revert, pin, unpin ---
 
 
-def revert_in_entries(
+def apply_admin_action(
     entries: dict[str, dict[str, Any]],
     entry_id: str,
+    action: str,
     *,
     requested_by_sha256: str,
     now: datetime,
 ) -> dict[str, Any] | None:
-    """Turn an entry into a tombstone on a human's request. Returns the change, or None when there is nothing to revert."""
+    """Apply a human's revert, pin or unpin to one entry. Returns the change, or None when nothing changes.
+
+    A revert turns the entry into a tombstone. A pin keeps the fact active, never expiring and
+    never demoted; contradictions are still counted. A reverted entry cannot be pinned.
+    """
     entry = entries.get(entry_id)
-    if entry is None or entry["status"] == "reverted":
+    if entry is None or entry["status"] == "reverted" or action not in ADMIN_ACTIONS:
         return None
-    entry["status"] = "reverted"
-    entry["streak"] = 0
-    entry["confidence"] = 0.0
-    entry["status_changed_at"] = iso_timestamp(now)
+    if action == "revert":
+        entry["status"] = "reverted"
+        entry["pinned"] = False
+        entry["streak"] = 0
+        entry["confidence"] = 0.0
+        entry["verified_at"] = None
+        entry["status_changed_at"] = iso_timestamp(now)
+        entry["expires_at"] = iso_timestamp(now + ttl_for(entry["kind"]))
+        entry["reverted_by_sha256"] = requested_by_sha256
+        return _change("reverted", entry, now)
+    if action == "pin":
+        if entry.get("pinned"):
+            return None
+        entry["pinned"] = True
+        entry["pinned_at"] = iso_timestamp(now)
+        if entry["status"] != "active":
+            entry["status"] = "active"
+            entry["status_changed_at"] = iso_timestamp(now)
+        return _change("pinned", entry, now)
+    if not entry.get("pinned"):
+        return None
+    entry["pinned"] = False
+    entry["pinned_at"] = None
+    # Expiry resumes from now, so an old expiry does not remove the fact at once.
     entry["expires_at"] = iso_timestamp(now + ttl_for(entry["kind"]))
-    entry["reverted_by_sha256"] = requested_by_sha256
-    return _change("reverted", entry, now)
+    return _change("unpinned", entry, now)
 
 
 def journal_dir(pack_root: Path) -> Path:
     return pack_root / "learned" / "journal"
 
 
-def pending_revert_ids() -> frozenset[str]:
-    """Entry ids with a revert request in the journal. Read paths hide them before the learner applies them."""
+def pending_admin_actions() -> dict[str, str]:
+    """The latest journalled admin action per entry id. Read paths apply them before the learner does."""
     root = get_pack_root()
     if root is None:
-        return frozenset()
+        return {}
     directory = journal_dir(root)
     if directory.is_symlink() or not directory.is_dir():
-        return frozenset()
-    pending: set[str] = set()
+        return {}
+    records: list[tuple[str, str, str]] = []
     budget = MAX_REVERT_JOURNAL_BYTES
-    for path in sorted(directory.glob("reverts-*.jsonl")):
-        if path.is_symlink() or not path.is_file():
+    for path in sorted(directory.glob("admin-*.jsonl")):
+        if path.is_symlink() or not path.is_file() or path.stat().st_mode & 0o022:
             continue
         size = path.stat().st_size
         if size > budget:
-            logger.warning("Revert journal exceeds the read budget; some requests are applied only by the learner")
+            logger.warning("Admin journal exceeds the read budget; some requests are applied only by the learner")
             break
         budget -= size
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -940,10 +1033,24 @@ def pending_revert_ids() -> frozenset[str]:
                 record = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            entry_id = record.get("entry_id") if isinstance(record, dict) else None
-            if record.get("type") == "revert" and isinstance(entry_id, str) and ENTRY_ID_RE.match(entry_id):
-                pending.add(entry_id)
-    return frozenset(pending)
+            if not isinstance(record, dict) or record.get("type") != "admin":
+                continue
+            entry_id, action, at = record.get("entry_id"), record.get("action"), record.get("at")
+            if isinstance(entry_id, str) and ENTRY_ID_RE.match(entry_id) and action in ADMIN_ACTIONS and isinstance(at, str):
+                records.append((at, entry_id, action))
+    return {entry_id: action for _, entry_id, action in sorted(records)}
+
+
+def with_pending_action(entry: dict[str, Any], action: str | None) -> dict[str, Any] | None:
+    if action is None:
+        return entry
+    if action == "revert":
+        return None
+    if action == "pin" and entry["status"] != "reverted":
+        return {**entry, "pinned": True, "status": "active"}
+    if action == "unpin":
+        return {**entry, "pinned": False}
+    return entry
 
 
 def build_digest(store: "LearnedStore", since: datetime, visible) -> dict[str, Any]:
@@ -989,7 +1096,10 @@ def digest_item(change: dict[str, Any]) -> dict[str, Any]:
         )
         if key in change
     }
-    if change["action"] in {"learned", "promoted", "demoted"}:
+    for key in ("pinned", "verified_at", "engagements"):
+        if key in change:
+            item[key] = change[key]
+    if change["action"] in {"learned", "promoted", "demoted", "verified", "contradicted"}:
         item["revert_with"] = {"tool": "revert_learned", "entry_id": change["entry_id"]}
     return item
 
@@ -1003,14 +1113,13 @@ def read_entries(kind: str, *, include_inactive: bool = False) -> list[dict[str,
     if store is None:
         return []
     now = now_utc()
-    entries = store.snapshot(kind).values()
-    pending = pending_revert_ids()
-    return [
-        entry
-        for entry in entries
-        if _is_live(entry, now)
-        and (include_inactive or (entry["status"] == "active" and entry["entry_id"] not in pending))
-    ]
+    pending = pending_admin_actions()
+    served = []
+    for stored in store.snapshot(kind).values():
+        entry = with_pending_action(stored, pending.get(stored["entry_id"]))
+        if entry is not None and _is_live(entry, now) and (include_inactive or entry["status"] == "active"):
+            served.append(entry)
+    return served
 
 
 def find_entry(entry_id: str) -> dict[str, Any] | None:
@@ -1061,61 +1170,14 @@ def learned_absent_fields(dataset: str) -> frozenset[str]:
     return frozenset(entry["fact"]["field"] for entry in _safe_read("absent_fields") if entry["dataset"] == dataset)
 
 
-def verified_notes() -> dict[str, str]:
-    """Map entry ids to the human note under ``<pack>/notes/`` that verifies them.
-
-    A note verifies a fact with a line ``verified: <entry_id>`` or, for field facts,
-    ``verified: <kind> <dataset> <field>``.
-    """
-    root = get_pack_root()
-    if root is None:
-        return {}
-    notes_dir = root / "notes"
-    if not notes_dir.is_dir() or notes_dir.is_symlink():
-        return {}
-    files = []
-    for path in sorted(notes_dir.rglob("*.md"))[:MAX_NOTE_FILES]:
-        if path.is_symlink() or not path.is_file():
-            continue
-        if not path.resolve(strict=False).is_relative_to(notes_dir.resolve()):
-            continue
-        stat = path.stat()
-        if stat.st_size > MAX_NOTE_FILE_BYTES:
-            continue
-        files.append((path, stat.st_mtime_ns, stat.st_size))
-    signature = tuple((str(path), mtime, size) for path, mtime, size in files)
-    cached = _notes_cache.get(str(notes_dir))
-    if cached and cached[0] == signature:
-        return cached[1]
-    index: dict[str, str] = {}
-    for path, _, _ in files:
-        relative = path.relative_to(root).as_posix()
-        if not NOTE_PATH_RE.match(relative) or ".." in relative:
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        for line in text.splitlines():
-            match = _NOTE_LINE_RE.match(line)
-            if not match:
-                continue
-            first, dataset, field_name = match.group("first"), match.group("dataset"), match.group("field")
-            if dataset is None and ENTRY_ID_RE.match(first):
-                index.setdefault(first, relative)
-            elif (
-                dataset is not None
-                and first in SCHEMA_KINDS
-                and IDENTIFIER_RE.match(dataset)
-                and IDENTIFIER_RE.match(field_name)
-            ):
-                index.setdefault(make_entry_id(first, (dataset, field_name)), relative)
-    _notes_cache[str(notes_dir)] = (signature, index)
-    return index
-
-
-def trust_label(entry: dict[str, Any], notes: dict[str, str]) -> dict[str, Any]:
-    note = notes.get(entry["entry_id"])
-    if note:
-        return {"label": "verified", "note": note, "confirmations": entry["confirmations"]}
-    return {"label": "learned", "confirmations": entry["confirmations"]}
+def trust_label(entry: dict[str, Any]) -> dict[str, Any]:
+    """``pinned`` by a human, ``verified`` automatically, otherwise ``learned``."""
+    counts = {
+        "confirmations": entry["confirmations"],
+        "engagements": len(entry.get("verify_engagements") or []),
+    }
+    if entry.get("pinned"):
+        return {"label": "pinned", "pinned_at": entry.get("pinned_at"), **counts}
+    if entry.get("verified_at"):
+        return {"label": "verified", "verified_at": entry["verified_at"], **counts}
+    return {"label": "learned", **counts}

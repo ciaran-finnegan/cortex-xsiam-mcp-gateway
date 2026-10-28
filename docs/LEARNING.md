@@ -9,7 +9,7 @@ human.
 
 | Tier | What changes | Approver | Status |
 | --- | --- | --- | --- |
-| 1. Measured facts | Per-dataset schema as this tenant has it, enum-like fields that only match with `contains`, fields XSIAM reports as unknown, a cost table of observed compute units, tool timings, helper usage. | Automatic, with evidence, confidence, expiry, audit and revert. | Implemented. |
+| 1. Measured facts | Per-dataset schema as this tenant has it, enum-like fields that only match with `contains`, fields XSIAM reports as unknown, a cost table of observed compute units, tool timings, helper usage. | Automatic, including verification, with evidence, confidence, expiry and audit. Humans may pin or revert. | Implemented. |
 | 2. Behaviour | Skill step order, candidate playbooks, validator rewrite rules, thresholds inside human-set bounds. | Replay of recorded engagements against the result cache at zero quota, with automatic rollback when live results underperform. | Foundation only: result cache, `replay_engagement`, weekly replay scores, step-sequence mining and a deploy canary. No behaviour changes automatically yet. |
 | 3. Policy | Dataset and tool allowlists, caps, reserves, enforced modes, tuning bounds, admin groups. | Always a human, through configuration. | Unchanged. |
 
@@ -22,7 +22,7 @@ human.
  +-----------------------+      append only, per process      +---------------------------+
  | gateway (1..n)        | ---------------------------------> | <pack>/learned/journal/   |
  |  observers            |   events-<date>-<host>-<pid>.jsonl | (owner-only, git-ignored) |
- |  get_learned_facts    |   reverts-<date>-<host>-<pid>.jsonl+-------------+-------------+
+ |  get_learned_facts    |   admin-<date>-<host>-<pid>.jsonl  +-------------+-------------+
  |  learning_digest      |                                                  |
  |  revert_learned       | <-- reads fact files ----+                       | folds in
  +-----------------------+                          |                       v
@@ -58,7 +58,7 @@ All times are UTC and are settings.
 
 | Job | When | Setting (default) | What it does |
 | --- | --- | --- | --- |
-| Fold the journal | Every learner run | Timer cadence | Apply observations, revert requests, fact links and tool steps; write the replay cache. Cost samples measured from a drop in remaining quota are held for nightly recalibration. |
+| Fold the journal | Every learner run | Timer cadence | Apply observations, admin requests (revert, pin, unpin), fact links and tool steps; verify facts that meet the thresholds; write the replay cache. Cost samples measured from a drop in remaining quota are held for nightly recalibration. |
 | Engagement close | Within the SLA of an engagement closing, or after it has been idle | `LEARNER_ENGAGEMENT_CLOSE_SLA_MINUTES` (`15`), `LEARNER_ENGAGEMENT_IDLE_HOURS` (`24`) | Derive helper usage, tool durations, gaps between steps and step sequences from the engagement's steps. A close processed later than the SLA is reported as `late`. |
 | Nightly | Daily | `LEARNER_NIGHTLY_UTC` (`13:30`) | Expire entries; recalibrate held cost samples from `xql_query_center_history`. |
 | Weekly | Weekly | `LEARNER_WEEKLY_UTC` (`MON 20:00`) | Write `learned/digests/<date>.json`; score a replay of each engagement recorded in the week; list the most frequent step sequences. |
@@ -147,7 +147,8 @@ can set; no MCP request reaches it.
 Automatic, while `LEARNING_ENABLED=true` and `TENANT_PACK_DIR` is set:
 
 - journalling observations from queries the gateway already runs (no extra quota);
-- folding the journal into facts; confirming, demoting, promoting and expiring them;
+- folding the journal into facts; confirming, demoting, promoting, verifying and
+  expiring them;
 - recalibrating cost samples within the learner's cap and the reserve;
 - writing the weekly digest and replay scores;
 - caching bounded results of a case's tool calls, when
@@ -157,8 +158,8 @@ Automatic, while `LEARNING_ENABLED=true` and `TENANT_PACK_DIR` is set:
 Never automatic:
 
 - any change to policy, allowlists, caps, reserves or admin groups;
-- marking a fact `verified` (only a human note does that);
-- reverting a fact (only a member of `LEARNING_ADMIN_GROUPS` can);
+- pinning, unpinning or reverting a fact (only a member of `LEARNING_ADMIN_GROUPS`
+  can; no human step is needed for verification);
 - changing gateway code, prompts or skills, or calling a model (the gateway and
   the learner call no model);
 - quota spent to learn, beyond the learner's nightly history query under its cap.
@@ -167,7 +168,7 @@ Never automatic:
 
 ```text
 <TENANT_PACK_DIR>/
-  notes/                         human-written notes; may verify facts
+  notes/                         human-written notes (not read by learning)
   learned/
     .gitignore                   journal, lock and learner state stay out of the pack's history
     schema.json                  fact files, written only by the learner
@@ -284,7 +285,18 @@ names are identifiers, not instructions.
   (schema, enum and absent-field facts; default 30) or `LEARNING_COST_TTL_DAYS`
   (cost, timing and helper facts; default 90) is hidden at once and removed by
   the nightly job.
-- **Revert**: a human removes a fact. It becomes a tombstone that is not served
+- **Verification**: automatic. A fact becomes `verified` when it has at least
+  `LEARNING_VERIFY_MIN_CONFIRMATIONS` (5) confirmations across at least
+  `LEARNING_VERIFY_MIN_ENGAGEMENTS` (3) distinct engagements spanning at least
+  `LEARNING_VERIFY_MIN_DAYS` (7) days, with no contradiction in that run. The
+  window opens at the first confirmation after the fact was learned or last
+  contradicted. A single contradiction demotes the fact, clears `verified_at` and
+  resets the engagement count and window, so it starts again as `learned`.
+- **Pin**: a human fixes a fact. A pinned fact never expires and is never demoted
+  or replaced; a contradicting observation is still counted and recorded as
+  `contradicted` so the digest shows it. Unpinning restores normal expiry from
+  that moment.
+- **Revert**: a human retires a fact. It becomes a tombstone that is not served
   and is not re-learned until it expires.
 - **Capacity**: at `LEARNING_MAX_ENTRIES_PER_KIND` new entries are refused rather
   than evicting existing ones, so a flood of new names cannot push out
@@ -301,44 +313,46 @@ the same `get_learned_facts` tool permission and emits a `read` audit event.
 
 Each entry has a trust label:
 
-- `{"label": "learned", "confirmations": N}`;
-- `{"label": "verified", "note": "notes/<file>.md", "confirmations": N}` when a
-  human note verifies it.
+- `{"label": "learned", "confirmations": N, "engagements": M}`;
+- `{"label": "verified", "verified_at": "...", "confirmations": N, "engagements": M}`
+  once the verification thresholds are met;
+- `{"label": "pinned", "pinned_at": "...", "confirmations": N, "engagements": M}`
+  when an administrator pinned it.
 
-A human verifies a fact with a line in any Markdown file under `notes/`:
+`engagements` counts the distinct engagements that confirmed the fact since it was
+learned or last contradicted. Entries store only the first 16 hex characters of
+each hashed engagement key.
 
-```text
-verified: enm-3f1c0a9b2d4e6f8a1b2c
-verified: enum_fields alerts alert_source
-```
-
-The second form names the kind, dataset and field. Note file names must be plain
-paths (letters, digits, `_`, `.`, `-`, `/`); others are ignored.
-
-## Digest and revert
+## Digest, pin and revert
 
 `learning_digest(days=7)` reads what the learner recorded: entries learned,
-promoted, demoted, expired and reverted in the window, newest first, each with
-its fact, evidence query ids, counts and, for learned, promoted and demoted
-entries, a `revert_with: {"tool": "revert_learned", "entry_id": ...}` hint. It
-also counts entries confirmed in the window, lists pending reverts and shows when
-the learner last ran each job. It is filtered by dataset policy and writes
-nothing. The weekly job writes the same digest, unfiltered, to
+promoted, demoted, verified, contradicted while pinned, pinned, unpinned, expired
+and reverted in the window, newest first, each with its fact, evidence query ids,
+counts and, where useful, a `revert_with: {"tool": "revert_learned", "entry_id": ...}`
+hint. It also counts entries confirmed in the window, lists pending admin
+requests and shows when the learner last ran each job. It is filtered by dataset
+policy and writes nothing. The weekly job writes the same digest, unfiltered, to
 `learned/digests/<date>.json` with replay scores and step sequences. The default
 tool policy grants the tool to `Admin` and `Security`.
 
-`revert_learned(entry_id)` is restricted to `LEARNING_ADMIN_GROUPS` (default
-`Admin`) regardless of tool policy, and to datasets the caller's dataset policy
-allows. It appends a revert request to the journal; the fact stops being served
-at once and the learner turns it into a tombstone on its next run. Revert requests
-are accepted while learning is frozen, hidden on read at once, and applied when
-learning resumes.
+`revert_learned(entry_id, action="revert")` is the only human override. It is
+restricted to `LEARNING_ADMIN_GROUPS` (default `Admin`) regardless of tool policy,
+and to datasets the caller's dataset policy allows. `action` is:
+
+- `revert`: retire the fact; it becomes a tombstone;
+- `pin`: keep the fact active, never expiring and never demoted;
+- `unpin`: return a pinned fact to normal expiry and demotion.
+
+The request is appended to the `admin` journal stream. Read paths apply it at
+once (a reverted fact disappears, a pinned fact is served as `pinned`) and the
+learner records it on its next run. Requests are accepted while learning is
+frozen and applied when learning resumes. A reverted fact cannot be pinned.
 
 ## Kill switch
 
 `LEARNING_ENABLED=false` stops both processes: observers journal nothing and the
 learner exits without reading the journal or writing anything. Served facts stay
-readable (expired ones are still hidden) and revert requests are still accepted.
+readable (expired ones are still hidden) and admin requests are still accepted.
 With no `TENANT_PACK_DIR`, observers and the learner do nothing.
 
 ## Audit
@@ -346,14 +360,16 @@ With no `TENANT_PACK_DIR`, observers and the learner do nothing.
 - The learner emits one `cortex_xsiam_mcp.learning` event per run that changes
   anything or runs a scheduled job, before committing. `operation` is the command
   (`tick`, `nightly`, `weekly`); `changes` lists each entry change (`learned`,
-  `confirmed`, `promoted`, `demoted`, `expired`, `reverted`) with fact, evidence
-  and counts; `details` holds the run report, cached results, fact links and the
+  `confirmed`, `promoted`, `demoted`, `verified`, `contradicted`, `pinned`,
+  `unpinned`, `expired`, `reverted`) with fact, evidence, counts, `verified_at`,
+  `pinned` and the engagement count; `details` holds the run report, cached results, fact links and the
   principals whose calls produced the observations. If export fails under
   `AUDIT_LOG_FAIL_CLOSED=true`, nothing is written and the journal is re-read on
   the next run.
 - The learner's history queries emit `cortex_xsiam_mcp.tool_invocation` events
   for the learner principal.
-- The gateway emits `revert_requested` and resource `read` learning events. Its
+- The gateway emits `revert_requested`, `pin_requested`, `unpin_requested` and
+  resource `read` learning events. Its
   tool calls are audited as before; journalling itself is not a change to facts.
 
 See [Audit Logging](AUDIT_LOGGING.md).
@@ -369,7 +385,8 @@ Plain functions; callers import them lazily so the gateway runs without them.
 | Field cache | `learning_observers.observe_field_catalog(ctx, dataset=..., fields=..., query_id=...)` | Call after any field-cache fill with the sample's query id. |
 | Engagement module | `learning_journal.journal_engagement_closed(engagement_key=..., case_id=...)` | Mark an engagement closed so the learner processes it within the close SLA. |
 
-Demoted, reverted, pending-revert and expired entries never reach these hooks.
+Demoted, reverted, pending-revert and expired entries never reach these hooks;
+pinned entries always do.
 
 ## Replay foundation
 
@@ -408,7 +425,10 @@ that it uses `contains` and avoids absent fields.
 | `LEARNING_COST_TTL_DAYS` | `90` | Expiry of cost, timing and helper facts without confirmation. |
 | `LEARNING_MAX_ENTRIES_PER_KIND` | `5000` | Cap per fact kind; new entries beyond it are refused. |
 | `LEARNING_COST_MIN_OBSERVATIONS` | `3` | Observations before `lookup_cost` returns a learned cost. |
-| `LEARNING_ADMIN_GROUPS` | `Admin` | Groups allowed to call `revert_learned`. |
+| `LEARNING_ADMIN_GROUPS` | `Admin` | Groups allowed to revert, pin or unpin facts with `revert_learned`. |
+| `LEARNING_VERIFY_MIN_CONFIRMATIONS` | `5` | Confirmations, since the last contradiction, before a fact is verified. |
+| `LEARNING_VERIFY_MIN_ENGAGEMENTS` | `3` | Distinct engagements those confirmations must come from. |
+| `LEARNING_VERIFY_MIN_DAYS` | `7` | Days the confirmations must span. |
 | `LEARNING_JOURNAL_MAX_BYTES` | `67108864` | Largest journal file per process per day; records beyond it are dropped. |
 | `LEARNING_RESULT_CACHE_ENABLED` | `false` | Cache bounded results of a case's tool calls for replay. |
 | `LEARNING_RESULT_MAX_BYTES` | `262144` | Largest single result kept in the replay cache. |
@@ -428,8 +448,8 @@ that it uses `contains` and avoids absent fields.
 
 - The enum detector is a heuristic: a `contains` match on a value that an
   equality filter missed can also mean the value is a substring of real values.
-  The confirmation count, the contradiction rule and expiry bound the damage; a
-  human note is the stronger signal. Pairing happens inside one gateway process,
+  The confirmation count, the multi-engagement verification rule, the
+  contradiction rule and expiry bound the damage; an administrator can revert. Pairing happens inside one gateway process,
   so the two queries must reach the same replica (sticky MCP sessions do this).
 - `remaining_quota` deltas are approximate when queries overlap or other clients
   share the quota; that is why they wait for nightly recalibration.

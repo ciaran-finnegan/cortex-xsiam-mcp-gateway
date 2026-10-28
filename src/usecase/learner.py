@@ -6,7 +6,7 @@ at a time, and first folds new journal records into the fact files:
 
 - observations are applied, except cost samples measured from the drop in remaining quota,
   which are held for nightly recalibration;
-- revert requests turn entries into tombstones;
+- admin requests revert (tombstone), pin or unpin entries;
 - tool steps of a case are written to the replay cache;
 - an engagement that was closed, or has been idle for LEARNER_ENGAGEMENT_IDLE_HOURS, is
   processed: helper usage, tool durations, gaps between steps and step sequences.
@@ -33,6 +33,7 @@ import math
 import re
 import time
 from collections import Counter
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -49,6 +50,7 @@ from usecase.audit import (
 from usecase.fetcher import get_fetcher
 from usecase.identity import parse_csv, service_principal
 from usecase.learned_store import (
+    ADMIN_ACTIONS,
     ENTRY_ID_RE,
     KINDS,
     LIFECYCLE_ACTIONS,
@@ -60,6 +62,7 @@ from usecase.learned_store import (
     LearnedStore,
     LearnedStoreError,
     Observation,
+    apply_admin_action,
     apply_observation,
     build_digest,
     ensure_private_dir,
@@ -67,7 +70,6 @@ from usecase.learned_store import (
     iso_timestamp,
     journal_dir,
     kind_of_entry_id,
-    revert_in_entries,
     sweep_entries,
     validate_observation,
     write_private_file,
@@ -99,7 +101,7 @@ MAX_JOURNAL_READ_BYTES = 64 * 1024 * 1024
 MAX_SCORED_CASES = 100
 JOURNAL_RETENTION_DAYS = 2
 HISTORY_LOOKBACK = timedelta(days=2)
-_JOURNAL_FILE_RE = re.compile(r"^(events|reverts)-(\d{8})-[0-9a-f]{8}-\d{1,10}\.jsonl$")
+_JOURNAL_FILE_RE = re.compile(r"^(events|admin)-(\d{8})-[0-9a-f]{8}-\d{1,10}\.jsonl$")
 _ENGAGEMENT_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
 _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 _WEEKDAYS = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
@@ -427,6 +429,7 @@ def observation_from(record: dict[str, Any]) -> Observation | None:
             source_class=record["source_class"],
             dataset=record.get("dataset"),
             effect=record.get("effect", "confirm"),
+            engagement=record.get("engagement_key"),
         )
         validate_observation(observation, require_issued=False)
     except (KeyError, TypeError, LearnedFactRefused):
@@ -520,13 +523,14 @@ class Batch:
     def sweep(self) -> int:
         return sum(self._record(kind, sweep_entries(self._kind(kind), self.now)) for kind in KINDS)
 
-    def revert(self, entry_id: str, requested_by: str) -> int:
+    def admin(self, entry_id: str, action: str, requested_by: str) -> int:
         kind = kind_of_entry_id(entry_id)
         if kind is None:
             return 0
-        change = revert_in_entries(
+        change = apply_admin_action(
             self._kind(kind),
             entry_id,
+            action,
             requested_by_sha256=hashlib.sha256(requested_by.encode()).hexdigest(),
             now=self.now,
         )
@@ -637,11 +641,17 @@ def _fold(batch: Batch, state: dict[str, Any], records: list[dict[str, Any]]) ->
     counts = Counter()
     for record in records:
         kind = record.get("type")
-        if record["_stream"] == "reverts":
-            entry_id = record.get("entry_id")
+        if record["_stream"] == "admin":
+            entry_id, action = record.get("entry_id"), record.get("action")
             requested_by = _principal_id(record)
-            if kind == "revert" and isinstance(entry_id, str) and ENTRY_ID_RE.match(entry_id) and requested_by:
-                counts["reverts"] += batch.revert(entry_id, requested_by)
+            if (
+                kind == "admin"
+                and action in ADMIN_ACTIONS
+                and isinstance(entry_id, str)
+                and ENTRY_ID_RE.match(entry_id)
+                and requested_by
+            ):
+                counts["admin_actions"] += batch.admin(entry_id, action, requested_by)
             else:
                 counts["invalid"] += 1
         elif kind == "observation":
@@ -662,6 +672,7 @@ def _fold(batch: Batch, state: dict[str, Any], records: list[dict[str, Any]]) ->
                         "window_bucket": observation.fact["window_bucket"],
                         "selectivity": observation.fact["selectivity"],
                         "units": observation.fact["units"],
+                        "engagement": observation.engagement,
                     }
                 )
                 counts["held_cost_samples"] += 1
@@ -771,6 +782,7 @@ def _process_engagement(batch: Batch, state: dict[str, Any], key: str) -> int:
         previous = step
     applied = 0
     for observation in observations:
+        observation = replace(observation, engagement=key)
         try:
             validate_observation(observation, require_issued=False)
         except LearnedFactRefused:
@@ -823,6 +835,7 @@ def _apply_held_sample(batch: Batch, sample: dict[str, Any], measured: float | N
         "query_metadata",
         sample["dataset"],
         effect="measure",
+        engagement=sample.get("engagement"),
     )
     try:
         validate_observation(observation, require_issued=False)
