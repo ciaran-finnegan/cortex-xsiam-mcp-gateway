@@ -30,6 +30,7 @@ from typing import Any
 from config.config import get_config
 from entities.exceptions import PAPIClientError
 from entities.MCPContext import MCPContext
+from usecase.cost_guard import CostGuardRefusal
 from usecase.credential_broker import CredentialBrokerError, select_xsiam_credentials
 from usecase.dataset_query import QueryTimeframe
 from usecase.fetcher import get_fetcher
@@ -556,12 +557,15 @@ async def _check_fields(
     """Check field names in the stages after the source stage against the discovered schema."""
     discovered, source = await _dataset_fields(ctx, scope, dataset)
     if not discovered:
-        reason = (
-            f"Field discovery found no rows in dataset {dataset} over the last {_days(FIELD_DISCOVERY_WINDOW_MS)} days, "
-            "so field names were not checked. The dataset may not be receiving data."
-            if source != "unavailable"
-            else "Field discovery is unavailable, so field names were not checked."
-        )
+        if source == "cost_guard":
+            reason = "The cost guard refused field discovery for this dataset, so field names were not checked."
+        elif source == "unavailable":
+            reason = "Field discovery is unavailable, so field names were not checked."
+        else:
+            reason = (
+                f"Field discovery found no rows in dataset {dataset} over the last {_days(FIELD_DISCOVERY_WINDOW_MS)} days, "
+                "so field names were not checked. The dataset may not be receiving data."
+            )
         problems.append(Problem("field_check_skipped", reason, severity="warning"))
         return {"status": "skipped", "source": source}
 
@@ -708,7 +712,11 @@ async def _dataset_fields(ctx, scope: str, dataset: str) -> tuple[frozenset[str]
             FIELD_DISCOVERY_SAMPLE,
             timeframe={"from": now_ms - FIELD_DISCOVERY_WINDOW_MS, "to": now_ms},
             timeout_seconds=PROBE_TIMEOUT_SECONDS,
+            tool="validate_xql",
         )
+    except CostGuardRefusal:
+        # Not cached: a later mode with a higher approval threshold may allow discovery.
+        return frozenset(), "cost_guard"
     except (PAPIClientError, CredentialBrokerError, PermissionError, ValueError):
         response = {"error": "unavailable"}
     if response.get("error"):
@@ -828,7 +836,16 @@ async def _run_probe(
             1,
             timeframe=window,
             timeout_seconds=PROBE_TIMEOUT_SECONDS,
+            tool="validate_xql",
         )
+    except CostGuardRefusal as e:
+        return {
+            "ran": False,
+            "reason": "cost_guard",
+            "message": e.payload["message"],
+            "rule": e.payload["rule"],
+            "estimate": e.payload["estimate"],
+        }
     except PermissionError as e:
         return {"ran": False, "reason": "refused", "message": str(e)[:500]}
     except (PAPIClientError, CredentialBrokerError) as e:

@@ -8,6 +8,7 @@ from config.config import get_config
 from entities.MCPContext import MCPContext
 from usecase import xql_executor, xql_validation
 from usecase.builtin_components import validation
+from usecase.cost_guard import CostGuardRefusal
 from usecase.xql_docs import CORTEX_DOCS_BASE_URL
 
 TENANT_DATASETS = ["alerts", "sample_auth_logs", "sample_net_flows", "restricted_hr_logs", "sample_auth_logx"]
@@ -15,6 +16,11 @@ AUTH_FIELDS = ["_time", "user_name", "src_ip", "dst_ip", "action", "event_catego
 FROM_MS = 1_700_000_000_000
 TO_MS = FROM_MS + 6 * 3_600_000
 TIMEFRAME = {"from_ms": FROM_MS, "to_ms": TO_MS}
+REFUSAL = {
+    "message": "Query not allowed by the cost guard (approval_threshold): estimate above threshold.",
+    "rule": "approval_threshold",
+    "estimate": {"class": "medium", "low_units": 0.5, "high_units": 3.6, "score": 3, "factors": {}},
+}
 
 
 class FakeXSIAM:
@@ -315,6 +321,23 @@ async def test_failed_or_empty_discovery_is_cached_and_skips_field_checks(xsiam)
     assert "not be receiving data" in _problem(idle, "field_check_skipped")["message"]
 
 
+@pytest.mark.asyncio
+async def test_discovery_refused_by_the_cost_guard_is_reported_and_not_cached(xsiam, monkeypatch):
+    async def refuse(ctx, query, result_limit, **kwargs):
+        xsiam.queries.append({"query": query, "limit": result_limit, **kwargs})
+        raise CostGuardRefusal(REFUSAL)
+
+    monkeypatch.setattr(xql_validation, "run_xql_query", refuse)
+    first = await _validate("dataset = sample_auth_logs | fields made_up | limit 5")
+    second = await _validate("dataset = sample_auth_logs | fields made_up | limit 5")
+
+    assert first["field_check"] == {"status": "skipped", "source": "cost_guard"}
+    assert "cost guard refused field discovery" in _problem(first, "field_check_skipped")["message"]
+    assert second["field_check"]["source"] == "cost_guard"
+    assert len(xsiam.discovery_queries) == 2
+    assert {query["tool"] for query in xsiam.discovery_queries} == {"validate_xql"}
+
+
 def test_cache_scope_separates_tenants():
     first = xql_validation._cache_scope(MCPContext(auth_headers={}, groups=("Security",), tenant_id="tenant-a"))
     second = xql_validation._cache_scope(MCPContext(auth_headers={}, groups=("Security",), tenant_id="tenant-b"))
@@ -509,7 +532,21 @@ async def test_probe_runs_the_query_over_one_hour_with_limit_one(xsiam):
     [probe] = xsiam.probe_queries
     assert probe["query"] == "dataset = sample_auth_logs | fields user_name | limit 1"
     assert probe["timeframe"] == {"from": TO_MS - 3_600_000, "to": TO_MS}
+    assert probe["tool"] == "validate_xql"
     assert '"a"' not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_probe_refused_by_the_cost_guard_returns_the_rule_and_estimate(xsiam, monkeypatch):
+    async def routed(ctx, query, result_limit, **kwargs):
+        if result_limit == 1:
+            raise CostGuardRefusal(REFUSAL)
+        return await xsiam.run_xql_query(ctx, query, result_limit, **kwargs)
+
+    monkeypatch.setattr(xql_validation, "run_xql_query", routed)
+    result = await _validate("dataset = sample_auth_logs | fields user_name | limit 5", probe=True)
+
+    assert result["probe"] == {"ran": False, "reason": "cost_guard", **REFUSAL}
 
 
 @pytest.mark.asyncio

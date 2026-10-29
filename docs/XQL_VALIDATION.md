@@ -56,7 +56,7 @@ and never by a model. Field-name suggestions ("Did you mean") are not applied.
 | `dataset_not_allowed` | error | Dataset policy denies a referenced dataset, including join subqueries and `union`. | none |
 | `unknown_dataset` | error | Allowed dataset is not in the tenant's `get_datasets` list. Suggestions come from allowed datasets only. | none |
 | `unknown_field` | error | Field in `filter`, `fields`, `alter`, `comp ... by`, `sort` or `dedup` is not in the discovered schema. | none |
-| `field_check_skipped` | warning | Discovery unavailable or found no rows, or a stage such as `join`, `union`, `windowcomp` or `iploc` reshapes the schema; checking stops there. | none |
+| `field_check_skipped` | warning | Discovery unavailable, refused by the cost guard, or found no rows, or a stage such as `join`, `union`, `windowcomp` or `iploc` reshapes the schema; checking stops there. | none |
 | `enum_equality` | error | `=`, `==` or `!=` with a string on an enum-backed field. | `f contains "v"`, `not (f contains "v")` |
 | `contains_on_address` | error | `contains` or `not contains` with an IPv4 or IPv6 literal. | `f in ("v")`, `f not in ("v")` |
 | `timeframe_missing` | error | No timeframe. | none |
@@ -98,13 +98,19 @@ The caller's query never runs unless `probe` is true.
 - Field discovery runs `dataset = <name> | limit 25` over the last seven days, at most
   once per tenant, credential profile and dataset per hour. Failures and empty
   samples are cached too, so a failing dataset is not retried within the hour.
+  Discovery goes through the cost guard like any other query. A heavy-tier dataset
+  such as `xdr_data` can be rated above the mode's approval threshold; the guard then
+  refuses it, `field_check` is `{"status": "skipped", "source": "cost_guard"}`, and the
+  refusal is not cached, so a mode with a higher threshold can still discover fields.
 - The probe runs the comment-stripped query with its terminal limit replaced by
   `| limit 1` over one hour: the last hour of an absolute timeframe, or the last hour
-  (or less) of a relative one. It goes through the normal executor, so the cost guard
-  applies when installed. Expected cost is about a thousandth of a unit.
+  (or less) of a relative one. It goes through the cost guard. A refused probe returns
+  `{"ran": false, "reason": "cost_guard"}` with the rule and the estimate. Expected cost
+  of a probe that runs is about a thousandth of a unit.
 
-When `src/usecase/cost_guard.py` is installed, `estimate` holds its estimate for the
-corrected (or original) query and timeframe. Otherwise it is `null`.
+Both calls reach the cost guard as tool `validate_xql`. `estimate` holds the cost
+guard's estimate for the corrected (or original) query and timeframe, or `null` when no
+valid timeframe was given.
 
 ### Access
 

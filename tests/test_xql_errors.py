@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from fake_context import fake_context
 from fastmcp.tools.tool import ToolResult
 
 from config.config import get_config
@@ -32,12 +33,7 @@ class SequenceFetcher:
 
 
 def _ctx(groups=("Security",)):
-    return SimpleNamespace(
-        request_context=SimpleNamespace(
-            lifespan_context=MCPContext(auth_headers={}, principal_id="analyst@example.test", groups=groups)
-        ),
-        get_state=lambda key: None,
-    )
+    return fake_context(groups=groups)
 
 
 def _use_fetcher(monkeypatch, responses):

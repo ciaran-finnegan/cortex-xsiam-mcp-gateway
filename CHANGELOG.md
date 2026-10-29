@@ -48,8 +48,9 @@ This project follows a lightweight changelog format until stable releases begin.
   policy and existence, field names against the discovered schema, `=` on
   enum-backed fields, `contains` on IP address literals, and the timeframe.
   Returns problems with docs links and a `corrected_query` built only by
-  deterministic rewrites, a cost estimate when the cost guard is installed, and
-  an optional one-hour `| limit 1` probe for principals with the raw-XQL grants.
+  deterministic rewrites, the cost guard's estimate, and an optional one-hour
+  `| limit 1` probe for principals with the raw-XQL grants. Field discovery and
+  the probe go through the cost guard; a refusal is reported, not cached.
 - Classified XQL failures: known XSIAM validation messages now return
   `error: "xql_validation"` with a class (`unknown_field`, `unknown_dataset`,
   `syntax_error`, `type_mismatch`, `timeframe_invalid`), a fixed message, and a
