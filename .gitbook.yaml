@@ -1,0 +1,13 @@
+# GitBook Git Sync configuration for this repository.
+# Design and rationale: docs/GITBOOK_SITE_DESIGN.md
+#
+# root is the repository root so the site can use README.md as its landing
+# page and include SECURITY.md, CONTRIBUTING.md, GOVERNANCE.md and CHANGELOG.md.
+# Only files listed in docs/SUMMARY.md are published. Paths below are relative
+# to root. Links inside docs/SUMMARY.md are written relative to docs/ (not yet
+# confirmed on a first import; see the design doc for the fallback).
+root: ./
+
+structure:
+  readme: README.md
+  summary: docs/SUMMARY.md
