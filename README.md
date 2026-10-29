@@ -37,6 +37,7 @@ check dataset policy.
 | Tool | Purpose |
 | --- | --- |
 | `get_log_search_guidance`, `get_dataset_query_guidance`, `get_xql_help` | Agent workflow, rules and XQL recipes. |
+| `set_engagement`, `get_engagement`, `record_fact`, `get_engagement_log` | Session mode (`incident_response`, `threat_hunt`, `operations`), scope and findings tied to queries the session ran. A mode can only narrow access. |
 | `list_log_datasets` | Datasets the caller is allowed to query. |
 | `discover_log_fields` | Field names and types from a small sample of one dataset, without values. |
 | `query_dataset` | Typed row or aggregate query on one dataset, compiled to XQL by the gateway. |
@@ -65,8 +66,9 @@ signed gateway headers gets a 401 before it reaches MCP. See
 
 ## Agent workflow
 
-The agent calls `get_dataset_query_guidance`, finds a dataset and its fields
-with `list_log_datasets` and `discover_log_fields`, then calls `query_dataset`.
+The agent sets the mode and scope with `set_engagement`, calls
+`get_dataset_query_guidance`, finds a dataset and its fields with
+`list_log_datasets` and `discover_log_fields`, then calls `query_dataset`.
 It calls `continue_dataset_query` only when the user wants another page. The
 gateway does not accept natural-language queries. A typed plan looks like this.
 
@@ -86,12 +88,37 @@ The gateway checks the caller can query `xdr_data`, compiles the plan from
 allowlisted operators and functions, and returns at most 10 groups. `dry_run`
 returns the XQL instead. See [agent dataset queries](docs/AGENT_LOG_SEARCH.md).
 
+## Engagement modes
+
+Before its first query the agent records what kind of work the session is. It
+infers the mode when the request makes it obvious, and otherwise asks the user
+one short question.
+
+| Mode | Request | Defaults |
+| --- | --- | --- |
+| `incident_response` | An indicator list, an alert storm, "are we talking to X" | 24-hour window, rows |
+| `threat_hunt` | "Look for", "hunt", a hypothesis | 7-day window, aggregates |
+| `operations` | "Why is X failing, blocked or slow", a firewall or integration diagnosis | 1-hour window, aggregates, no raw XQL |
+
+Until a mode is set the session runs as `unset` with the `operations` defaults,
+and each result ends with a one-line reminder. `set_engagement` stores the case
+id, indicators, internal ranges, front ends, servers and window once, so the
+agent does not repeat them in every query. Scope values must be IPs, CIDRs,
+hostnames or file hashes. `record_fact` stores a finding with the `query_id`
+that supports it. `get_engagement_log` returns the facts and every query the
+session ran, with dataset, window, rows, units and duration.
+
+A mode can only hide tools that groups grant. It never adds a tool or dataset.
+Session state is tied to the caller as well as the MCP session. Set
+`ENGAGEMENT_STORE_DIR` to keep cases across sessions. It must be outside any git
+working tree. See [engagement modes](docs/ENGAGEMENT_MODES.md).
+
 ## Access control
 
 | Check | Setting | Default |
 | --- | --- | --- |
 | Caller identity, HTTP | `MCP_IDENTITY_AUTH_MODE` (`none`, `entra`, `gateway`, `entra_or_gateway`) | `none` |
-| Tool access | `TOOL_ACCESS_POLICY` | Every tool for `Admin` and `Security`. Query, discovery, quota, case and issue tools for `SOC` and `Tier1`. |
+| Tool access | `TOOL_ACCESS_POLICY` | Every tool for `Admin` and `Security`. Query, discovery, quota, case, issue and engagement tools for `SOC` and `Tier1`. |
 | Dataset access | `LOG_SEARCH_DATASET_POLICY` | `{"Security": ["*"], "SOC": ["xdr_data"], "Tier1": ["xdr_data"]}` |
 | Raw XQL | `RAW_XQL_PRIVILEGED_GROUPS` and a `*` dataset grant | `Security,Admin` |
 | XSIAM API key | `XSIAM_CREDENTIAL_BROKER_ENABLED`, `XSIAM_CREDENTIAL_PROFILES` | Off, one service key for every caller |
@@ -102,8 +129,9 @@ single-use gateway headers.
 With identity mode `none`, the only mode stdio supports, callers get
 `LOG_SEARCH_DEFAULT_GROUPS`. It is empty by default, so every call is denied
 until it is set. HTTP will not start with `none` unless
-`MCP_ALLOW_UNAUTHENTICATED_HTTP=true`. Tool policy applies to calls, and
-`tools/list` still shows every tool.
+`MCP_ALLOW_UNAUTHENTICATED_HTTP=true`. `tools/list` shows only the tools the
+caller's groups and current mode allow, and hidden tools are denied on call.
+The `operations` and `unset` modes hide `execute_xql_query`.
 
 Raw XQL needs the `*` grant because the gateway does not parse it for datasets.
 It must end in `| limit N`, which is clamped to the server row limit.
@@ -111,15 +139,16 @@ It must end in `| limit N`, which is clamped to the server row limit.
 Typed queries are capped on rows, fields, filters, cell length, response size
 and timeframe, and at most four XQL queries run at once per process.
 `query_dataset` marks its results as untrusted data. Continuation cursors are
-encrypted, expire, and only work for the same principal, tenant, groups and
-dataset policy. See the [security model](docs/SECURITY_MODEL.md) and
+encrypted, expire, and only work for the same principal, tenant, groups,
+dataset policy, mode and case. See the [security model](docs/SECURITY_MODEL.md) and
 [RBAC review](docs/RBAC_AND_LOG_SEARCH_REVIEW.md).
 
 ## Audit logging
 
 Every tool call, denied ones included, writes JSON start and end events to the
 `cortex_xsiam_mcp.audit` logger with the principal, groups, tool, outcome,
-duration, argument names and hash, dataset and XSIAM credential profile. Query
+duration, argument names and hash, dataset, XSIAM credential profile and
+engagement mode, case id and source. Query
 text is kept as a SHA-256 hash unless `AUDIT_LOG_INCLUDE_QUERY_TEXT=true`, and
 error messages are always hashed.
 
@@ -176,8 +205,8 @@ An AI gateway such as Portkey or LiteLLM is optional. In `gateway` mode it has
 to send identity headers signed with `MCP_GATEWAY_SHARED_SECRET`, and the
 server should only be reachable from it.
 
-Query concurrency and the gateway nonce cache are per process, so they do not
-span replicas. See [enterprise deployment](docs/ENTERPRISE_DEPLOYMENT.md) and
+Query concurrency, the gateway nonce cache and the `ENGAGEMENT_STORE_DIR` case
+store are per process, so they do not span replicas. See [enterprise deployment](docs/ENTERPRISE_DEPLOYMENT.md) and
 [configuration](docs/CONFIGURATION.md).
 
 ## Docker

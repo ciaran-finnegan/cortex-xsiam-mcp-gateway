@@ -51,10 +51,12 @@ class Settings(BaseSettings):
             '{"Admin":["*"],"Security":["*"],'
             '"SOC":["get_log_search_guidance","list_log_datasets","discover_log_fields","search_logs",'
             '"get_dataset_query_guidance","get_xql_help","query_dataset","continue_dataset_query",'
-            '"get_xql_query_quota","get_cases","get_issues"],'
+            '"get_xql_query_quota","get_cases","get_issues",'
+            '"set_engagement","get_engagement","record_fact","get_engagement_log"],'
             '"Tier1":["get_log_search_guidance","list_log_datasets","discover_log_fields","search_logs",'
             '"get_dataset_query_guidance","get_xql_help","query_dataset","continue_dataset_query",'
-            '"get_xql_query_quota","get_cases","get_issues"]}'
+            '"get_xql_query_quota","get_cases","get_issues",'
+            '"set_engagement","get_engagement","record_fact","get_engagement_log"]}'
         ),
         validation_alias="TOOL_ACCESS_POLICY",
     )
@@ -164,6 +166,16 @@ class Settings(BaseSettings):
     xql_max_query_chars: int = Field(
         32768,
         validation_alias="XQL_MAX_QUERY_CHARS",
+    )
+
+    # --- Engagement Settings ---
+    engagement_store_dir: str = Field("", validation_alias="ENGAGEMENT_STORE_DIR")
+    engagement_mode_policy: str = Field("", validation_alias="ENGAGEMENT_MODE_POLICY")
+    engagement_max_scope_items: int = Field(
+        100,
+        ge=1,
+        le=1000,
+        validation_alias="ENGAGEMENT_MAX_SCOPE_ITEMS",
     )
 
     # --- Audit Settings ---

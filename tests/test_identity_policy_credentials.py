@@ -1,8 +1,8 @@
 import json
 import time
-from types import SimpleNamespace
 
 import pytest
+from fake_context import fake_context
 from joserfc import jwt
 from joserfc.jwk import OctKey
 from starlette.datastructures import Headers
@@ -221,11 +221,6 @@ def test_credential_broker_fails_closed_when_enabled_without_matching_profile(mo
 async def test_fetcher_records_selected_credential_profile_for_audit(monkeypatch):
     from config.config import get_config
 
-    state = {}
-
-    def set_state(key, value):
-        state[key] = value
-
     monkeypatch.setattr(get_config(), "papi_url_env_key", "https://api-unit-test.example")
     monkeypatch.setattr(get_config(), "identity_auth_mode", "none")
     monkeypatch.setattr(get_config(), "xsiam_credential_broker_enabled", True)
@@ -245,25 +240,21 @@ async def test_fetcher_records_selected_credential_profile_for_audit(monkeypatch
     monkeypatch.setenv("UNIT_TEST_TIER1_XSIAM_KEY", "profile-key")
     monkeypatch.setenv("UNIT_TEST_TIER1_XSIAM_KEY_ID", "profile-key-id")
 
-    ctx = SimpleNamespace(
-        request_context=SimpleNamespace(
-            lifespan_context=MCPContext(
-                auth_headers={"Authorization": "default-key", "X-XDR-AUTH-ID": "default-id"},
-                principal_id="tier1@example.test",
-                groups=("Tier1",),
-            )
-        ),
-        set_state=set_state,
+    ctx = fake_context(
+        principal_id="tier1@example.test",
+        groups=("Tier1",),
+        auth_headers={"Authorization": "default-key", "X-XDR-AUTH-ID": "default-id"},
     )
 
     fetcher = await get_fetcher(ctx)
 
     assert fetcher.api_key == "profile-key"
     assert fetcher.api_key_id == "profile-key-id"
-    assert state["xsiam_credential_profile"] == {
+    assert await ctx.get_state("xsiam_credential_profile") == {
         "profile_name": "tier1-readonly",
         "matched_group": "Tier1",
     }
+    assert await ctx.new_request().get_state("xsiam_credential_profile") is None
 
 
 @pytest.mark.asyncio

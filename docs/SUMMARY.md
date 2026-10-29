@@ -20,6 +20,7 @@
 ## Agents And Tools
 
 * [Agent Dataset Queries](AGENT_LOG_SEARCH.md)
+* [Engagement Modes](ENGAGEMENT_MODES.md)
 * [Agent And XSIAM Testing](CLAUDE_CODE_LOG_SEARCH_TESTING.md)
 
 ## Project

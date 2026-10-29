@@ -1,7 +1,7 @@
 import json
-from types import SimpleNamespace
 
 import pytest
+from fake_context import fake_context
 
 from config.config import get_config
 from entities.MCPContext import MCPContext
@@ -32,18 +32,7 @@ def _principal(principal_id="analyst@example.test", groups=("DataReader",)):
 
 
 def _ctx(groups=("DataReader",)):
-    state = {}
-    return SimpleNamespace(
-        request_context=SimpleNamespace(
-            lifespan_context=MCPContext(
-                auth_headers={},
-                principal_id="analyst@example.test",
-                groups=groups,
-            )
-        ),
-        set_state=lambda key, value: state.__setitem__(key, value),
-        get_state=lambda key: state.get(key),
-    )
+    return fake_context(groups=groups)
 
 
 def test_row_query_requires_explicit_fields():

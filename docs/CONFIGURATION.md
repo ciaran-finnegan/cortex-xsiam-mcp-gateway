@@ -108,13 +108,29 @@ export TOOL_ACCESS_POLICY='{
     "search_logs",
     "get_xql_query_quota",
     "get_cases",
-    "get_issues"
+    "get_issues",
+    "set_engagement",
+    "get_engagement",
+    "record_fact",
+    "get_engagement_log"
   ]
 }'
 ```
 
 Tool policy is enforced for every MCP tool invocation. Dataset policy still
-runs inside discovery and query tools.
+runs inside discovery and query tools. Tools a principal cannot invoke are not
+advertised in `tools/list`.
+
+## Engagement Modes
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `ENGAGEMENT_STORE_DIR` | empty | Optional absolute directory for principal-scoped case files. Must be outside the repository and any git working tree; startup fails otherwise. Empty keeps engagements in session state only. |
+| `ENGAGEMENT_MODE_POLICY` | empty | JSON per-mode overrides of default window, approval threshold, session budget, reserve units, default result shape, and hidden tools. Empty uses the built-in defaults. `unset` inherits the `operations` row. |
+| `ENGAGEMENT_MAX_SCOPE_ITEMS` | `100` | Maximum entries per scope list in `set_engagement`; valid range 1-1000. |
+
+Modes only narrow what `TOOL_ACCESS_POLICY` grants. See
+[Engagement Modes](ENGAGEMENT_MODES.md).
 
 ## Structured Dataset Query Limits
 
@@ -133,9 +149,10 @@ runs inside discovery and query tools.
 | `XQL_MAX_CONCURRENT_QUERIES` | `4` | Process-level XQL concurrency, hard-capped at XSIAM's four-query limit. |
 | `XQL_MAX_QUERY_CHARS` | `32768` | Maximum compiled or privileged raw XQL length. |
 
-Cursor state is bound to principal, tenant, auth source, groups, query plan, and
-the current dataset-policy hash. A policy or identity change invalidates the
-cursor, and policy is checked again on continuation.
+Cursor state is bound to principal, tenant, auth source, groups, query plan,
+engagement mode, case id, and the current dataset-policy hash. A policy,
+identity, or engagement change invalidates the cursor, and policy is checked
+again on continuation.
 
 ## XSIAM Credential Broker
 
@@ -192,8 +209,9 @@ MCP_IDENTITY_AUTH_MODE=entra
 ENTRA_TENANT_ID=replace-with-tenant-id
 ENTRA_AUDIENCE=api://your-mcp-app-registration
 LOG_SEARCH_DATASET_POLICY={"Security":["*"],"Tier1":["xdr_data"]}
-TOOL_ACCESS_POLICY={"Security":["*"],"Tier1":["get_dataset_query_guidance","list_log_datasets","discover_log_fields","query_dataset","continue_dataset_query"]}
+TOOL_ACCESS_POLICY={"Security":["*"],"Tier1":["get_dataset_query_guidance","list_log_datasets","discover_log_fields","query_dataset","continue_dataset_query","set_engagement","get_engagement","record_fact","get_engagement_log"]}
 RAW_XQL_PRIVILEGED_GROUPS=Security,Admin
+ENGAGEMENT_STORE_DIR=/var/lib/cortex-mcp/engagements
 DATASET_QUERY_CURSOR_SECRET=replace-with-a-long-random-secret
 AUDIT_LOG_ENABLED=true
 AUDIT_LOG_XSIAM_HTTP_COLLECTOR_ENABLED=false

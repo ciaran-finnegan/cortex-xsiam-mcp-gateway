@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from config.config import get_config
 from entities.MCPContext import MCPContext
+from usecase.engagement import hidden_tools_for_mode
 from usecase.log_policy import ToolAuthorizationError
 
 ALL_TOOLS = "*"
@@ -42,6 +43,24 @@ def get_tool_policy() -> dict[str, tuple[str, ...]]:
 
 
 def authorize_tool(context: MCPContext, tool_name: str) -> ToolPolicyDecision:
+    """Allow a tool only when group policy grants it and the engagement mode does not hide it.
+
+    The mode is applied strictly after the group decision, so it can remove a tool
+    from what the groups grant but can never add one.
+    """
+    decision = _authorize_tool_by_groups(context, tool_name)
+    if decision.allowed and tool_name in hidden_tools_for_mode(context.mode):
+        return ToolPolicyDecision(
+            allowed=False,
+            principal_id=context.principal_id,
+            tool_name=tool_name,
+            matched_group=decision.matched_group,
+            reason=f"tool is hidden in engagement mode {context.mode}",
+        )
+    return decision
+
+
+def _authorize_tool_by_groups(context: MCPContext, tool_name: str) -> ToolPolicyDecision:
     policy = get_tool_policy()
 
     for group in context.groups:
@@ -71,6 +90,11 @@ def authorize_tool(context: MCPContext, tool_name: str) -> ToolPolicyDecision:
 def ensure_tool_authorized(context: MCPContext, tool_name: str) -> ToolPolicyDecision:
     decision = authorize_tool(context, tool_name)
     if not decision.allowed:
+        if decision.matched_group is not None:
+            raise ToolAuthorizationError(
+                f"Tool {tool_name} is not allowed in engagement mode {context.mode}; "
+                "call set_engagement with a mode whose policy exposes it"
+            )
         raise ToolAuthorizationError(
             f"Principal {decision.principal_id} is not allowed to invoke tool {tool_name}"
         )

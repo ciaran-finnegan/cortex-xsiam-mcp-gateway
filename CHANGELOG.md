@@ -4,6 +4,32 @@ This project follows a lightweight changelog format until stable releases begin.
 
 ## Unreleased
 
+- Added engagement modes (`incident_response`, `threat_hunt`, `operations`,
+  `unset`) with `set_engagement`, `get_engagement`, `record_fact`, and
+  `get_engagement_log`. Scope lists are validated and capped, state is bound to
+  the session and principal, and `ENGAGEMENT_STORE_DIR` adds principal-scoped
+  case files that are refused inside a git working tree.
+- Modes only narrow access: tools hidden by the mode are denied on call and,
+  with group-denied tools, removed from `tools/list`.
+- Added mode and case id to `MCPContext`, every audit event, and continuation
+  cursors (cursor version 2).
+- Added the `ENGAGEMENT_MODE_POLICY` per-mode defaults table and
+  `get_mode_policy()`, `current_mode()`, and `get_session_spend()` hooks for the
+  XQL cost guard.
+- Every XQL query now records dataset, window, rows, units, duration, and tool
+  in the engagement log.
+- Added server `instructions` and mode-specific `get_dataset_query_guidance`.
+  The agent infers the mode from the opening request or asks the user one short
+  question; `set_engagement` takes a `source` (`human`, `agent_inferred`,
+  `header`), and `get_engagement` returns `confirm_with_user` while the mode is
+  agent-inferred. `unset` inherits the `operations` defaults, and results carry
+  a one-line nudge until an engagement is set. `source` is audited with mode
+  and case id.
+- Fixed un-awaited FastMCP `ctx.set_state` / `ctx.get_state` calls, so the
+  selected credential profile now reaches the audit result; it is now
+  request-scoped. Tests use a real FastMCP context or an async fake pinned to
+  the FastMCP state API.
+
 ## 0.2.0-alpha.1 - 2026-07-10
 
 - Added `query_dataset` with typed row projection, filters, aggregates, top-N,
