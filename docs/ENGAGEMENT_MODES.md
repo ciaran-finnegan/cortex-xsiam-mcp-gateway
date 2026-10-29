@@ -155,8 +155,12 @@ recording failure is logged and ignored.
 
 ## Cost Guard Hooks
 
-The cost guard in `run_xql_query` makes spend decisions. This module supplies
-its inputs and makes none of them:
+The cost guard in `run_xql_query` makes spend decisions (see the cost guard
+section of `CONFIGURATION.md`). It reads the current mode's
+`approval_threshold_units` and `reserve_units`, the session spend, and the
+engagement's `servers` list for its host-filter alternative. `session_budget_units`
+is not enforced yet. This module supplies those inputs and makes none of the
+decisions:
 
 | Hook | Returns |
 | --- | --- |

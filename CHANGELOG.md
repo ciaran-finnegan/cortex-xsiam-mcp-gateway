@@ -29,6 +29,21 @@ This project follows a lightweight changelog format until stable releases begin.
   selected credential profile now reaches the audit result; it is now
   request-scoped. Tests use a real FastMCP context or an async fake pinned to
   the FastMCP state API.
+- Added the XQL cost guard (`src/usecase/cost_guard.py`) on every query path:
+  light-to-extreme estimates with configurable unit bands and dataset tiers,
+  approval-threshold, reserve, and long-running-slot refusals with structured
+  alternatives, approval by MCP elicitation or a hashed analyst `approval`
+  argument with a per-principal daily cap, `cortex_xsiam_mcp.cost_guard` audit
+  events, a `quota` block on every result, and a per-principal result cache.
+  The approval threshold and reserve come from the engagement mode policy, and
+  `session_spent_units` from the engagement session log. Cache, approval
+  totals, quota readings, and slot timings are per replica.
+- Every query tool now requires a `timeframe`, normalised through
+  `QueryTimeframe`; `config timeframe` inside raw XQL is bounded by the same
+  maximum. Query timeouts are capped at 120 s, or 300 s with approval.
+- Security fix: raw XQL comments are stripped before the terminal-limit check,
+  so a `// | limit N` comment can no longer satisfy it, and identifier
+  validation no longer accepts a trailing newline.
 
 ## 0.2.0-alpha.1 - 2026-07-10
 

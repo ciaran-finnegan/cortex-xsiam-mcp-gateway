@@ -153,6 +153,34 @@ def create_tool_audit_event(
     return event
 
 
+def create_cost_guard_audit_event(
+    *,
+    decision: str,
+    outcome: str,
+    principal: MCPContext,
+    tool: str | None,
+    details: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a cost guard decision event. Callers pass hashes and units only, never query or approval text."""
+    config = get_config()
+    return {
+        "schema_version": "1.0",
+        "event_type": "cortex_xsiam_mcp.cost_guard",
+        "event_id": str(uuid.uuid4()),
+        "timestamp": datetime.now(UTC).isoformat(),
+        "service": "cortex-xsiam-mcp-gateway",
+        "decision": decision,
+        "outcome": outcome,
+        "tool": tool,
+        "transport": config.mcp_transport,
+        "principal": {
+            "id": principal.principal_id,
+            "groups": list(principal.groups),
+        },
+        "cost_guard": {key: value for key, value in details.items() if value is not None},
+    }
+
+
 def _summarize_error(error: Exception | str) -> dict[str, Any]:
     error_type = type(error).__name__ if isinstance(error, Exception) else "Error"
     message = str(error)

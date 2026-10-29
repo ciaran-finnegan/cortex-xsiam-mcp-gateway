@@ -52,10 +52,18 @@ TIER1_TOOLS = [
 ]
 
 
+# Every query needs a timeframe; the cost guard applies no default window.
+WINDOW = {"from_ms": 1_700_000_000_000, "to_ms": 1_700_086_400_000}
+API_WINDOW = {"from": 1_700_000_000_000, "to": 1_700_086_400_000}
+
+
 class QueryFetcher:
     """Completes each XQL query on start, with synthetic quota metadata, so tests never poll."""
 
     def __init__(self, *, rows=None, query_cost=None, remaining=(40.0, 39.0, 38.5)):
+        # The key the gateway fixture's server is built with, as the real fetcher would hold it;
+        # the cost guard caches a reply only when the fetcher's key matches the cache key.
+        self.api_key, self.api_key_id = "test-key", "test-key-id"
         self.rows = rows if rows is not None else [{"host_name": "web-01", "_time": 1}]
         self.query_cost = query_cost
         self.remaining = list(remaining)
@@ -283,7 +291,7 @@ async def test_engagement_tools_round_trip_and_record_facts_against_executed_que
         query = _payload(
             await client.call_tool(
                 "query_dataset",
-                {"dataset": "host_inventory", "fields": ["host_name"], "limit": 5},
+                {"dataset": "host_inventory", "fields": ["host_name"], "limit": 5, "timeframe": WINDOW},
             )
         )
         assert query["success"] is True
@@ -341,7 +349,7 @@ async def test_case_store_resumes_scope_in_a_new_session_and_is_principal_scoped
             "set_engagement",
             {"mode": "incident_response", "case_id": "IR-7", "iocs": ["203.0.113.7"], "servers": ["web-01.example.test"]},
         )
-        await client.call_tool("query_dataset", {"dataset": "host_inventory", "fields": ["host_name"]})
+        await client.call_tool("query_dataset", {"dataset": "host_inventory", "fields": ["host_name"], "timeframe": WINDOW})
 
     async with Client(server) as client:
         resumed = _payload(await client.call_tool("set_engagement", {"mode": "threat_hunt", "case_id": "IR-7"}))
@@ -435,7 +443,7 @@ async def test_query_telemetry_uses_quota_delta_without_query_cost_and_records_f
     server = gateway(fetcher=fetcher)
     async with Client(server) as client:
         await client.call_tool("set_engagement", {"mode": "threat_hunt"})
-        await client.call_tool("query_dataset", {"dataset": "host_inventory", "fields": ["host_name"]})
+        await client.call_tool("query_dataset", {"dataset": "host_inventory", "fields": ["host_name"], "timeframe": WINDOW})
         await client.call_tool(
             "query_dataset",
             {
@@ -470,7 +478,7 @@ async def test_query_telemetry_records_executor_exceptions_without_masking_them(
     monkeypatch.setattr(xql_executor, "get_fetcher", fake_get_fetcher)
     ctx = fake_context()
     with pytest.raises(RuntimeError, match="upstream down"):
-        await xql_executor.run_xql_query(ctx, "dataset = host_inventory | limit 1", 1)
+        await xql_executor.run_xql_query(ctx, "dataset = host_inventory | limit 1", 1, timeframe=API_WINDOW)
     log = await engagement.get_engagement_log(ctx, ctx.request_context.lifespan_context)
     assert log["queries"][0]["status"] == "error"
     assert log["queries"][0]["error_type"] == "RuntimeError"
@@ -489,7 +497,9 @@ async def test_telemetry_failure_never_breaks_a_query(monkeypatch):
     monkeypatch.setattr(xql_executor, "get_fetcher", fake_get_fetcher)
     ctx = fake_context()
     monkeypatch.setattr(ctx, "get_state", broken_get_state)
-    response = await xql_executor.run_xql_query(ctx, "dataset = host_inventory | limit 1", 1, poll_interval_seconds=0)
+    response = await xql_executor.run_xql_query(
+        ctx, "dataset = host_inventory | limit 1", 1, timeframe=API_WINDOW, poll_interval_seconds=0
+    )
     assert response["query_id"] == "synthetic-query-1"
 
 
@@ -762,7 +772,7 @@ async def test_agent_inferred_mode_asks_for_confirmation_until_recorded_from_the
 @pytest.mark.asyncio
 async def test_results_carry_a_one_line_nudge_only_while_unset(gateway):
     server = gateway(fetcher=QueryFetcher())
-    query = {"dataset": "host_inventory", "fields": ["host_name"]}
+    query = {"dataset": "host_inventory", "fields": ["host_name"], "timeframe": WINDOW}
     async with Client(server) as client:
         unset_query = await client.call_tool("query_dataset", query)
         unset_guidance = await client.call_tool("get_dataset_query_guidance", {})
@@ -795,12 +805,62 @@ async def test_cost_guard_hooks_see_current_mode_inside_a_tool_call(gateway):
 
     async with Client(server) as client:
         await client.call_tool("set_engagement", {"mode": "threat_hunt"})
-        await client.call_tool("query_dataset", {"dataset": "host_inventory", "fields": ["host_name"]})
+        await client.call_tool("query_dataset", {"dataset": "host_inventory", "fields": ["host_name"], "timeframe": WINDOW})
         probe = _payload(await client.call_tool("probe_cost_hooks", {}))
 
     assert probe["mode"] == "threat_hunt"
     assert probe["budget"] == get_mode_policy("threat_hunt").session_budget_units
     assert probe["spend"]["units"] == 0.5
+
+
+@pytest.mark.asyncio
+async def test_cost_guard_threshold_follows_the_engagement_mode(gateway):
+    # A one-host, one-day xdr_data lookup estimates medium (up to 3.6 units): above the
+    # operations threshold of 1 unit, below the incident_response threshold of 5.
+    server = gateway(fetcher=QueryFetcher(query_cost=1.2))
+    arguments = {
+        "dataset": "xdr_data",
+        "fields": ["action_process_image_name"],
+        "filters": [{"field": "agent_hostname", "operator": "eq", "value": "web-01"}],
+        "timeframe": WINDOW,
+    }
+    async with Client(server) as client:
+        await client.call_tool("set_engagement", {"mode": "operations"})
+        refused = _payload(await client.call_tool("query_dataset", arguments))
+        after_refusal = _payload(await client.call_tool("get_engagement_log", {}))
+        await client.call_tool("set_engagement", {"mode": "incident_response"})
+        allowed = _payload(await client.call_tool("query_dataset", arguments))
+
+    assert refused["error"] == "cost_guard" and refused["rule"] == "approval_required"
+    assert refused["mode"] == "operations" and refused["approval_threshold_units"] == 1.0
+    assert after_refusal["queries"] == []
+    assert allowed["success"] is True
+    assert allowed["quota"]["estimate_class"] == "medium"
+    assert allowed["quota"]["actual_units"] == 1.2
+    assert allowed["quota"]["session_spent_units"] == 1.2
+
+
+@pytest.mark.asyncio
+async def test_cache_hits_are_not_recorded_twice_in_the_engagement_log(gateway):
+    fetcher = QueryFetcher(query_cost=0.25)
+    server = gateway(fetcher=fetcher)
+    arguments = {"dataset": "host_inventory", "fields": ["host_name"], "timeframe": WINDOW}
+    async with Client(server) as client:
+        await client.call_tool("set_engagement", {"mode": "incident_response", "case_id": "IR-9"})
+        first = _payload(await client.call_tool("query_dataset", arguments))
+        repeat = _payload(await client.call_tool("query_dataset", arguments))
+        await client.call_tool("set_engagement", {"mode": "incident_response", "case_id": "IR-10"})
+        other_case = _payload(await client.call_tool("query_dataset", arguments))
+        log = _payload(await client.call_tool("get_engagement_log", {}))
+
+    assert first["quota"]["cached"] is False
+    assert repeat["quota"]["cached"] is True and repeat["quota"]["actual_units"] == 0.0
+    assert other_case["quota"]["cached"] is False
+    assert fetcher.started == 2
+    assert [entry["case_id"] for entry in log["queries"]] == ["IR-9", "IR-10"]
+    assert log["spend"]["units"] == 0.5
+    assert repeat["quota"]["session_spent_units"] == 0.25
+    assert other_case["quota"]["session_spent_units"] == 0.5
 
 
 @pytest.mark.asyncio

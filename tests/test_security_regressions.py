@@ -208,19 +208,19 @@ async def test_raw_xql_requires_privileged_group_and_all_dataset_grant(monkeypat
     monkeypatch.setattr(get_config(), "log_search_dataset_policy", '{"Security":["host_inventory"]}')
     monkeypatch.setattr(issues, "run_xql_query", fake_run)
 
-    denied = json.loads(await issues.execute_xql_query(_ctx(), "dataset = host_inventory | limit 1"))
+    denied = json.loads(await issues.execute_xql_query(_ctx(), "dataset = host_inventory | limit 1", timeframe={"relative_ms": 3_600_000}))
     assert submitted_queries == []
     assert denied["success"] == "false"
 
     monkeypatch.setattr(get_config(), "log_search_dataset_policy", '{"Security":["*"]}')
-    allowed = json.loads(await issues.execute_xql_query(_ctx(), "dataset = host_inventory | limit 5000"))
+    allowed = json.loads(await issues.execute_xql_query(_ctx(), "dataset = host_inventory | limit 5000", timeframe={"relative_ms": 3_600_000}))
     assert submitted_queries == ["dataset = host_inventory | limit 1"]
     assert allowed["success"] == "true"
     assert allowed["returned"] == 1
     assert len(allowed["rows"][0]) == 1
     assert "reply" not in allowed
 
-    missing_limit = json.loads(await issues.execute_xql_query(_ctx(), "dataset = host_inventory"))
+    missing_limit = json.loads(await issues.execute_xql_query(_ctx(), "dataset = host_inventory", timeframe={"relative_ms": 3_600_000}))
     assert missing_limit["success"] == "false"
     assert "must end with" in missing_limit["error"]
     assert len(submitted_queries) == 1

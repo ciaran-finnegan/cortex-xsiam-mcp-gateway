@@ -6,6 +6,13 @@ from pydantic import Field
 
 from config.config import get_config
 from usecase.base_module import BaseModule
+from usecase.cost_guard import (
+    APPROVAL_ARGUMENT_DESCRIPTION,
+    CostGuardRefusal,
+    estimate_xql,
+    normalize_timeframe,
+)
+from usecase.cost_guard import result_fields as cost_guard_result_fields
 from usecase.dataset_query import (
     DatasetQueryPlan,
     QueryFilter,
@@ -31,6 +38,7 @@ XQLHelpTopic = Literal[
     "aggregations",
     "top_values",
     "time_trends",
+    "cost",
     "pagination",
     "raw_xql",
 ]
@@ -53,7 +61,8 @@ async def get_dataset_query_guidance() -> dict[str, Any]:
             "Call list_log_datasets to find an allowed dataset; narrow by name when possible.",
             "Call discover_log_fields for one dataset and request fields related to the user's concepts.",
             "Use query_dataset rows mode for examples or aggregate mode for counts, summaries, top values, and trends.",
-            "Request only necessary fields and start with a limit of 25 or less.",
+            "Request only necessary fields, always pass a timeframe, and start with a limit of 25 or less.",
+            "If a query returns error cost_guard, show the analyst the estimate and alternatives; pass approval only when the analyst typed it.",
             "To continue a prior page, call continue_dataset_query with only the opaque cursor exactly as returned.",
             "Use get_xql_help only when the typed query schema is insufficient or raw XQL is explicitly required.",
         ],
@@ -106,19 +115,21 @@ async def query_dataset(
     ] = None,
     timeframe: Annotated[
         QueryTimeframe | None,
-        Field(description="Relative or absolute XSIAM API timeframe. Relative windows are frozen before continuation."),
+        Field(description="Required relative or absolute XSIAM API timeframe; there is no default window. Relative windows are frozen before continuation."),
     ] = None,
     limit: Annotated[int, Field(description="Maximum rows or aggregate groups. Server-capped; start at 25 or less.")] = 25,
     enable_continuation: Annotated[
         bool,
         Field(description="Enable keyset continuation for rows with a frozen timeframe and deterministic order_by fields."),
     ] = False,
-    dry_run: Annotated[bool, Field(description="Compile and return XQL without executing it.")] = False,
+    dry_run: Annotated[bool, Field(description="Compile and return XQL and its cost estimate without executing it.")] = False,
+    approval: Annotated[str | None, Field(description=APPROVAL_ARGUMENT_DESCRIPTION)] = None,
 ) -> dict[str, Any]:
     """Query one allowed XSIAM dataset using a typed plan compiled by the MCP server."""
     principal = resolve_mcp_context(ctx)
     try:
         policy = ensure_dataset_authorized(principal, dataset)
+        timeframe = normalize_timeframe(timeframe)
         plan = DatasetQueryPlan(
             dataset=dataset,
             mode=mode,
@@ -142,9 +153,12 @@ async def query_dataset(
                 "mode": mode,
                 "xql": compiled.xql,
                 "query_sha256": query_hash(compiled.xql),
+                "cost_estimate": estimate_xql(compiled.xql, plan.timeframe).to_dict(),
                 "dataset_policy": policy.__dict__,
             }
-        return await _execute_plan(ctx, principal, plan)
+        return await _execute_plan(ctx, principal, plan, approval=approval, tool="query_dataset")
+    except CostGuardRefusal as e:
+        return e.payload
     except (DatasetAuthorizationError, ValueError) as e:
         return {"success": False, "executed": False, "error": str(e)}
     except Exception as e:
@@ -154,13 +168,23 @@ async def query_dataset(
 async def continue_dataset_query(
     ctx: Context,
     cursor: Annotated[str, Field(description="Opaque cursor returned by query_dataset or a previous continuation.")],
+    approval: Annotated[str | None, Field(description=APPROVAL_ARGUMENT_DESCRIPTION)] = None,
 ) -> dict[str, Any]:
     """Continue a policy-checked row query using a principal-bound encrypted keyset cursor."""
     principal = resolve_mcp_context(ctx)
     try:
         plan, seek_values = decode_query_cursor(cursor, principal)
         ensure_dataset_authorized(principal, plan.dataset)
-        return await _execute_plan(ctx, principal, plan, seek_values=seek_values)
+        return await _execute_plan(
+            ctx,
+            principal,
+            plan,
+            seek_values=seek_values,
+            approval=approval,
+            tool="continue_dataset_query",
+        )
+    except CostGuardRefusal as e:
+        return e.payload
     except (DatasetAuthorizationError, ValueError) as e:
         return {"success": False, "executed": False, "error": str(e)}
     except Exception as e:
@@ -173,13 +197,17 @@ async def _execute_plan(
     plan: DatasetQueryPlan,
     *,
     seek_values: list[Any] | None = None,
+    approval: str | None = None,
+    tool: str | None = None,
 ) -> dict[str, Any]:
     compiled = build_dataset_xql(plan, seek_values=seek_values)
     response = await run_xql_query(
         ctx,
         compiled.xql,
         compiled.result_limit,
-        timeframe=plan.timeframe.to_api() if plan.timeframe else None,
+        timeframe=normalize_timeframe(plan.timeframe).to_api(),
+        approval=approval,
+        tool=tool,
     )
     if response.get("error"):
         return {
@@ -189,6 +217,7 @@ async def _execute_plan(
             "mode": plan.mode,
             "query_id": response.get("query_id"),
             "error": response["error"],
+            **cost_guard_result_fields(response),
         }
 
     safe_limit = compiled.page_limit
@@ -221,6 +250,7 @@ async def _execute_plan(
         },
         "xsiam": result_metadata(response),
         "truncation": budget,
+        **cost_guard_result_fields(response),
     }
 
 
@@ -347,6 +377,14 @@ _XQL_HELP: dict[str, dict[str, Any]] = {
             "order_by": [{"field": "_time", "direction": "asc"}],
             "timeframe": {"relative_ms": 86400000},
         },
+    },
+    "cost": {
+        "use": "Every query needs a timeframe. Each result carries a quota block; dry_run returns cost_estimate before spending quota.",
+        "requirements": [
+            "Prefer short windows, host or agent filters, and aggregates on large datasets such as xdr_data.",
+            "A refused query returns error cost_guard with the rule, estimate band, and alternatives; offer them to the analyst.",
+            "Pass approval only with the analyst's own typed words. Approval never overrides the automation reserve.",
+        ],
     },
     "pagination": {
         "use": "Use keyset continuation only for row queries with a frozen timeframe and stable sort fields. Never auto-exhaust cursors.",

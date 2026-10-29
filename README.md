@@ -134,7 +134,8 @@ caller's groups and current mode allow, and hidden tools are denied on call.
 The `operations` and `unset` modes hide `execute_xql_query`.
 
 Raw XQL needs the `*` grant because the gateway does not parse it for datasets.
-It must end in `| limit N`, which is clamped to the server row limit.
+It must end in `| limit N`, which is clamped to the server row limit. Comments
+are stripped first, so a limit written inside a comment does not count.
 
 Typed queries are capped on rows, fields, filters, cell length, response size
 and timeframe, and at most four XQL queries run at once per process.
@@ -142,6 +143,37 @@ and timeframe, and at most four XQL queries run at once per process.
 encrypted, expire, and only work for the same principal, tenant, groups,
 dataset policy, mode and case. See the [security model](docs/SECURITY_MODEL.md) and
 [RBAC review](docs/RBAC_AND_LOG_SEARCH_REVIEW.md).
+
+## Query cost
+
+XSIAM charges API queries in compute units from a daily budget that the
+gateway shares with other API keys and playbooks. When it runs out, every
+query fails until 00:00 UTC. Every query therefore needs a timeframe, and the
+cost guard rates it light, medium, heavy or extreme before sending it. It
+refuses a query that:
+
+- is estimated above the approval threshold, until the analyst approves it;
+- would leave less than the reserve for automation, which approval cannot
+  override;
+- is heavy while two other queries have run for more than 60 seconds.
+
+The approval threshold and reserve come from the engagement mode: 5 and 10
+units for `incident_response`, 3 and 15 for `threat_hunt`, and 1 and 20 for
+`operations` and `unset`.
+
+A refusal returns `error: "cost_guard"` with the estimate and cheaper
+rewrites: a shorter window, a host filter, counts instead of rows, a cheaper
+dataset, or the same XQL for the console. Approval comes from an MCP
+elicitation prompt when the client supports one, otherwise from an `approval`
+argument the analyst types, capped per person per day. Each result carries a
+`quota` block with the estimate, the units spent and the units left.
+Identical queries from the same caller are served from a 10-minute cache.
+Timeouts are capped at 120 seconds, or 300 with approval.
+
+The cache, approval totals and quota tracking are kept per gateway process,
+not shared across replicas. See
+[configuration](docs/CONFIGURATION.md#xql-cost-guard) and the
+[security model](docs/SECURITY_MODEL.md#known-gaps).
 
 ## Audit logging
 
@@ -155,6 +187,8 @@ error messages are always hashed.
 `AUDIT_LOG_XSIAM_HTTP_COLLECTOR_*` sends events to an
 [XSIAM HTTP log collector](https://docs-cortex.paloaltonetworks.com/r/Cortex-XSIAM/Cortex-XSIAM-3.x-Documentation/Set-up-an-HTTP-log-collector-to-receive-logs).
 A failed export does not block the call unless `AUDIT_LOG_FAIL_CLOSED=true`.
+Cost guard refusals, approvals and elicitation answers are written as separate
+`cortex_xsiam_mcp.cost_guard` events.
 See [audit logging](docs/AUDIT_LOGGING.md).
 
 ## Local development
