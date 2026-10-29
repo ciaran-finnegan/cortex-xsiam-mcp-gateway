@@ -25,6 +25,11 @@ from usecase.identity import (
     resolve_mcp_context,
 )
 from usecase.log_policy import ToolAuthorizationError
+from usecase.xql_errors import (
+    clear_current_xql_error_class,
+    get_current_xql_error_class,
+    reset_current_xql_error_class,
+)
 
 
 class ToolAuditMiddleware(Middleware):
@@ -39,6 +44,7 @@ class ToolAuditMiddleware(Middleware):
         tool_name = context.message.name
         arguments = context.message.arguments or {}
         selection_token = clear_current_credential_selection()
+        error_class_token = clear_current_xql_error_class()
         scope_token = None
 
         try:
@@ -76,6 +82,7 @@ class ToolAuditMiddleware(Middleware):
                         duration_ms=(now_monotonic() - started) * 1000,
                         error=e,
                         credential_summary=_credential_summary(selection),
+                        xql_error_class=get_current_xql_error_class(),
                     )
                 )
                 raise
@@ -92,10 +99,12 @@ class ToolAuditMiddleware(Middleware):
                     duration_ms=(now_monotonic() - started) * 1000,
                     result_summary=await _summarize_tool_result(result, context.fastmcp_context),
                     credential_summary=_credential_summary(selection),
+                    xql_error_class=get_current_xql_error_class(),
                 )
             )
             return result
         finally:
+            reset_current_xql_error_class(error_class_token)
             if scope_token is not None:
                 exit_engagement_scope(scope_token)
             reset_current_credential_selection(selection_token)

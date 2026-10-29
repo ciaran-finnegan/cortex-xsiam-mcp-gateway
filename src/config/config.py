@@ -167,6 +167,7 @@ class Settings(BaseSettings):
         32768,
         validation_alias="XQL_MAX_QUERY_CHARS",
     )
+    xql_enum_fields: str = Field("{}", validation_alias="XQL_ENUM_FIELDS")
     xql_timeout_ceiling_seconds: int = Field(
         120,
         ge=1,

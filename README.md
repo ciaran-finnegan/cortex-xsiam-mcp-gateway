@@ -43,6 +43,7 @@ check dataset policy.
 | `query_dataset` | Typed row or aggregate query on one dataset, compiled to XQL by the gateway. |
 | `continue_dataset_query` | Next page of a row query, from an encrypted cursor. |
 | `search_logs` | Older wrapper for simple row searches. |
+| `validate_xql` | Checks raw XQL without running it and returns problems, fixes and documentation links. |
 | `execute_xql_query` | Raw XQL for privileged groups. |
 | `get_xql_query_quota` | XQL quota usage. |
 | `get_issues`, `get_cases` | Issues (alerts) and cases. |
@@ -87,6 +88,22 @@ gateway does not accept natural-language queries. A typed plan looks like this.
 The gateway checks the caller can query `xdr_data`, compiles the plan from
 allowlisted operators and functions, and returns at most 10 groups. `dry_run`
 returns the XQL instead. See [agent dataset queries](docs/AGENT_LOG_SEARCH.md).
+
+## Checking raw XQL
+
+`validate_xql` checks a raw query without running it: the `| limit N` stage,
+dataset policy and whether the dataset exists, field names against the
+dataset's discovered fields, `=` on enum fields, `contains` on IP addresses, and
+the timeframe. `corrected_query` applies only fixed rewrites, such as
+`contains` to `in (...)` for an address. Each problem links to the matching page
+on the [Cortex documentation site](https://cortex-docs.paloaltonetworks.com/),
+which the gateway never fetches. With `probe: true` it also runs the query over
+one hour with `| limit 1`, which needs the raw XQL grants.
+
+When XSIAM rejects a query, the gateway returns a class (`unknown_field`,
+`unknown_dataset`, `syntax_error`, `type_mismatch` or `timeframe_invalid`) and a
+fixed message instead of XSIAM's text. Other errors are still returned only as
+a hash. See [XQL validation](docs/XQL_VALIDATION.md).
 
 ## Engagement modes
 
@@ -179,10 +196,10 @@ not shared across replicas. See
 
 Every tool call, denied ones included, writes JSON start and end events to the
 `cortex_xsiam_mcp.audit` logger with the principal, groups, tool, outcome,
-duration, argument names and hash, dataset, XSIAM credential profile and
-engagement mode, case id and source. Query
-text is kept as a SHA-256 hash unless `AUDIT_LOG_INCLUDE_QUERY_TEXT=true`, and
-error messages are always hashed.
+duration, argument names and hash, dataset, XSIAM credential profile,
+engagement mode, case id and source, and the class of any failed XQL query.
+Query text is kept as a SHA-256 hash unless `AUDIT_LOG_INCLUDE_QUERY_TEXT=true`,
+and error messages are always hashed.
 
 `AUDIT_LOG_XSIAM_HTTP_COLLECTOR_*` sends events to an
 [XSIAM HTTP log collector](https://docs-cortex.paloaltonetworks.com/r/Cortex-XSIAM/Cortex-XSIAM-3.x-Documentation/Set-up-an-HTTP-log-collector-to-receive-logs).

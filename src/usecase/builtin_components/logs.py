@@ -47,6 +47,7 @@ from usecase.xql_discovery import (
     normalize_dataset_record,
     policy_dataset_records,
 )
+from usecase.xql_errors import xql_error_details
 from usecase.xql_executor import run_xql_query
 from usecase.xql_results import bound_result_rows, result_metadata
 
@@ -84,6 +85,7 @@ async def get_log_search_guidance() -> str:
                 "query_dataset": "Preferred typed row and aggregate query tool for any allowed XSIAM dataset.",
                 "continue_dataset_query": "Continues a deterministic row query without offset pagination.",
                 "search_logs": "Compatibility wrapper for simple structured row searches.",
+                "validate_xql": "Checks raw XQL before it runs and returns problems with deterministic fixes and docs links.",
                 "execute_xql_query": "Privileged raw-XQL escape hatch for security/admin roles.",
             },
             "plain_english_handling": {
@@ -180,7 +182,12 @@ async def search_logs(
         )
         if response_data.get("error"):
             return create_response(
-                data={"error": response_data["error"], "executed": True, **cost_guard_result_fields(response_data)},
+                data={
+                    "error": response_data["error"],
+                    "executed": True,
+                    **xql_error_details(response_data),
+                    **cost_guard_result_fields(response_data),
+                },
                 is_error=True,
             )
         rows, truncation = bound_result_rows(
@@ -337,6 +344,7 @@ async def discover_log_fields(
             return create_response(
                 data={
                     "error": response_data["error"],
+                    **xql_error_details(response_data),
                     "dataset": dataset,
                     "dataset_policy": policy_decision.__dict__,
                     **cost_guard_result_fields(response_data),

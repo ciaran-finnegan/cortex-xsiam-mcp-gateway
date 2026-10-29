@@ -39,6 +39,8 @@ Important fields:
 | `result.previous_mode` | Mode before a `set_engagement` call. |
 | `result.xsiam_credential_profile` | Credential profile selected during this request only. |
 | `error.message_sha256` | SHA-256 of exception text; raw exception messages are not emitted. |
+| `xql_error_class` | Class of the last failed XQL query in the call: `unknown_field`, `unknown_dataset`, `syntax_error`, `type_mismatch`, `timeframe_invalid`, or `unclassified`. Absent when no query failed. See [XQL Validation](XQL_VALIDATION.md). |
+| `request.probe` | Whether a `validate_xql` call asked for a probe; `result.executed` records whether it ran. |
 
 Raw XQL is not logged by default because it can contain sensitive indicators,
 user identifiers, hostnames, or investigation content.

@@ -64,6 +64,8 @@ def summarize_tool_arguments(tool_name: str, arguments: dict[str, Any] | None) -
         summary["dry_run"] = arguments.get("dry_run")
     if "timeframe" in arguments:
         summary["timeframe_provided"] = arguments.get("timeframe") is not None
+    if "probe" in arguments:
+        summary["probe"] = arguments.get("probe") is True
     if "tenants" in arguments and isinstance(arguments.get("tenants"), list):
         summary["tenant_count"] = len(arguments["tenants"])
     if "filters" in arguments and isinstance(arguments.get("filters"), list):
@@ -119,6 +121,7 @@ def create_tool_audit_event(
     error: Exception | str | None = None,
     result_summary: dict[str, Any] | None = None,
     credential_summary: dict[str, Any] | None = None,
+    xql_error_class: str | None = None,
 ) -> dict[str, Any]:
     config = get_config()
     event: dict[str, Any] = {
@@ -150,6 +153,8 @@ def create_tool_audit_event(
         event["error"] = _summarize_error(error)
     if result_summary:
         event["result"] = result_summary
+    if xql_error_class:
+        event["xql_error_class"] = xql_error_class
     return event
 
 

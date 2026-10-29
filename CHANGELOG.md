@@ -44,6 +44,20 @@ This project follows a lightweight changelog format until stable releases begin.
 - Security fix: raw XQL comments are stripped before the terminal-limit check,
   so a `// | limit N` comment can no longer satisfy it, and identifier
   validation no longer accepts a trailing newline.
+- Added `validate_xql`: strips comments and checks the terminal limit, dataset
+  policy and existence, field names against the discovered schema, `=` on
+  enum-backed fields, `contains` on IP address literals, and the timeframe.
+  Returns problems with docs links and a `corrected_query` built only by
+  deterministic rewrites, the cost guard's estimate, and an optional one-hour
+  `| limit 1` probe for principals with the raw-XQL grants. Field discovery and
+  the probe go through the cost guard; a refusal is reported, not cached.
+- Classified XQL failures: known XSIAM validation messages now return
+  `error: "xql_validation"` with a class (`unknown_field`, `unknown_dataset`,
+  `syntax_error`, `type_mismatch`, `timeframe_invalid`), a fixed message, and a
+  safe field name or position, alongside the existing hash. Other messages stay
+  hashed. The audit event records `xql_error_class`.
+- `get_xql_help` topics carry a `docs` link to the vendor's documentation site.
+  The gateway never fetches it.
 
 ## 0.2.0-alpha.1 - 2026-07-10
 

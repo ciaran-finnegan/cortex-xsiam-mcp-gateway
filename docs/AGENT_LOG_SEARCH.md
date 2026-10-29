@@ -58,6 +58,7 @@ sequenceDiagram
 | `get_xql_help` | Retrieve one focused recipe for filters, aggregates, top-N, trends, pagination, or raw XQL. | No tenant data. |
 | `query_dataset` | Execute one typed row or aggregate plan. | Explicit dataset, low defaults, projection and response budgets. |
 | `continue_dataset_query` | Retrieve one next row page. | Cursor-only input; policy and identity rechecked. |
+| `validate_xql` | Check raw XQL before running it; returns problems, deterministic fixes and docs links. | Dataset policy before any lookup; optional probe needs the raw-XQL grants. See [XQL Validation](XQL_VALIDATION.md). |
 | `execute_xql_query` | Privileged escape hatch for XQL that typed plans cannot represent. | Security/admin role and all-datasets grant required. |
 
 `search_logs` remains a compatibility wrapper for simple row searches. New

@@ -9,6 +9,11 @@ from usecase import cost_guard
 from usecase.engagement import record_query_telemetry
 from usecase.fetcher import get_fetcher
 from usecase.xql_builder import MAX_XQL_RESULT_LIMIT
+from usecase.xql_errors import (
+    XQL_VALIDATION_ERROR,
+    classify_xql_error,
+    record_xql_error_class,
+)
 
 _semaphores: dict[tuple[int, int], asyncio.Semaphore] = {}
 
@@ -213,6 +218,12 @@ def _failure_response(
     if detail is not None:
         encoded = json.dumps(detail, sort_keys=True, default=str, separators=(",", ":")).encode()
         result["error_reference_sha256"] = hashlib.sha256(encoded).hexdigest()
+        # Known validation messages become a fixed class; anything else stays hashed only.
+        classified = classify_xql_error(detail)
+        if classified is not None:
+            result["error"] = XQL_VALIDATION_ERROR
+            result.update(classified)
+    record_xql_error_class(result.get("class", ""))
     return result
 
 
