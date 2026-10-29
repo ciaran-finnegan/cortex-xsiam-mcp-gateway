@@ -5,6 +5,8 @@ import pytest
 from config.config import get_config
 from usecase import xql_executor
 
+ONE_HOUR = {"relativeTime": 3_600_000}
+
 
 class SequenceFetcher:
     def __init__(self, responses):
@@ -26,7 +28,7 @@ async def test_xql_executor_preserves_synchronous_start_results(monkeypatch):
         return fetcher
 
     monkeypatch.setattr(xql_executor, "get_fetcher", fake_get_fetcher)
-    response = await xql_executor.run_xql_query(None, "dataset = sample | comp count()", 1)
+    response = await xql_executor.run_xql_query(None, "dataset = sample | comp count()", 1, timeframe=ONE_HOUR)
 
     assert response["reply"]["results"]["data"] == [{"total": 1}]
     assert response["query_id"] is None
@@ -48,7 +50,7 @@ async def test_xql_executor_polls_pending_query_to_success_and_caps_limit(monkey
         return fetcher
 
     monkeypatch.setattr(xql_executor, "get_fetcher", fake_get_fetcher)
-    response = await xql_executor.run_xql_query(None, "dataset = sample | limit 1", 5000, poll_interval_seconds=0)
+    response = await xql_executor.run_xql_query(None, "dataset = sample | limit 1", 5000, timeframe=ONE_HOUR, poll_interval_seconds=0)
 
     assert response["query_id"] == "query-1"
     assert response["poll_attempts"] == 2
@@ -64,7 +66,7 @@ async def test_xql_executor_rejects_oversized_query_before_fetcher_creation(monk
 
     monkeypatch.setattr(xql_executor, "get_fetcher", fail_get_fetcher)
     with pytest.raises(ValueError, match="exceeds the configured"):
-        await xql_executor.run_xql_query(None, "dataset = sample", 1)
+        await xql_executor.run_xql_query(None, "dataset = sample", 1, timeframe=ONE_HOUR)
 
 
 @pytest.mark.asyncio
@@ -81,8 +83,10 @@ async def test_xql_executor_returns_bounded_failure_without_query_text(monkeypat
         return fetcher
 
     monkeypatch.setattr(xql_executor, "get_fetcher", fake_get_fetcher)
-    response = await xql_executor.run_xql_query(None, "dataset = sensitive", 10, poll_interval_seconds=0)
+    response = await xql_executor.run_xql_query(None, "dataset = sensitive", 10, timeframe=ONE_HOUR, poll_interval_seconds=0)
 
+    quota = response.pop("quota")
+    assert quota["estimate_class"] == "light" and quota["cached"] is False
     assert response == {
         "query_id": "query-2",
         "poll_attempts": 1,
@@ -105,7 +109,7 @@ async def test_xql_executor_sanitizes_synchronous_failure(monkeypatch):
         return fetcher
 
     monkeypatch.setattr(xql_executor, "get_fetcher", fake_get_fetcher)
-    response = await xql_executor.run_xql_query(None, "dataset = sample | limit 1", 1)
+    response = await xql_executor.run_xql_query(None, "dataset = sample | limit 1", 1, timeframe=ONE_HOUR)
 
     assert response["error"] == "XQL query failed"
     assert response["xsiam_status"] == "ERROR"
@@ -125,7 +129,7 @@ async def test_xql_executor_times_out_without_unbounded_polling(monkeypatch):
 
     monkeypatch.setattr(xql_executor, "get_fetcher", fake_get_fetcher)
     monkeypatch.setattr(xql_executor, "_monotonic", lambda: next(clock))
-    response = await xql_executor.run_xql_query(None, "dataset = sample", 10, timeout_seconds=1)
+    response = await xql_executor.run_xql_query(None, "dataset = sample", 10, timeframe=ONE_HOUR, timeout_seconds=1)
 
     assert response["query_id"] == "query-3"
     assert response["poll_attempts"] == 0
@@ -163,7 +167,7 @@ async def test_xql_executor_never_exceeds_xsiam_concurrency_limit(monkeypatch):
 
     monkeypatch.setattr(xql_executor, "get_fetcher", fake_get_fetcher)
     tasks = [
-        asyncio.create_task(xql_executor.run_xql_query(None, "dataset = sample", 1, poll_interval_seconds=0))
+        asyncio.create_task(xql_executor.run_xql_query(None, "dataset = sample", 1, timeframe=ONE_HOUR, poll_interval_seconds=0))
         for _ in range(6)
     ]
     await asyncio.wait_for(saturated.wait(), timeout=1)

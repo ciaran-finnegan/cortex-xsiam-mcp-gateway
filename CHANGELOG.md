@@ -4,6 +4,60 @@ This project follows a lightweight changelog format until stable releases begin.
 
 ## Unreleased
 
+- Added engagement modes (`incident_response`, `threat_hunt`, `operations`,
+  `unset`) with `set_engagement`, `get_engagement`, `record_fact`, and
+  `get_engagement_log`. Scope lists are validated and capped, state is bound to
+  the session and principal, and `ENGAGEMENT_STORE_DIR` adds principal-scoped
+  case files that are refused inside a git working tree.
+- Modes only narrow access: tools hidden by the mode are denied on call and,
+  with group-denied tools, removed from `tools/list`.
+- Added mode and case id to `MCPContext`, every audit event, and continuation
+  cursors (cursor version 2).
+- Added the `ENGAGEMENT_MODE_POLICY` per-mode defaults table and
+  `get_mode_policy()`, `current_mode()`, and `get_session_spend()` hooks for the
+  XQL cost guard.
+- Every XQL query now records dataset, window, rows, units, duration, and tool
+  in the engagement log.
+- Added server `instructions` and mode-specific `get_dataset_query_guidance`.
+  The agent infers the mode from the opening request or asks the user one short
+  question; `set_engagement` takes a `source` (`human`, `agent_inferred`,
+  `header`), and `get_engagement` returns `confirm_with_user` while the mode is
+  agent-inferred. `unset` inherits the `operations` defaults, and results carry
+  a one-line nudge until an engagement is set. `source` is audited with mode
+  and case id.
+- Fixed un-awaited FastMCP `ctx.set_state` / `ctx.get_state` calls, so the
+  selected credential profile now reaches the audit result; it is now
+  request-scoped. Tests use a real FastMCP context or an async fake pinned to
+  the FastMCP state API.
+- Added the XQL cost guard (`src/usecase/cost_guard.py`) on every query path:
+  light-to-extreme estimates with configurable unit bands and dataset tiers,
+  approval-threshold, reserve, and long-running-slot refusals with structured
+  alternatives, approval by MCP elicitation or a hashed analyst `approval`
+  argument with a per-principal daily cap, `cortex_xsiam_mcp.cost_guard` audit
+  events, a `quota` block on every result, and a per-principal result cache.
+  The approval threshold and reserve come from the engagement mode policy, and
+  `session_spent_units` from the engagement session log. Cache, approval
+  totals, quota readings, and slot timings are per replica.
+- Every query tool now requires a `timeframe`, normalised through
+  `QueryTimeframe`; `config timeframe` inside raw XQL is bounded by the same
+  maximum. Query timeouts are capped at 120 s, or 300 s with approval.
+- Security fix: raw XQL comments are stripped before the terminal-limit check,
+  so a `// | limit N` comment can no longer satisfy it, and identifier
+  validation no longer accepts a trailing newline.
+- Added `validate_xql`: strips comments and checks the terminal limit, dataset
+  policy and existence, field names against the discovered schema, `=` on
+  enum-backed fields, `contains` on IP address literals, and the timeframe.
+  Returns problems with docs links and a `corrected_query` built only by
+  deterministic rewrites, the cost guard's estimate, and an optional one-hour
+  `| limit 1` probe for principals with the raw-XQL grants. Field discovery and
+  the probe go through the cost guard; a refusal is reported, not cached.
+- Classified XQL failures: known XSIAM validation messages now return
+  `error: "xql_validation"` with a class (`unknown_field`, `unknown_dataset`,
+  `syntax_error`, `type_mismatch`, `timeframe_invalid`), a fixed message, and a
+  safe field name or position, alongside the existing hash. Other messages stay
+  hashed. The audit event records `xql_error_class`.
+- `get_xql_help` topics carry a `docs` link to the vendor's documentation site.
+  The gateway never fetches it.
 - Added tier-1 learning: measured tenant facts (schema, enum-like fields, absent
   fields, cost table, timings, helper usage) in `<TENANT_PACK_DIR>/learned/`,
   derived from queries the gateway already runs, with query-id evidence,
@@ -22,8 +76,15 @@ This project follows a lightweight changelog format until stable releases begin.
   `LEARNING_ENABLED` kill switch for both processes.
 - Added the tier-2 replay foundation: an opt-in bounded per-case result cache and
   `replay_engagement`, plus a synthetic IOC-flood triage agent-evaluation case.
-- Classified XSIAM unknown-field failures (`error_class`, `unknown_field`) when
-  the field already appears in the submitted query.
+- For the learner, the executor also tags an unknown-field failure with
+  `error_class` and `unknown_field`, only when the field already appears in the
+  submitted query.
+- The cost guard reads the learned cost table before its seed band, floored at
+  the band's low bound, and the learning observers run after the cost guard and
+  query telemetry; refused queries and cache hits are not observed.
+- `xql_query_center_history` is seeded as a light dataset in
+  `COST_GUARD_DATASET_TIERS`, so the learner's nightly recalibration query
+  stays under the default approval threshold.
 
 ## 0.2.0-alpha.1 - 2026-07-10
 

@@ -47,8 +47,11 @@ flowchart LR
 | `src/usecase/xql_discovery.py` | Normalizes dataset metadata and infers compact field catalogs from bounded XQL samples. |
 | `src/usecase/log_policy.py` | Enforces dataset allowlists for log search and privileged raw XQL groups. |
 | `src/usecase/audit.py` | Builds audit events and optionally exports them to Cortex XSIAM. |
-| `src/service/cortex_mcp/audit_middleware.py` | Emits audit events for every MCP tool invocation. |
-| `src/entities/MCPContext.py` | Holds auth headers and principal metadata. |
+| `src/service/cortex_mcp/audit_middleware.py` | Emits audit events for every MCP tool invocation and loads the caller's engagement for the call. |
+| `src/service/cortex_mcp/tool_policy_middleware.py` | Enforces tool policy and engagement-mode narrowing on calls and on `tools/list`. |
+| `src/service/cortex_mcp/engagement_middleware.py` | Appends a one-line set-the-engagement nudge to tool results while no engagement is set. |
+| `src/usecase/engagement.py` | Engagement modes, scope validation, mode policy, session and case logs, query telemetry. |
+| `src/entities/MCPContext.py` | Holds auth headers, principal metadata, and the engagement mode and case id. |
 | `src/usecase/learning_observers.py`, `src/usecase/learning_journal.py` | Gateway side of tier-1 learning: observe queries and tool calls, append validated records to the per-process journal. |
 | `src/service/cortex_mcp/learning_middleware.py` | Tracks each authorized tool call for the journal. |
 | `src/usecase/learner.py`, `src/learner/__main__.py` | The learner process (`python -m learner`): single writer of fact files, scheduled jobs, canary. See [Learning](LEARNING.md). |
@@ -59,8 +62,9 @@ flowchart LR
 1. HTTP identity middleware validates an Entra bearer token or trusted gateway
    assertion when HTTP identity mode is enabled.
 2. MCP client calls a tool.
-3. Audit middleware emits a start event.
-4. Tool policy middleware checks `TOOL_ACCESS_POLICY`.
+3. Audit middleware loads the caller's engagement and emits a start event.
+4. Tool policy middleware checks `TOOL_ACCESS_POLICY`, then removes tools the
+   engagement mode hides.
 5. Tool-specific policy runs, including dataset and raw-XQL checks.
 6. Credential broker selects a pre-provisioned XSIAM credential profile when
    enabled.

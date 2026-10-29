@@ -35,6 +35,12 @@ from usecase.builtin_components.learning import LearningModule
 from usecase.learned_store import LearnedStoreError, Observation
 
 
+@pytest.fixture(autouse=True)
+def _cost_guard_off(monkeypatch):
+    # These tests exercise learning; test_learning_cost_guard.py covers the guard and observers together.
+    monkeypatch.setattr(get_config(), "cost_guard_enabled", False)
+
+
 def _issue(*query_ids):
     for query_id in query_ids:
         learned_store.register_query_id(query_id)
@@ -66,6 +72,7 @@ async def _record(*observations, who=None, engagement=None):
 
 
 async def _run(context, query, timeframe=None, limit=25):
+    timeframe = timeframe if timeframe is not None else {"relativeTime": 3_600_000}
     return await xql_executor.run_xql_query(context, query, limit, timeframe=timeframe)
 
 
@@ -406,7 +413,7 @@ async def test_result_rows_with_instruction_text_never_become_facts(pack, audit_
         ],
     )
 
-    discovered = json.loads(await logs.discover_log_fields(ctx(), dataset="xdr_data"))
+    discovered = json.loads(await logs.discover_log_fields(ctx(), dataset="xdr_data", timeframe={"relative_ms": 86_400_000}))
     await _run(ctx(), 'dataset = xdr_data | filter action_file_path = "x" | limit 5')
     failed = await _run(ctx(), "dataset = xdr_data | filter action_file_path contains event_count | limit 5")
     await settle()
@@ -503,7 +510,7 @@ async def test_discover_log_fields_records_names_and_types_not_values(pack, audi
     ]
     use_fetcher(monkeypatch, [success("q-d1", rows)])
 
-    result = json.loads(await logs.discover_log_fields(ctx(), dataset="xdr_data"))
+    result = json.loads(await logs.discover_log_fields(ctx(), dataset="xdr_data", timeframe={"relative_ms": 86_400_000}))
     await settle()
 
     assert result["fields_observed_total"] == 3
@@ -939,8 +946,8 @@ async def test_gateway_observations_carry_their_engagement(pack, audit_events, c
     rows = [{"action_file_path": "c:/synthetic/a.exe"}]
     use_fetcher(monkeypatch, [success("q-d1", rows), success("q-d2", rows)])
 
-    await logs.discover_log_fields(ctx(principal="first@example.com"), dataset="xdr_data")
-    await logs.discover_log_fields(ctx(principal="second@example.com"), dataset="xdr_data")
+    await logs.discover_log_fields(ctx(principal="first@example.com"), dataset="xdr_data", timeframe={"relative_ms": 86_400_000})
+    await logs.discover_log_fields(ctx(principal="second@example.com"), dataset="xdr_data", timeframe={"relative_ms": 86_400_000})
     await settle()
 
     (entry,) = read_kind(pack, "schema").values()

@@ -109,7 +109,7 @@ async def test_discover_log_fields_returns_capped_metadata_not_values(monkeypatc
     monkeypatch.setattr(get_config(), "log_search_dataset_policy", '{"Tier1":["auth_logs"]}')
     monkeypatch.setattr(logs, "_run_xql_query", fake_run_xql_query)
 
-    response = _response(await logs.discover_log_fields(_ctx(), dataset="auth_logs", max_fields=2))
+    response = _response(await logs.discover_log_fields(_ctx(), dataset="auth_logs", max_fields=2, timeframe={"relative_ms": 86_400_000}))
 
     assert response["success"] == "true"
     assert response["field_count"] == 2
@@ -234,6 +234,7 @@ async def test_search_logs_compatibility_path_projects_and_bounds_upstream_rows(
             _ctx(),
             dataset="auth_logs",
             fields=["event_id"],
+            timeframe={"from": 1, "to": 2},
             limit=500,
         )
     )

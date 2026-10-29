@@ -10,6 +10,12 @@ import httpx
 
 from config.config import get_config
 from entities.MCPContext import MCPContext
+from usecase.engagement import (
+    ENGAGEMENT_MODES,
+    ENGAGEMENT_SOURCES,
+    SCOPE_LISTS,
+    normalize_audit_token,
+)
 
 logger = logging.getLogger("cortex_xsiam_mcp.audit")
 
@@ -58,6 +64,8 @@ def summarize_tool_arguments(tool_name: str, arguments: dict[str, Any] | None) -
         summary["dry_run"] = arguments.get("dry_run")
     if "timeframe" in arguments:
         summary["timeframe_provided"] = arguments.get("timeframe") is not None
+    if "probe" in arguments:
+        summary["probe"] = arguments.get("probe") is True
     if "tenants" in arguments and isinstance(arguments.get("tenants"), list):
         summary["tenant_count"] = len(arguments["tenants"])
     if "filters" in arguments and isinstance(arguments.get("filters"), list):
@@ -80,6 +88,25 @@ def summarize_tool_arguments(tool_name: str, arguments: dict[str, Any] | None) -
     if tool_name == "execute_xql_query" and "query" not in arguments:
         summary["raw_xql_requested"] = True
 
+    if tool_name == "set_engagement":
+        # Scope values, window, and notes stay out of the event; argument_hash covers them.
+        mode = arguments.get("mode")
+        summary["engagement_mode"] = mode if mode in ENGAGEMENT_MODES else "invalid"
+        source = arguments.get("source", "agent_inferred")
+        summary["engagement_source"] = source if source in ENGAGEMENT_SOURCES else "invalid"
+        summary["case_id"] = normalize_audit_token(arguments.get("case_id"))
+        summary["scope_counts"] = {
+            name: len(arguments[name]) for name in SCOPE_LISTS if isinstance(arguments.get(name), list)
+        }
+        summary["window_provided"] = arguments.get("window") is not None
+        summary["notes_provided"] = arguments.get("notes") is not None
+    if tool_name == "record_fact":
+        summary["fact_key"] = normalize_audit_token(arguments.get("key"))
+        summary["evidence_query_id"] = normalize_audit_token(arguments.get("evidence_query_id"))
+        summary["confidence"] = arguments.get("confidence") if arguments.get("confidence") in ("low", "medium", "high") else "invalid"
+    if tool_name == "get_engagement_log":
+        summary["case_id"] = normalize_audit_token(arguments.get("case_id"))
+
     return summary
 
 
@@ -94,6 +121,7 @@ def create_tool_audit_event(
     error: Exception | str | None = None,
     result_summary: dict[str, Any] | None = None,
     credential_summary: dict[str, Any] | None = None,
+    xql_error_class: str | None = None,
 ) -> dict[str, Any]:
     config = get_config()
     event: dict[str, Any] = {
@@ -110,6 +138,11 @@ def create_tool_audit_event(
             "id": principal.principal_id,
             "groups": list(principal.groups),
         },
+        "engagement": {
+            "mode": principal.mode,
+            "case_id": principal.case_id,
+            "source": principal.engagement_source,
+        },
         "request": summarize_tool_arguments(tool_name, arguments),
     }
     if credential_summary:
@@ -120,7 +153,37 @@ def create_tool_audit_event(
         event["error"] = _summarize_error(error)
     if result_summary:
         event["result"] = result_summary
+    if xql_error_class:
+        event["xql_error_class"] = xql_error_class
     return event
+
+
+def create_cost_guard_audit_event(
+    *,
+    decision: str,
+    outcome: str,
+    principal: MCPContext,
+    tool: str | None,
+    details: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a cost guard decision event. Callers pass hashes and units only, never query or approval text."""
+    config = get_config()
+    return {
+        "schema_version": "1.0",
+        "event_type": "cortex_xsiam_mcp.cost_guard",
+        "event_id": str(uuid.uuid4()),
+        "timestamp": datetime.now(UTC).isoformat(),
+        "service": "cortex-xsiam-mcp-gateway",
+        "decision": decision,
+        "outcome": outcome,
+        "tool": tool,
+        "transport": config.mcp_transport,
+        "principal": {
+            "id": principal.principal_id,
+            "groups": list(principal.groups),
+        },
+        "cost_guard": {key: value for key, value in details.items() if value is not None},
+    }
 
 
 MAX_LEARNING_AUDIT_CHANGES = 100

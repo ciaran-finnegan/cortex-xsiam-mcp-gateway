@@ -20,6 +20,13 @@ Collector.
 In local stdio development, groups can come from environment defaults. In
 production HTTP deployments, groups must come from verified identity claims.
 
+Engagement modes (`set_engagement`) only narrow access: a mode can hide tools
+that group policy grants but cannot grant a tool or dataset. Tools a principal
+cannot invoke are not advertised. Engagement state is bound to the session and
+to the principal, case files are principal-scoped and refused inside a git
+working tree, and continuation cursors are bound to the mode and case. See
+[Engagement Modes](ENGAGEMENT_MODES.md).
+
 ## Target State
 
 The target security model supports two deployment modes:
@@ -102,7 +109,11 @@ than accepting an XQL string. It enforces:
 - server caps for filters, metrics, grouping, fields, rows, cell length,
   response bytes, and timeframe;
 - a process-level semaphore hard-capped at four concurrent XQL queries;
-- timeout-bounded polling;
+- timeout-bounded polling, capped at `XQL_TIMEOUT_CEILING_SECONDS`;
+- the XQL cost guard, which applies to raw and typed queries alike: a required
+  timeframe, an estimate per query, refusal above the approval threshold
+  without approval, and refusal of any query that would take the shared quota
+  below the automation reserve, which approval cannot override;
 - removal of any columns XSIAM returns outside the requested projection;
 - metadata-only upstream HTTP and XQL failure errors so XSIAM response bodies
   and query error details cannot echo queries, filters, or tenant data into MCP
@@ -172,6 +183,16 @@ execution fails closed.
 - Large result streaming is not implemented.
 - Live enterprise validation is still required for each tenant-specific Entra,
   gateway, dataset, tool, credential, and audit-export configuration.
+- XQL cost guard limits:
+  - an `approval` argument is an accountability record, not proof that a human
+    typed it; an agent can write one, and only the per-principal daily cap and
+    the reserve bound what it can approve;
+  - approvals given through MCP elicitation are not counted against that cap;
+  - the result cache, approval totals, quota readings, in-flight reservations,
+    and slot timings live in each gateway process, so N replicas allow up to N
+    times the approval cap and can each admit queries against the same reserve;
+  - estimates are heuristics from the query text; XSIAM charges for bytes
+    scanned, which the gateway cannot see before a query runs.
 
 ## Threat Model Summary
 

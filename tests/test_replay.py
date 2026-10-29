@@ -45,6 +45,12 @@ async def _fact(key, evidence_query_id):
     )
 
 
+@pytest.fixture(autouse=True)
+def _cost_guard_off(monkeypatch):
+    # These tests exercise learning; test_learning_cost_guard.py covers the guard and observers together.
+    monkeypatch.setattr(get_config(), "cost_guard_enabled", False)
+
+
 @pytest.fixture
 def recorded_ioc_flood(pack, audit_events, clock, monkeypatch):
     """A synthetic IOC-flood triage: alerts by rule, alerts by host, a field check, two engagement facts."""

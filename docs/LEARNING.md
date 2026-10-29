@@ -380,7 +380,7 @@ Plain functions; callers import them lazily so the gateway runs without them.
 
 | Caller | Function | Use |
 | --- | --- | --- |
-| Cost guard | `learned_store.lookup_cost(dataset, window_bucket, selectivity)` | Read before the seed table. Returns `median_units`, `high_units` (maximum of the last 20 samples), `observations`, `confidence`, or `None` below `LEARNING_COST_MIN_OBSERVATIONS`. Use `high_units` and keep the seed band's lower bound as a floor. Bucket and class come from `learning_observers.window_bucket(window_ms(...))` and `selectivity_class(parse_xql(query))`. |
+| Cost guard | `learned_store.lookup_cost(dataset, window_bucket, selectivity)` | Called by `cost_guard.apply_learned_cost`, before the seed table. Returns `median_units`, `high_units` (maximum of the last 20 samples), `observations`, `confidence`, or `None` below `LEARNING_COST_MIN_OBSERVATIONS`. Use `high_units` and keep the seed band's lower bound as a floor. Bucket and class come from `learning_observers.window_bucket(window_ms(...))` and `selectivity_class(parse_xql(query))`. |
 | XQL validator | `learned_store.learned_enum_fields(dataset)`, `learned_absent_fields(dataset)` | Suggest `contains` for enum-like fields; reject or warn on fields XSIAM reported unknown. |
 | Field cache | `learning_observers.observe_field_catalog(ctx, dataset=..., fields=..., query_id=...)` | Call after any field-cache fill with the sample's query id. |
 | Engagement module | `learning_journal.journal_engagement_closed(engagement_key=..., case_id=...)` | Mark an engagement closed so the learner processes it within the close SLA. |
