@@ -157,6 +157,10 @@ refuses a query that:
   override;
 - is heavy while two other queries have run for more than 60 seconds.
 
+The approval threshold and reserve come from the engagement mode: 5 and 10
+units for `incident_response`, 3 and 15 for `threat_hunt`, and 1 and 20 for
+`operations` and `unset`.
+
 A refusal returns `error: "cost_guard"` with the estimate and cheaper
 rewrites: a shorter window, a host filter, counts instead of rows, a cheaper
 dataset, or the same XQL for the console. Approval comes from an MCP
