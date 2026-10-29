@@ -13,6 +13,7 @@ from starlette.datastructures import Headers
 
 from config.config import get_config
 from entities.MCPContext import MCPContext
+from usecase.engagement import apply_engagement
 
 VALID_IDENTITY_AUTH_MODES = {"none", "entra", "gateway", "entra_or_gateway"}
 _gateway_nonces: OrderedDict[tuple[str, str, str], int] = OrderedDict()
@@ -43,12 +44,12 @@ def resolve_mcp_context(ctx: Any | None) -> MCPContext:
     fallback = _lifespan_context(ctx) or default_mcp_context()
     access_token = get_access_token()
     if access_token:
-        return mcp_context_from_access_token(access_token, fallback)
+        return apply_engagement(mcp_context_from_access_token(access_token, fallback))
 
     if _identity_mode() != "none":
         raise IdentityAuthenticationError("Incoming MCP identity is required but was not verified")
 
-    return fallback
+    return apply_engagement(fallback)
 
 
 async def authenticate_http_headers(headers: Headers | dict[str, str]) -> AccessToken | None:

@@ -14,6 +14,11 @@ from usecase.credential_broker import (
     get_current_credential_selection,
     reset_current_credential_selection,
 )
+from usecase.engagement import (
+    ENGAGEMENT_MODES,
+    enter_engagement_scope,
+    exit_engagement_scope,
+)
 from usecase.identity import (
     IdentityAuthenticationError,
     default_mcp_context,
@@ -31,12 +36,20 @@ class ToolAuditMiddleware(Middleware):
         call_next: CallNext[mcp.types.CallToolRequestParams, ToolResult],
     ) -> ToolResult:
         config = get_config()
-        principal = _get_principal(context)
         tool_name = context.message.name
         arguments = context.message.arguments or {}
         selection_token = clear_current_credential_selection()
+        scope_token = None
 
         try:
+            # Load the caller's engagement once so every audit event, the policy
+            # middleware, and the tool itself see the same mode and case.
+            scope_token = await enter_engagement_scope(
+                context.fastmcp_context,
+                _get_verified_principal(context),
+                tool_name,
+            )
+            principal = _get_principal(context)
             if config.audit_log_emit_start_events:
                 await emit_audit_event(
                     create_tool_audit_event(
@@ -58,7 +71,7 @@ class ToolAuditMiddleware(Middleware):
                         tool_name=tool_name,
                         phase="end",
                         outcome=_infer_exception_outcome(e),
-                        principal=principal,
+                        principal=_get_principal(context),
                         arguments=arguments,
                         duration_ms=(now_monotonic() - started) * 1000,
                         error=e,
@@ -73,15 +86,18 @@ class ToolAuditMiddleware(Middleware):
                     tool_name=tool_name,
                     phase="end",
                     outcome=_infer_outcome(result),
-                    principal=principal,
+                    # Re-resolved so a set_engagement call is audited with the mode it set.
+                    principal=_get_principal(context),
                     arguments=arguments,
                     duration_ms=(now_monotonic() - started) * 1000,
-                    result_summary=_summarize_tool_result(result, context.fastmcp_context),
+                    result_summary=await _summarize_tool_result(result, context.fastmcp_context),
                     credential_summary=_credential_summary(selection),
                 )
             )
             return result
         finally:
+            if scope_token is not None:
+                exit_engagement_scope(scope_token)
             reset_current_credential_selection(selection_token)
 
 
@@ -90,6 +106,13 @@ def _get_principal(context: MiddlewareContext[Any]) -> MCPContext:
         return resolve_mcp_context(context.fastmcp_context)
     except IdentityAuthenticationError:
         return default_mcp_context()
+
+
+def _get_verified_principal(context: MiddlewareContext[Any]) -> MCPContext | None:
+    try:
+        return resolve_mcp_context(context.fastmcp_context)
+    except IdentityAuthenticationError:
+        return None
 
 
 def _infer_outcome(result: ToolResult) -> str:
@@ -112,11 +135,14 @@ def _infer_exception_outcome(error: Exception) -> str:
     return "error"
 
 
-def _summarize_tool_result(result: ToolResult, fastmcp_context: Any | None = None) -> dict[str, Any]:
+async def _summarize_tool_result(result: ToolResult, fastmcp_context: Any | None = None) -> dict[str, Any]:
     payload = _extract_json_payload(result)
     summary: dict[str, Any] = {"content_blocks": len(result.content)}
     if fastmcp_context is not None:
-        credential_profile = fastmcp_context.get_state("xsiam_credential_profile")
+        try:
+            credential_profile = await fastmcp_context.get_state("xsiam_credential_profile")
+        except RuntimeError:
+            credential_profile = None
         if isinstance(credential_profile, dict):
             summary["xsiam_credential_profile"] = credential_profile
     if payload:
@@ -125,6 +151,8 @@ def _summarize_tool_result(result: ToolResult, fastmcp_context: Any | None = Non
             summary["query_id"] = payload["query_id"]
         if "executed" in payload:
             summary["executed"] = payload["executed"]
+        if payload.get("previous_mode") in ENGAGEMENT_MODES:
+            summary["previous_mode"] = payload["previous_mode"]
         quota = _quota_summary(payload.get("quota"))
         if quota:
             summary["quota"] = quota

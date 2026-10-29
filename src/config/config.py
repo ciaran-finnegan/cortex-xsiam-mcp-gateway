@@ -51,10 +51,12 @@ class Settings(BaseSettings):
             '{"Admin":["*"],"Security":["*"],'
             '"SOC":["get_log_search_guidance","list_log_datasets","discover_log_fields","search_logs",'
             '"get_dataset_query_guidance","get_xql_help","query_dataset","continue_dataset_query",'
-            '"get_xql_query_quota","get_cases","get_issues"],'
+            '"get_xql_query_quota","get_cases","get_issues",'
+            '"set_engagement","get_engagement","record_fact","get_engagement_log"],'
             '"Tier1":["get_log_search_guidance","list_log_datasets","discover_log_fields","search_logs",'
             '"get_dataset_query_guidance","get_xql_help","query_dataset","continue_dataset_query",'
-            '"get_xql_query_quota","get_cases","get_issues"]}'
+            '"get_xql_query_quota","get_cases","get_issues",'
+            '"set_engagement","get_engagement","record_fact","get_engagement_log"]}'
         ),
         validation_alias="TOOL_ACCESS_POLICY",
     )
@@ -202,7 +204,7 @@ class Settings(BaseSettings):
         '{"amazon_aws_raw":["cloud_audit_logs"],"msft_azure_raw":["cloud_audit_logs"]}',
         validation_alias="COST_GUARD_CHEAPER_DATASETS",
     )
-    # Fallbacks when engagement modes are not installed; they match the unset mode's operations row.
+    # Used only if the engagement mode policy cannot be read; they match the unset mode's operations row.
     cost_guard_approval_threshold_units: float = Field(
         1.0,
         ge=0,
@@ -226,6 +228,16 @@ class Settings(BaseSettings):
     cost_guard_long_slot_limit: int = Field(2, ge=1, validation_alias="COST_GUARD_LONG_SLOT_LIMIT")
     cost_guard_cache_ttl_seconds: int = Field(600, ge=0, validation_alias="COST_GUARD_CACHE_TTL_SECONDS")
     cost_guard_cache_max_entries: int = Field(64, ge=0, validation_alias="COST_GUARD_CACHE_MAX_ENTRIES")
+
+    # --- Engagement Settings ---
+    engagement_store_dir: str = Field("", validation_alias="ENGAGEMENT_STORE_DIR")
+    engagement_mode_policy: str = Field("", validation_alias="ENGAGEMENT_MODE_POLICY")
+    engagement_max_scope_items: int = Field(
+        100,
+        ge=1,
+        le=1000,
+        validation_alias="ENGAGEMENT_MAX_SCOPE_ITEMS",
+    )
 
     # --- Audit Settings ---
     audit_log_enabled: bool = Field(True, validation_alias="AUDIT_LOG_ENABLED")

@@ -25,6 +25,7 @@ from usecase.dataset_query import (
     encode_query_cursor,
     query_hash,
 )
+from usecase.engagement import current_mode, get_mode_policy
 from usecase.identity import resolve_mcp_context
 from usecase.log_policy import DatasetAuthorizationError, ensure_dataset_authorized
 from usecase.xql_discovery import extract_xql_rows
@@ -44,9 +45,18 @@ XQLHelpTopic = Literal[
 
 
 async def get_dataset_query_guidance() -> dict[str, Any]:
-    """Return compact instructions for agents answering questions from allowed XSIAM datasets."""
+    """Return compact instructions for agents answering questions from allowed XSIAM datasets in the current engagement mode."""
+    mode = current_mode()
+    policy = get_mode_policy(mode)
     return {
         "success": True,
+        "engagement": {
+            "mode": mode,
+            "workflow": list(_MODE_WORKFLOWS[mode]),
+            "default_window_ms": policy.default_window_ms,
+            "default_result_shape": policy.default_result_shape,
+            "hidden_tools": list(policy.heavy_tools_hidden),
+        },
         "workflow": [
             "Call list_log_datasets to find an allowed dataset; narrow by name when possible.",
             "Call discover_log_fields for one dataset and request fields related to the user's concepts.",
@@ -293,6 +303,33 @@ def _output_fields(plan: DatasetQueryPlan) -> tuple[str, ...]:
         fields.insert(0, plan.time_bucket.field)
     fields.extend(metric.alias for metric in plan.metrics)
     return tuple(fields)
+
+
+_MODE_WORKFLOWS: dict[str, tuple[str, ...]] = {
+    "incident_response": (
+        "Call get_engagement and reuse its iocs, internal, front_ends, servers, and window; do not re-paste scope.",
+        "Query inside the engagement window. Widen it only with a stated reason.",
+        "Pull evidence rows for specific indicators with tight filters, explicit fields, and low limits.",
+        "After each finding, call record_fact with the query_id that proves it.",
+        "Check get_engagement_log before re-running a query; facts already recorded need no new query.",
+    ),
+    "threat_hunt": (
+        "State the hypothesis before querying and record whether it held with record_fact.",
+        "Aggregate first: counts, distinct counts, top values, and time buckets over the window.",
+        "Pull rows only for outliers the aggregates surface, with low limits.",
+        "Prefer one broad aggregate to many narrow row queries.",
+    ),
+    "operations": (
+        "Answer health, volume, and coverage questions with aggregates over short windows.",
+        "Do not pivot on indicators here; call set_engagement with incident_response or threat_hunt if the question becomes an investigation.",
+        "Raw XQL is hidden in this mode.",
+    ),
+    "unset": (
+        "Before querying, infer the mode from the request or ask the user one short question, then call set_engagement.",
+        "Indicators, an alert storm, or 'are we talking to X' is incident_response; 'why is X failing, blocked, or slow' is operations; 'look for' or a hypothesis is threat_hunt.",
+        "Until then the operations defaults apply and heavy tools are hidden.",
+    ),
+}
 
 
 _XQL_HELP: dict[str, dict[str, Any]] = {

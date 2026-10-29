@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from fake_context import fake_context
 from fastmcp.tools.tool import ToolResult
 from starlette.datastructures import Headers
 
@@ -54,17 +55,9 @@ def _gateway_headers(*, nonce: str, timestamp: str, secret: str) -> Headers:
 
 
 def _ctx(groups=("Security",)):
-    state = {}
-    return SimpleNamespace(
-        request_context=SimpleNamespace(
-            lifespan_context=MCPContext(
-                auth_headers={"Authorization": "test-key", "X-XDR-AUTH-ID": "test-id"},
-                principal_id="analyst@example.test",
-                groups=groups,
-            )
-        ),
-        set_state=lambda key, value: state.__setitem__(key, value),
-        get_state=lambda key: state.get(key),
+    return fake_context(
+        groups=groups,
+        auth_headers={"Authorization": "test-key", "X-XDR-AUTH-ID": "test-id"},
     )
 
 

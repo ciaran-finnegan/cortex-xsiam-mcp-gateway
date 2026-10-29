@@ -371,12 +371,13 @@ async def test_estimate_above_threshold_is_refused_with_structured_alternatives(
     assert "192.0.2.10" not in json.dumps(refused)
 
 
-def test_refusal_payload_is_classified_as_denied_by_the_audit_middleware():
+@pytest.mark.asyncio
+async def test_refusal_payload_is_classified_as_denied_by_the_audit_middleware():
     payload = {"success": False, "error": "cost_guard", "message": "Query not allowed by the cost guard (reserve): x."}
 
     assert audit_middleware._infer_outcome(ToolResult(structured_content=payload)) == "denied"
     assert audit_middleware._infer_exception_outcome(cost_guard.CostGuardRefusal(payload)) == "denied"
-    summary = audit_middleware._summarize_tool_result(ToolResult(structured_content={**payload, "rule": "reserve"}))
+    summary = await audit_middleware._summarize_tool_result(ToolResult(structured_content={**payload, "rule": "reserve"}))
     assert summary["cost_guard_rule"] == "reserve"
 
 
@@ -942,7 +943,7 @@ async def test_quota_block_reports_estimate_actual_remaining_and_session_spend(f
     assert second["quota"]["session_spent_units"] == 0.75
     assert "tenant-a" not in json.dumps(first["quota"])
 
-    summary = audit_middleware._summarize_tool_result(ToolResult(structured_content=second))
+    summary = await audit_middleware._summarize_tool_result(ToolResult(structured_content=second))
     assert summary["quota"] == {
         "estimate_units": 0.4,
         "actual_units": 0.5,
@@ -955,8 +956,9 @@ async def test_quota_block_reports_estimate_actual_remaining_and_session_spend(f
     }
 
 
-def test_audit_quota_summary_drops_unexpected_values():
-    summary = audit_middleware._summarize_tool_result(
+@pytest.mark.asyncio
+async def test_audit_quota_summary_drops_unexpected_values():
+    summary = await audit_middleware._summarize_tool_result(
         ToolResult(
             structured_content={
                 "success": True,

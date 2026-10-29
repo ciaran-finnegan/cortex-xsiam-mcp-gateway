@@ -20,6 +20,13 @@ Collector.
 In local stdio development, groups can come from environment defaults. In
 production HTTP deployments, groups must come from verified identity claims.
 
+Engagement modes (`set_engagement`) only narrow access: a mode can hide tools
+that group policy grants but cannot grant a tool or dataset. Tools a principal
+cannot invoke are not advertised. Engagement state is bound to the session and
+to the principal, case files are principal-scoped and refused inside a git
+working tree, and continuation cursors are bound to the mode and case. See
+[Engagement Modes](ENGAGEMENT_MODES.md).
+
 ## Target State
 
 The target security model supports two deployment modes:

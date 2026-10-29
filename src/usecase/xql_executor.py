@@ -6,6 +6,7 @@ from typing import Any
 
 from config.config import get_config
 from usecase import cost_guard
+from usecase.engagement import record_query_telemetry
 from usecase.fetcher import get_fetcher
 from usecase.xql_builder import MAX_XQL_RESULT_LIMIT
 
@@ -23,11 +24,13 @@ async def run_xql_query(
     approval: str | None = None,
     tool: str | None = None,
 ) -> dict[str, Any]:
-    """Run one XQL query through the cost guard.
+    """Run one XQL query through the cost guard and record it in the engagement log.
 
     A timeframe is required. The guard may return a cached reply, cap the timeout, or raise
     CostGuardRefusal before anything is submitted; every reply it lets through carries a
-    ``quota`` block.
+    ``quota`` block. Only queries that reach XSIAM are recorded: a refusal ran nothing and a
+    cache hit spent nothing, so recording either would count the same units twice. Recording
+    is telemetry only and never blocks or alters a query.
     """
     if not isinstance(query, str) or not query.strip():
         raise ValueError("XQL query must be a non-empty string")
@@ -45,6 +48,8 @@ async def run_xql_query(
     )
     if ticket.cached_response is not None:
         return ticket.cached_response
+    # Duration uses its own clock so it stays independent of the polling deadline.
+    started = time.monotonic()
     try:
         response = await _submit_and_poll(
             ctx,
@@ -55,10 +60,28 @@ async def run_xql_query(
             timeout_seconds=ticket.timeout_seconds,
             ticket=ticket,
         )
-    except BaseException:
+    except BaseException as e:
         cost_guard.abandon(ticket)
+        if ticket.submitted and isinstance(e, Exception):
+            await record_query_telemetry(
+                ctx,
+                query=query,
+                timeframe=ticket.timeframe_api,
+                response=None,
+                duration_ms=(time.monotonic() - started) * 1000,
+                error=e,
+            )
         raise
-    return await cost_guard.finish_query(ctx, ticket, response)
+    # finish_query reads the session spend before this query is recorded and adds it itself.
+    response = await cost_guard.finish_query(ctx, ticket, response)
+    await record_query_telemetry(
+        ctx,
+        query=query,
+        timeframe=ticket.timeframe_api,
+        response=response,
+        duration_ms=(time.monotonic() - started) * 1000,
+    )
+    return response
 
 
 async def _submit_and_poll(

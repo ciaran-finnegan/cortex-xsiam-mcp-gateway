@@ -48,6 +48,7 @@ from mcp.types import ClientCapabilities, ElicitationCapability
 
 from config.config import get_config
 from entities.MCPContext import MCPContext
+from usecase import engagement as engagement_layer
 from usecase.audit import create_cost_guard_audit_event, emit_audit_event
 from usecase.credential_broker import select_xsiam_credentials
 from usecase.dataset_query import QueryTimeframe
@@ -217,11 +218,12 @@ def unit_bands() -> dict[str, tuple[float, float]]:
 def current_policy() -> GuardPolicy:
     """Return the approval threshold and reserve for the current call's engagement mode.
 
-    Uses ``usecase.engagement.get_mode_policy`` when engagement modes are installed and
-    falls back to the cost guard settings otherwise or when the mode policy is invalid.
+    Reads ``get_mode_policy()`` for the mode of the current tool call. Falls back to the cost
+    guard settings, which match the unset mode, only if the mode policy cannot be read, for
+    example when ``ENGAGEMENT_MODE_POLICY`` is invalid.
     """
     engagement = _engagement()
-    if engagement is not None and hasattr(engagement, "get_mode_policy"):
+    if engagement is not None:
         try:
             policy = engagement.get_mode_policy()
             return GuardPolicy(
@@ -242,10 +244,11 @@ def current_policy() -> GuardPolicy:
 
 
 def _engagement():
-    try:
-        return importlib.import_module("usecase.engagement")
-    except ImportError:
-        return None
+    """The engagement layer that supplies the mode policy, session spend and scope lists.
+
+    A function rather than a bare import so tests can isolate the guard from engagement state.
+    """
+    return engagement_layer
 
 
 # --- Timeframes and timeouts ---
@@ -1379,7 +1382,7 @@ def _known_remaining(quota_key: str) -> float | None:
 
 async def _session_spent_units(ctx: Any, ticket: GuardTicket, actual: float | None) -> float:
     engagement = _engagement()
-    if engagement is not None and hasattr(engagement, "get_session_spend") and ctx is not None:
+    if engagement is not None and ctx is not None:
         try:
             spend = await engagement.get_session_spend(ctx, ticket.principal)
             # The engagement log records this query after the executor returns.
@@ -1391,7 +1394,7 @@ async def _session_spent_units(ctx: Any, ticket: GuardTicket, actual: float | No
 
 async def _engagement_servers(ctx: Any, principal: MCPContext) -> list[str]:
     engagement = _engagement()
-    if engagement is None or not hasattr(engagement, "load_engagement") or ctx is None:
+    if engagement is None or ctx is None:
         return []
     try:
         loaded = await engagement.load_engagement(ctx, principal)
@@ -1416,6 +1419,10 @@ def _cache_key(
         "tenant_id": principal.tenant_id,
         "auth_source": principal.auth_source,
         "groups": sorted(principal.groups),
+        # Like continuation cursors, a cached result belongs to one engagement mode and case, so
+        # a hit is always a repeat of a query already recorded in the same case log.
+        "engagement_mode": principal.mode,
+        "case_id": principal.case_id,
         "dataset_policy_sha256": hashlib.sha256(config.log_search_dataset_policy.encode()).hexdigest(),
         "credential_profile": credential_profile,
         "credential_policy_sha256": hashlib.sha256(credential_policy.encode()).hexdigest(),

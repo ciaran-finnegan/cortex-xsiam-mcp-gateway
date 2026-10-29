@@ -109,13 +109,29 @@ export TOOL_ACCESS_POLICY='{
     "search_logs",
     "get_xql_query_quota",
     "get_cases",
-    "get_issues"
+    "get_issues",
+    "set_engagement",
+    "get_engagement",
+    "record_fact",
+    "get_engagement_log"
   ]
 }'
 ```
 
 Tool policy is enforced for every MCP tool invocation. Dataset policy still
-runs inside discovery and query tools.
+runs inside discovery and query tools. Tools a principal cannot invoke are not
+advertised in `tools/list`.
+
+## Engagement Modes
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `ENGAGEMENT_STORE_DIR` | empty | Optional absolute directory for principal-scoped case files. Must be outside the repository and any git working tree; startup fails otherwise. Empty keeps engagements in session state only. |
+| `ENGAGEMENT_MODE_POLICY` | empty | JSON per-mode overrides of default window, approval threshold, session budget, reserve units, default result shape, and hidden tools. Empty uses the built-in defaults. `unset` inherits the `operations` row. |
+| `ENGAGEMENT_MAX_SCOPE_ITEMS` | `100` | Maximum entries per scope list in `set_engagement`; valid range 1-1000. |
+
+Modes only narrow what `TOOL_ACCESS_POLICY` grants. See
+[Engagement Modes](ENGAGEMENT_MODES.md).
 
 ## Structured Dataset Query Limits
 
@@ -134,9 +150,10 @@ runs inside discovery and query tools.
 | `XQL_MAX_CONCURRENT_QUERIES` | `4` | Process-level XQL concurrency, hard-capped at XSIAM's four-query limit. |
 | `XQL_MAX_QUERY_CHARS` | `32768` | Maximum compiled or privileged raw XQL length. |
 
-Cursor state is bound to principal, tenant, auth source, groups, query plan, and
-the current dataset-policy hash. A policy or identity change invalidates the
-cursor, and policy is checked again on continuation.
+Cursor state is bound to principal, tenant, auth source, groups, query plan,
+engagement mode, case id, and the current dataset-policy hash. A policy,
+identity, or engagement change invalidates the cursor, and policy is checked
+again on continuation.
 
 ## XQL Cost Guard
 
@@ -201,9 +218,12 @@ Rules, in order:
    gateway stores only its SHA-256 and counts the approved units against a
    per-principal daily cap. An explicit decline is final for that call.
 
-The approval threshold and reserve come from the engagement mode policy
-(`get_mode_policy`) when engagement modes are installed, and from the settings
-below otherwise. An `approval` string is an accountability record, not proof
+The approval threshold and reserve come from the current engagement mode's
+policy (`get_mode_policy`, set with `ENGAGEMENT_MODE_POLICY`); the settings
+below are used only if that policy cannot be read. `session_spent_units` is the
+spend in the engagement session log plus the current query. Only queries that
+reach XSIAM are written to the engagement log: a refusal runs nothing, and a
+cache hit is a repeat of a query already logged under the same mode and case. An `approval` string is an accountability record, not proof
 that a human typed it; the cap bounds what an agent could approve for itself,
 and clients with elicitation never rely on it unless the prompt is cancelled.
 
@@ -236,8 +256,8 @@ against a timed-out query), `remaining_units`,
 | `COST_GUARD_SELECTIVE_FIELDS` | `agent_hostname,agent_id,endpoint_id,endpoint_name,host_name,hostname` | Fields whose positive equality scopes a heavy dataset to hosts. |
 | `COST_GUARD_HOST_FIELDS` | `{"xdr_data":"agent_hostname"}` | Field used by the host-filter alternative per heavy dataset. |
 | `COST_GUARD_CHEAPER_DATASETS` | `{"amazon_aws_raw":["cloud_audit_logs"],"msft_azure_raw":["cloud_audit_logs"]}` | Cheaper datasets for the same question. Catalogue datasets in the same domain that the principal's policy lists are added. |
-| `COST_GUARD_APPROVAL_THRESHOLD_UNITS` | `1.0` | Approval threshold when engagement modes are not installed. Matches the unset mode. |
-| `COST_GUARD_RESERVE_UNITS` | `20.0` | Units kept for automation when engagement modes are not installed. Matches the unset mode. |
+| `COST_GUARD_APPROVAL_THRESHOLD_UNITS` | `1.0` | Approval threshold used only if the engagement mode policy cannot be read. Matches the unset mode. |
+| `COST_GUARD_RESERVE_UNITS` | `20.0` | Reserve used only if the engagement mode policy cannot be read. Matches the unset mode. |
 | `COST_GUARD_APPROVAL_DAILY_CAP_UNITS` | `10.0` | Units one principal may approve per UTC day with the `approval` argument. `0` disables the argument, including for timeout extensions. Elicitation approvals are not capped. |
 | `COST_GUARD_DAILY_QUOTA_UNITS` | `0` | The tenant's daily API budget, used with `get_quota`'s `daily_used_quota` when that reply has no `remaining_quota`. `0` means unknown. `license_quota` is never used, because tenants report it either as an annual total or as a daily allowance. |
 | `COST_GUARD_QUOTA_STALE_SECONDS` | `300` | Age after which the last observed `remaining_quota` is refreshed from `get_quota`. |
@@ -312,8 +332,9 @@ MCP_IDENTITY_AUTH_MODE=entra
 ENTRA_TENANT_ID=replace-with-tenant-id
 ENTRA_AUDIENCE=api://your-mcp-app-registration
 LOG_SEARCH_DATASET_POLICY={"Security":["*"],"Tier1":["xdr_data"]}
-TOOL_ACCESS_POLICY={"Security":["*"],"Tier1":["get_dataset_query_guidance","list_log_datasets","discover_log_fields","query_dataset","continue_dataset_query"]}
+TOOL_ACCESS_POLICY={"Security":["*"],"Tier1":["get_dataset_query_guidance","list_log_datasets","discover_log_fields","query_dataset","continue_dataset_query","set_engagement","get_engagement","record_fact","get_engagement_log"]}
 RAW_XQL_PRIVILEGED_GROUPS=Security,Admin
+ENGAGEMENT_STORE_DIR=/var/lib/cortex-mcp/engagements
 DATASET_QUERY_CURSOR_SECRET=replace-with-a-long-random-secret
 AUDIT_LOG_ENABLED=true
 AUDIT_LOG_XSIAM_HTTP_COLLECTOR_ENABLED=false

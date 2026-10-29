@@ -164,6 +164,10 @@ class QueryCursorError(ValueError):
     """Raised when a dataset continuation cursor is invalid or no longer authorized."""
 
 
+# Version 2 binds the engagement mode and case id into the cursor.
+CURSOR_VERSION = 2
+
+
 def build_dataset_xql(
     plan: DatasetQueryPlan,
     *,
@@ -259,12 +263,14 @@ def encode_query_cursor(plan: DatasetQueryPlan, principal: MCPContext, last_valu
     if not plan.enable_continuation or not plan.order_by:
         raise QueryCursorError("Continuation requires enable_continuation=true and deterministic order_by fields")
     payload = {
-        "version": 1,
+        "version": CURSOR_VERSION,
         "principal_id": principal.principal_id,
         "tenant_id": principal.tenant_id,
         "auth_source": principal.auth_source,
         "groups_hash": _groups_hash(principal.groups),
         "policy_hash": _policy_hash(),
+        "mode": principal.mode,
+        "case_id": principal.case_id,
         "plan": plan.model_dump(mode="json"),
         "last_values": last_values,
     }
@@ -279,7 +285,7 @@ def decode_query_cursor(cursor: str, principal: MCPContext) -> tuple[DatasetQuer
     except (InvalidToken, ValueError, TypeError, json.JSONDecodeError) as e:
         raise QueryCursorError("Continuation cursor is invalid or expired") from e
 
-    if payload.get("version") != 1:
+    if payload.get("version") != CURSOR_VERSION:
         raise QueryCursorError("Unsupported continuation cursor version")
     if payload.get("principal_id") != principal.principal_id:
         raise QueryCursorError("Continuation cursor belongs to a different principal")
@@ -289,6 +295,8 @@ def decode_query_cursor(cursor: str, principal: MCPContext) -> tuple[DatasetQuer
         raise QueryCursorError("Continuation cursor groups have changed")
     if payload.get("policy_hash") != _policy_hash():
         raise QueryCursorError("Continuation cursor policy has changed")
+    if payload.get("mode") != principal.mode or payload.get("case_id") != principal.case_id:
+        raise QueryCursorError("Continuation cursor was issued under a different engagement mode or case")
 
     try:
         plan = DatasetQueryPlan.model_validate(payload["plan"])
