@@ -15,6 +15,13 @@ from entities.exceptions import (
 )
 from pkg.util import create_response
 from usecase.base_module import BaseModule
+from usecase.cost_guard import (
+    APPROVAL_ARGUMENT_DESCRIPTION,
+    CostGuardRefusal,
+    estimate_xql,
+    normalize_timeframe,
+)
+from usecase.cost_guard import result_fields as cost_guard_result_fields
 from usecase.fetcher import get_fetcher
 from usecase.identity import resolve_mcp_context
 from usecase.log_policy import (
@@ -59,8 +66,8 @@ async def get_log_search_guidance() -> str:
             "recommended_agent_workflow": [
                 "Convert the user's plain-English goal into a small investigation plan.",
                 "Call list_log_datasets with name_contains when possible to find allowed candidate datasets.",
-                "Call discover_log_fields for one candidate dataset, using field_name_contains when the user mentioned a likely concept such as user, host, ip, process, or severity.",
-                "Call query_dataset with explicit dataset, fields or metrics, timeframe, and a low limit.",
+                "Call discover_log_fields for one candidate dataset with a short timeframe, using field_name_contains when the user mentioned a likely concept such as user, host, ip, process, or severity.",
+                "Call query_dataset with explicit dataset, fields or metrics, a required timeframe, and a low limit.",
                 "Refine with another discover_log_fields or search_logs call only when needed.",
             ],
             "rules": [
@@ -70,6 +77,7 @@ async def get_log_search_guidance() -> str:
                 "Use low limits first and summarize results; do not pull broad result sets by default.",
                 "Use dry_run=true on query_dataset when you need to inspect generated XQL before execution.",
                 "If a dataset or field is denied or absent, ask the user for a narrower request or use another allowed dataset.",
+                "Every query needs a timeframe. If the cost guard refuses a query (error cost_guard), show the analyst the estimate and alternatives; pass an approval argument only when the analyst typed it.",
             ],
             "tools": {
                 "list_log_datasets": "Returns datasets allowed by current dataset policy.",
@@ -99,6 +107,8 @@ async def _run_xql_query(
     timeframe: dict | None = None,
     poll_interval_seconds: int = 1,
     max_poll_attempts: int = 60,
+    approval: str | None = None,
+    tool: str | None = None,
 ) -> dict:
     return await run_xql_query(
         ctx,
@@ -107,6 +117,8 @@ async def _run_xql_query(
         timeframe=timeframe,
         poll_interval_seconds=poll_interval_seconds,
         timeout_seconds=max(max_poll_attempts * max(poll_interval_seconds, 1), 1),
+        approval=approval,
+        tool=tool,
     )
 
 
@@ -126,13 +138,14 @@ async def search_logs(
     ] = None,
     timeframe: Annotated[
         dict | None,
-        Field(description="Optional XSIAM API timeframe object, for example {'from': 1598907600000, 'to': 1599080399000}."),
+        Field(description="Required XSIAM timeframe, for example {'from_ms': 1598907600000, 'to_ms': 1599080399000} or {'relative_ms': 86400000}. There is no default window."),
     ] = None,
     limit: Annotated[int, Field(description="Maximum result count. Prefer query_dataset for aggregates and continuation.")] = 25,
     dry_run: Annotated[
         bool,
-        Field(description="When true, return generated XQL without executing it."),
+        Field(description="When true, return generated XQL and its cost estimate without executing it."),
     ] = False,
+    approval: Annotated[str | None, Field(description=APPROVAL_ARGUMENT_DESCRIPTION)] = None,
 ) -> str:
     """
     Compatibility wrapper for a simple structured row search in one XSIAM dataset.
@@ -144,6 +157,7 @@ async def search_logs(
     try:
         context = _get_lifespan_context(ctx)
         policy_decision = ensure_dataset_authorized(context, dataset)
+        normalized_timeframe = normalize_timeframe(timeframe)
         safe_limit = min(max(int(limit), 1), get_config().dataset_query_max_rows)
         xql = build_structured_xql(dataset, filters, fields, safe_limit)
 
@@ -151,16 +165,29 @@ async def search_logs(
             return create_response(
                 data={
                     "query": xql,
-                    "timeframe": timeframe,
+                    "timeframe": normalized_timeframe.to_api(),
+                    "cost_estimate": estimate_xql(xql, normalized_timeframe).to_dict(),
                     "dataset_policy": policy_decision.__dict__,
                     "executed": False,
                 }
             )
 
-        response_data = await _run_xql_query(ctx, xql, safe_limit, timeframe=timeframe)
+        response_data = await _run_xql_query(
+            ctx,
+            xql,
+            safe_limit,
+            timeframe=normalized_timeframe.to_api(),
+            approval=approval,
+            tool="search_logs",
+        )
         if response_data.get("error"):
             return create_response(
-                data={"error": response_data["error"], "executed": True, **xql_error_details(response_data)},
+                data={
+                    "error": response_data["error"],
+                    "executed": True,
+                    **xql_error_details(response_data),
+                    **cost_guard_result_fields(response_data),
+                },
                 is_error=True,
             )
         rows, truncation = bound_result_rows(
@@ -177,9 +204,13 @@ async def search_logs(
                 "dataset_policy": policy_decision.__dict__,
                 "xsiam": result_metadata(response_data),
                 "truncation": truncation,
+                **cost_guard_result_fields(response_data),
             }
         )
 
+    except CostGuardRefusal as e:
+        logger.info("Log search refused by the cost guard: %s", e.payload["rule"])
+        return create_response(data=e.payload, is_error=True)
     except DatasetAuthorizationError as e:
         logger.info(f"Dataset authorization denied: {e}")
         return create_response(data={"error": str(e), "executed": False}, is_error=True)
@@ -274,7 +305,7 @@ async def discover_log_fields(
     ] = DEFAULT_DISCOVERY_SAMPLE_SIZE,
     timeframe: Annotated[
         dict | None,
-        Field(description="Optional XSIAM API timeframe object for the sample query."),
+        Field(description="Required XSIAM timeframe for the sample query, for example {'relative_ms': 86400000}. There is no default window."),
     ] = None,
     field_name_contains: Annotated[
         str | None,
@@ -284,6 +315,7 @@ async def discover_log_fields(
         int,
         Field(description=f"Maximum fields to return. Capped at {MAX_DISCOVERY_FIELD_COUNT}."),
     ] = DEFAULT_DISCOVERY_FIELD_COUNT,
+    approval: Annotated[str | None, Field(description=APPROVAL_ARGUMENT_DESCRIPTION)] = None,
 ) -> str:
     """
     Discover observed fields for an allowed XSIAM dataset by running a bounded XQL sample.
@@ -296,14 +328,17 @@ async def discover_log_fields(
     try:
         context = _get_lifespan_context(ctx)
         policy_decision = ensure_dataset_authorized(context, dataset)
+        normalized_timeframe = normalize_timeframe(timeframe)
         safe_sample_size = min(max(int(sample_size), 1), MAX_DISCOVERY_SAMPLE_SIZE)
         query = build_field_discovery_xql(dataset, safe_sample_size)
         response_data = await _run_xql_query(
             ctx,
             query,
             safe_sample_size,
-            timeframe=timeframe,
+            timeframe=normalized_timeframe.to_api(),
             max_poll_attempts=30,
+            approval=approval,
+            tool="discover_log_fields",
         )
         if response_data.get("error"):
             return create_response(
@@ -312,6 +347,7 @@ async def discover_log_fields(
                     **xql_error_details(response_data),
                     "dataset": dataset,
                     "dataset_policy": policy_decision.__dict__,
+                    **cost_guard_result_fields(response_data),
                 },
                 is_error=True,
             )
@@ -336,8 +372,12 @@ async def discover_log_fields(
                 "dataset_policy": policy_decision.__dict__,
                 "exhaustive": False,
                 "guidance": "Use these observed field names to build compact query_dataset calls. This tool returns schema guidance only; it intentionally does not return sample event values.",
+                **cost_guard_result_fields(response_data),
             }
         )
+    except CostGuardRefusal as e:
+        logger.info("Field discovery refused by the cost guard: %s", e.payload["rule"])
+        return create_response(data=e.payload, is_error=True)
     except DatasetAuthorizationError as e:
         logger.info("Dataset field discovery denied: %s", e)
         return create_response(data={"error": str(e)}, is_error=True)

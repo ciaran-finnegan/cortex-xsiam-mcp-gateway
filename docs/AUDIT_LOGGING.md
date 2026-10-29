@@ -25,12 +25,19 @@ Important fields:
 | `tool` | MCP tool name. |
 | `principal.id` | Human or service principal known to the server. |
 | `principal.groups` | Groups/app roles known to the server. |
+| `engagement.mode` | Engagement mode in effect: `incident_response`, `threat_hunt`, `operations`, or `unset`. The end event of `set_engagement` records the new mode. |
+| `engagement.case_id` | Validated case id of the engagement, or `null`. |
+| `engagement.source` | Who chose the mode: `human`, `agent_inferred`, or `header`; `null` while unset. Caller-declared provenance, not used for authorization. |
 | `request.argument_names` | Names of supplied tool arguments. |
 | `request.argument_hash` | SHA-256 hash of the redacted argument object. |
 | `request.dataset` | Dataset when present. |
 | `request.query_sha256` | SHA-256 hash of raw XQL when present. |
 | `xsiam.profile_name` | Configured nonsecret name of the XSIAM credential profile selected for the request. |
 | `xsiam.matched_group` | Verified group that selected the credential profile, when profile brokering is enabled. |
+| `request.engagement_mode`, `request.engagement_source`, `request.scope_counts` | `set_engagement` mode, source, and scope list sizes. Scope values and notes are never logged. |
+| `request.fact_key`, `request.evidence_query_id` | `record_fact` key and evidence query; the fact value is never logged. |
+| `result.previous_mode` | Mode before a `set_engagement` call. |
+| `result.xsiam_credential_profile` | Credential profile selected during this request only. |
 | `error.message_sha256` | SHA-256 of exception text; raw exception messages are not emitted. |
 | `xql_error_class` | Class of the last failed XQL query in the call: `unknown_field`, `unknown_dataset`, `syntax_error`, `type_mismatch`, `timeframe_invalid`, or `unclassified`. Absent when no query failed. See [XQL Validation](XQL_VALIDATION.md). |
 | `request.probe` | Whether a `validate_xql` call asked for a probe; `result.executed` records whether it ran. |
@@ -59,6 +66,11 @@ group, and SHA-256 of the API key ID; API key values are never included.
     "id": "analyst@example.com",
     "groups": ["Tier1"]
   },
+  "engagement": {
+    "mode": "incident_response",
+    "case_id": "IR-2026-001",
+    "source": "human"
+  },
   "request": {
     "argument_names": ["dataset", "fields", "filters", "limit", "mode"],
     "argument_hash": "4f0b...",
@@ -74,6 +86,37 @@ group, and SHA-256 of the API key ID; API key values are never included.
   }
 }
 ```
+
+## Cost Guard Events
+
+The XQL cost guard emits `event_type=cortex_xsiam_mcp.cost_guard` (schema
+version `1.0`) for every refusal, approval, and elicitation outcome, in
+addition to the tool invocation events. See the cost guard section of
+`CONFIGURATION.md` for the rules.
+
+| Field | Description |
+| --- | --- |
+| `decision` | `refused`, `approved`, or `elicitation`. |
+| `outcome` | `denied` or `approved`; for elicitation `accepted`, `declined`, `cancelled`, `timeout`, or `error`. |
+| `tool` | Tool that submitted the query. |
+| `principal.id`, `principal.groups` | As in tool invocation events. |
+| `cost_guard.rule` | Refusal rule: `approval_required`, `approval_declined`, `approval_cap`, `reserve`, or `long_running_slots`. |
+| `cost_guard.mode`, `cost_guard.policy_source` | Engagement mode and whether the threshold came from the mode policy or settings. |
+| `cost_guard.estimate_class`, `estimate_low_units`, `estimate_high_units` | Estimate band. |
+| `cost_guard.datasets`, `cost_guard.window_ms` | Datasets referenced and the effective window. |
+| `cost_guard.remaining_units`, `reserve_units`, `approval_threshold_units` | Quota position at the decision. |
+| `cost_guard.query_sha256` | SHA-256 of the submitted XQL. Query text is never included. |
+| `cost_guard.approval_method` | `elicitation` or `approval_argument`. |
+| `cost_guard.approval_sha256` | SHA-256 of the analyst's approval text. The text itself is never logged. |
+| `cost_guard.approval_reason` | `estimate_above_threshold` or `extended_timeout`. |
+| `cost_guard.approved_units`, `approved_today_units`, `approval_cap_units` | Units approved, the principal's UTC-day total, and the cap. |
+
+Tool invocation end events also carry `result.quota` (numeric
+`estimate_units`, `actual_units`, `debited_units`, `remaining_units`,
+`session_spent_units`;
+`estimate_class`, `actual_units_source`, `approval_method` from fixed value
+sets; `cached` and `approved` booleans) and `result.cost_guard_rule` for a
+refusal. A refusal's end event has `outcome=denied`.
 
 ## Local Structured Logs
 

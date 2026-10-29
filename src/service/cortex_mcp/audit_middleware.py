@@ -8,10 +8,16 @@ from fastmcp.tools.tool import ToolResult
 from config.config import get_config
 from entities.MCPContext import MCPContext
 from usecase.audit import create_tool_audit_event, emit_audit_event, now_monotonic
+from usecase.cost_guard import COST_GUARD_RULES, CostGuardRefusal
 from usecase.credential_broker import (
     clear_current_credential_selection,
     get_current_credential_selection,
     reset_current_credential_selection,
+)
+from usecase.engagement import (
+    ENGAGEMENT_MODES,
+    enter_engagement_scope,
+    exit_engagement_scope,
 )
 from usecase.identity import (
     IdentityAuthenticationError,
@@ -35,13 +41,21 @@ class ToolAuditMiddleware(Middleware):
         call_next: CallNext[mcp.types.CallToolRequestParams, ToolResult],
     ) -> ToolResult:
         config = get_config()
-        principal = _get_principal(context)
         tool_name = context.message.name
         arguments = context.message.arguments or {}
         selection_token = clear_current_credential_selection()
         error_class_token = clear_current_xql_error_class()
+        scope_token = None
 
         try:
+            # Load the caller's engagement once so every audit event, the policy
+            # middleware, and the tool itself see the same mode and case.
+            scope_token = await enter_engagement_scope(
+                context.fastmcp_context,
+                _get_verified_principal(context),
+                tool_name,
+            )
+            principal = _get_principal(context)
             if config.audit_log_emit_start_events:
                 await emit_audit_event(
                     create_tool_audit_event(
@@ -63,7 +77,7 @@ class ToolAuditMiddleware(Middleware):
                         tool_name=tool_name,
                         phase="end",
                         outcome=_infer_exception_outcome(e),
-                        principal=principal,
+                        principal=_get_principal(context),
                         arguments=arguments,
                         duration_ms=(now_monotonic() - started) * 1000,
                         error=e,
@@ -79,10 +93,11 @@ class ToolAuditMiddleware(Middleware):
                     tool_name=tool_name,
                     phase="end",
                     outcome=_infer_outcome(result),
-                    principal=principal,
+                    # Re-resolved so a set_engagement call is audited with the mode it set.
+                    principal=_get_principal(context),
                     arguments=arguments,
                     duration_ms=(now_monotonic() - started) * 1000,
-                    result_summary=_summarize_tool_result(result, context.fastmcp_context),
+                    result_summary=await _summarize_tool_result(result, context.fastmcp_context),
                     credential_summary=_credential_summary(selection),
                     xql_error_class=get_current_xql_error_class(),
                 )
@@ -90,6 +105,8 @@ class ToolAuditMiddleware(Middleware):
             return result
         finally:
             reset_current_xql_error_class(error_class_token)
+            if scope_token is not None:
+                exit_engagement_scope(scope_token)
             reset_current_credential_selection(selection_token)
 
 
@@ -100,13 +117,21 @@ def _get_principal(context: MiddlewareContext[Any]) -> MCPContext:
         return default_mcp_context()
 
 
+def _get_verified_principal(context: MiddlewareContext[Any]) -> MCPContext | None:
+    try:
+        return resolve_mcp_context(context.fastmcp_context)
+    except IdentityAuthenticationError:
+        return None
+
+
 def _infer_outcome(result: ToolResult) -> str:
     payload = _extract_json_payload(result)
     if not payload:
         return "success"
 
     if str(payload.get("success", "")).lower() == "false":
-        error = str(payload.get("error", "")).lower()
+        # A cost guard refusal keeps error "cost_guard" for clients and words the denial in message.
+        error = f"{payload.get('error', '')} {payload.get('message', '')}".lower()
         if "not allowed" in error or "not authorized" in error or "privileged" in error:
             return "denied"
         return "error"
@@ -114,16 +139,19 @@ def _infer_outcome(result: ToolResult) -> str:
 
 
 def _infer_exception_outcome(error: Exception) -> str:
-    if isinstance(error, (IdentityAuthenticationError, ToolAuthorizationError)):
+    if isinstance(error, (IdentityAuthenticationError, ToolAuthorizationError, CostGuardRefusal)):
         return "denied"
     return "error"
 
 
-def _summarize_tool_result(result: ToolResult, fastmcp_context: Any | None = None) -> dict[str, Any]:
+async def _summarize_tool_result(result: ToolResult, fastmcp_context: Any | None = None) -> dict[str, Any]:
     payload = _extract_json_payload(result)
     summary: dict[str, Any] = {"content_blocks": len(result.content)}
     if fastmcp_context is not None:
-        credential_profile = fastmcp_context.get_state("xsiam_credential_profile")
+        try:
+            credential_profile = await fastmcp_context.get_state("xsiam_credential_profile")
+        except RuntimeError:
+            credential_profile = None
         if isinstance(credential_profile, dict):
             summary["xsiam_credential_profile"] = credential_profile
     if payload:
@@ -132,6 +160,39 @@ def _summarize_tool_result(result: ToolResult, fastmcp_context: Any | None = Non
             summary["query_id"] = payload["query_id"]
         if "executed" in payload:
             summary["executed"] = payload["executed"]
+        if payload.get("previous_mode") in ENGAGEMENT_MODES:
+            summary["previous_mode"] = payload["previous_mode"]
+        quota = _quota_summary(payload.get("quota"))
+        if quota:
+            summary["quota"] = quota
+        if payload.get("error") == "cost_guard" and payload.get("rule") in COST_GUARD_RULES:
+            summary["cost_guard_rule"] = payload["rule"]
+    return summary
+
+
+_QUOTA_NUMBER_FIELDS = ("estimate_units", "actual_units", "debited_units", "remaining_units", "session_spent_units")
+_QUOTA_LABEL_FIELDS = {
+    "estimate_class": {"light", "medium", "heavy", "extreme"},
+    "actual_units_source": {"query_cost", "remaining_quota_delta", "cache"},
+    "approval_method": {"elicitation", "approval_argument"},
+}
+
+
+def _quota_summary(quota: Any) -> dict[str, Any] | None:
+    """Copy only numeric and allowlisted quota fields so tool output cannot inject audit content."""
+    if not isinstance(quota, dict):
+        return None
+    summary: dict[str, Any] = {}
+    for key in _QUOTA_NUMBER_FIELDS:
+        value = quota.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            summary[key] = value
+    for key, allowed in _QUOTA_LABEL_FIELDS.items():
+        if quota.get(key) in allowed:
+            summary[key] = quota[key]
+    for key in ("cached", "approved"):
+        if isinstance(quota.get(key), bool):
+            summary[key] = quota[key]
     return summary
 
 

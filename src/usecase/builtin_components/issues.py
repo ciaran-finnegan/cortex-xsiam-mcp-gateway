@@ -17,6 +17,12 @@ from entities.exceptions import (
 from entities.llm_config import LLM_FORMATTING_BASE_INSTRUCTIONS
 from pkg.util import create_response, read_resource
 from usecase.base_module import BaseModule
+from usecase.cost_guard import (
+    APPROVAL_ARGUMENT_DESCRIPTION,
+    CostGuardRefusal,
+    normalize_timeframe,
+)
+from usecase.cost_guard import result_fields as cost_guard_result_fields
 from usecase.fetcher import get_fetcher
 from usecase.identity import resolve_mcp_context
 from usecase.log_policy import (
@@ -119,9 +125,10 @@ async def get_issues(ctx: Context,
 
 async def execute_xql_query(ctx: Context,
                             query: Annotated[str, Field(description="Privileged XQL ending with a numeric '| limit N' stage")],
-                            timeout: Annotated[int, Field(description="Query timeout in seconds", default=60)] = 60,
+                            timeout: Annotated[int, Field(description="Query timeout in seconds, capped at XQL_TIMEOUT_CEILING_SECONDS (default 120) or XQL_TIMEOUT_APPROVED_CEILING_SECONDS (default 300) when approved", default=60)] = 60,
                             result_limit: Annotated[int, Field(description="Maximum returned rows, capped by server policy", default=100)] = 100,
-                            timeframe: Annotated[dict | None, Field(description="Optional XSIAM API relative or absolute timeframe")] = None,
+                            timeframe: Annotated[dict | None, Field(description="Required XSIAM timeframe: {'from_ms': <epoch ms>, 'to_ms': <epoch ms>} or {'relative_ms': <ms>}. The API shapes {'from', 'to'} and {'relativeTime'} are also accepted. There is no default window.")] = None,
+                            approval: Annotated[str | None, Field(description=APPROVAL_ARGUMENT_DESCRIPTION)] = None,
                             ) -> str:
     """
     Execute an XQL (Extended Query Language) query to search for issues, events, or other data in Cortex XSIAM.
@@ -129,6 +136,9 @@ async def execute_xql_query(ctx: Context,
 
     Use this tool to search for issues by name, description, or any other field using XQL query syntax.
     This is particularly useful for finding specific issues when you know part of the name or description.
+
+    Every query passes the XQL cost guard. A refused query returns error "cost_guard" with the
+    estimate, the rule, and cheaper alternatives; show them to the analyst before retrying.
 
     Args:
         ctx: The FastMCP context.
@@ -138,6 +148,8 @@ async def execute_xql_query(ctx: Context,
             - Search for issues in the last 30 days:
               `dataset = xdr_data | filter event_type = "issue" | filter observation_time >= now() - 30d | fields issue_id, name, observation_time`
         timeout: Query timeout in seconds (default: 60).
+        timeframe: Required query window.
+        approval: Analyst-typed approval for a query the cost guard refused.
 
     Returns:
         JSON response containing query results.
@@ -148,14 +160,17 @@ async def execute_xql_query(ctx: Context,
         # Raw XQL can reference joins or subqueries, so it is available only to
         # principals whose dataset policy grants all datasets.
         ensure_dataset_authorized(context, ALL_DATASETS)
+        normalized_timeframe = normalize_timeframe(timeframe)
         safe_limit = min(max(int(result_limit), 1), get_config().dataset_query_max_rows)
         bounded_query = enforce_terminal_xql_limit(query, safe_limit)
         response_data = await run_xql_query(
             ctx,
             bounded_query,
             safe_limit,
-            timeframe=timeframe,
+            timeframe=normalized_timeframe.to_api(),
             timeout_seconds=timeout,
+            approval=approval,
+            tool="execute_xql_query",
         )
         if response_data.get("error"):
             return create_response(data=response_data, is_error=True)
@@ -167,9 +182,13 @@ async def execute_xql_query(ctx: Context,
                 "query_id": response_data.get("query_id"),
                 "xsiam": result_metadata(response_data),
                 "truncation": truncation,
+                **cost_guard_result_fields(response_data),
             }
         )
 
+    except CostGuardRefusal as e:
+        logger.info("Raw XQL refused by the cost guard: %s", e.payload["rule"])
+        return create_response(data=e.payload, is_error=True)
     except (PAPIConnectionError, PAPIAuthenticationError, PAPIServerError, PAPIClientRequestError, PAPIResponseError, PAPIClientError) as e:
         logger.exception(f"PAPI error while executing XQL query: {e}")
         return create_response(data={"error": str(e)}, is_error=True)

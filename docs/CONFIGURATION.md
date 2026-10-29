@@ -56,8 +56,9 @@ export RAW_XQL_PRIVILEGED_GROUPS="Security,Admin"
 ```
 
 Use this raw XQL tool only for high-trust roles. Every raw query must end with a
-numeric `| limit N` stage; the server clamps that stage to
-`DATASET_QUERY_MAX_ROWS` before execution. Prefer `query_dataset` for routine
+numeric `| limit N` stage; the server strips `//` and `/* */` comments, then
+clamps that stage to `DATASET_QUERY_MAX_ROWS` before execution, so a limit
+written inside a comment does not count. Prefer `query_dataset` for routine
 agent workflows because it requires an explicit dataset and compiles only
 allowlisted query operations.
 
@@ -108,13 +109,29 @@ export TOOL_ACCESS_POLICY='{
     "search_logs",
     "get_xql_query_quota",
     "get_cases",
-    "get_issues"
+    "get_issues",
+    "set_engagement",
+    "get_engagement",
+    "record_fact",
+    "get_engagement_log"
   ]
 }'
 ```
 
 Tool policy is enforced for every MCP tool invocation. Dataset policy still
-runs inside discovery and query tools.
+runs inside discovery and query tools. Tools a principal cannot invoke are not
+advertised in `tools/list`.
+
+## Engagement Modes
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `ENGAGEMENT_STORE_DIR` | empty | Optional absolute directory for principal-scoped case files. Must be outside the repository and any git working tree; startup fails otherwise. Empty keeps engagements in session state only. |
+| `ENGAGEMENT_MODE_POLICY` | empty | JSON per-mode overrides of default window, approval threshold, session budget, reserve units, default result shape, and hidden tools. Empty uses the built-in defaults. `unset` inherits the `operations` row. |
+| `ENGAGEMENT_MAX_SCOPE_ITEMS` | `100` | Maximum entries per scope list in `set_engagement`; valid range 1-1000. |
+
+Modes only narrow what `TOOL_ACCESS_POLICY` grants. See
+[Engagement Modes](ENGAGEMENT_MODES.md).
 
 `validate_xql` is granted like any other tool; the default policy gives it to
 `Admin` and `Security` only. Its optional probe also requires the raw-XQL grants.
@@ -137,9 +154,132 @@ runs inside discovery and query tools.
 | `XQL_MAX_QUERY_CHARS` | `32768` | Maximum compiled or privileged raw XQL length. |
 | `XQL_ENUM_FIELDS` | `{}` | JSON object mapping dataset names or glob patterns to enum-backed field names, for `validate_xql`. Adds to the built-in vendor-standard list. Example: `{"sample_*": ["event_category"]}`. |
 
-Cursor state is bound to principal, tenant, auth source, groups, query plan, and
-the current dataset-policy hash. A policy or identity change invalidates the
-cursor, and policy is checked again on continuation.
+Cursor state is bound to principal, tenant, auth source, groups, query plan,
+engagement mode, case id, and the current dataset-policy hash. A policy,
+identity, or engagement change invalidates the cursor, and policy is checked
+again on continuation.
+
+## XQL Cost Guard
+
+Every XQL query, whether raw, typed, discovery, or helper, passes the cost guard
+in `run_xql_query` before submission. XSIAM charges compute units for bytes
+scanned, and the API budget is shared with SOC tooling and playbook automation;
+once it is spent, every query fails until 00:00 UTC.
+
+Every query tool requires a `timeframe` (`{"from_ms": ..., "to_ms": ...}` or
+`{"relative_ms": ...}`; the API shapes `{"from", "to"}` and `{"relativeTime"}`
+are accepted). There is no server default window. The span is checked against
+`DATASET_QUERY_MAX_TIMEFRAME_MS`, and so is any `config timeframe = <n><unit>`
+stage inside raw XQL. `config timeframe between ...` is rejected; pass absolute
+ranges in the `timeframe` argument.
+
+The guard classifies each query as `light`, `medium`, `heavy`, or `extreme`
+from a score:
+
+| Factor | Points |
+| --- | --- |
+| Dataset tier `light` / `medium` / `heavy` (highest tier referenced; no dataset clause counts as `heavy`) | 0 / 2 / 4 |
+| Window up to 1 d / 7 d / 30 d / 90 d / longer | 0 / 1 / 2 / 3 / 4 |
+| Heavy dataset without a positive `=` or `in` filter on a field in `COST_GUARD_SELECTIVE_FIELDS` | +1 |
+| `contains`, `~=`, `regextract`, `regexcapture` | +1 |
+| `_raw_log` or `to_json_string(` | +2 |
+| `join`, `union`, `dedup` / `search` / `call` | +1 each / +2 / +3 |
+
+Scores up to 2 are light, up to 4 medium, up to 6 heavy, and above that
+extreme. A query with only dataset, `fields`, `limit`, and `config` stages is an
+early-exit sample and scores its tier points minus one, whatever the window.
+Comments and string literals are removed before parsing, so neither can hide or
+fake a stage. The dataset tier comes from the authored catalogue `volume` when
+the catalogue is installed (`very_high` is heavy, `high` medium, `medium` and
+`low` light), then `COST_GUARD_DATASET_TIERS`, then `COST_GUARD_DEFAULT_TIER`.
+Estimates are deliberately conservative; tune the tier map and bands against
+the `actual_units` each result records.
+
+Rules, in order:
+
+1. A cached result for the same principal, groups, dataset policy, XSIAM
+   credential profile, profile configuration, API key fingerprint, query text,
+   timeframe, and limit is returned within `COST_GUARD_CACHE_TTL_SECONDS`
+   without spending quota. The credential broker is checked first, so a principal it now rejects
+   gets no cached result.
+2. While `COST_GUARD_LONG_SLOT_LIMIT` queries have held a query slot longer than
+   `COST_GUARD_LONG_SLOT_SECONDS`, new heavy and extreme queries are refused.
+3. Any query whose estimate (the band's high bound), plus the estimates of
+   queries in flight, would take the remaining quota below the reserve is
+   refused. Approval never overrides the reserve. The remaining quota comes
+   from the last XSIAM reply; when that is missing or older than
+   `COST_GUARD_QUOTA_STALE_SECONDS`, the guard reads `/xql/get_quota` and uses
+   its `remaining_quota`, or `COST_GUARD_DAILY_QUOTA_UNITS` minus
+   `daily_used_quota`. If it still cannot tell, heavy and extreme queries are
+   refused. A query that times out or fails without a reply after its start
+   request was sent stays debited at its estimate until the next XSIAM
+   reading, because XSIAM may still be running it. A query cancelled before
+   submission is released without a debit.
+4. A query whose estimate exceeds the approval threshold needs approval. When
+   the MCP client supports elicitation, the guard asks the analyst directly with
+   the estimate and alternatives. Otherwise, or when that prompt is cancelled,
+   the tool's `approval` argument must carry the analyst's own words; the
+   gateway stores only its SHA-256 and counts the approved units against a
+   per-principal daily cap. An explicit decline is final for that call.
+
+The approval threshold and reserve come from the current engagement mode's
+policy (`get_mode_policy`, set with `ENGAGEMENT_MODE_POLICY`); the settings
+below are used only if that policy cannot be read. `session_spent_units` is the
+spend in the engagement session log plus the current query. Only queries that
+reach XSIAM are written to the engagement log: a refusal runs nothing, and a
+cache hit is a repeat of a query already logged under the same mode and case. An `approval` string is an accountability record, not proof
+that a human typed it; the cap bounds what an agent could approve for itself,
+and clients with elicitation never rely on it unless the prompt is cancelled.
+
+A refusal returns `success: false`, `error: "cost_guard"`, a `message` beginning
+"Query not allowed by the cost guard", the `rule` (`approval_required`,
+`approval_declined`, `approval_cap`, `reserve`, or `long_running_slots`), the
+`estimate`, `remaining_units`, `reserve_units`, `approval_threshold_units`,
+`mode`, and deterministic `alternatives`, each with its own estimate: the last
+7 days and 24 hours of the window, a host filter when the engagement lists
+servers, counts instead of rows, a cheaper dataset that the principal may query
+(field names differ, so it carries no XQL), and the unchanged XQL for the XSIAM
+console, which is not charged to the API quota. A query run in the console is
+outside this gateway: its cost guard, MCP audit events, raw-XQL privilege
+check, and dataset policy do not apply. This repository does not define the
+console's own authorization, audit, or cost controls; confirm them separately
+before relying on that alternative.
+
+Every result carries `quota`: `estimate_units`, `estimate_class`,
+`estimate_band`, `actual_units` (from `query_cost`, else the drop in
+`remaining_quota`), `actual_units_source`, `debited_units` (the estimate held
+against a timed-out query), `remaining_units`,
+`session_spent_units`, `cached`, `approved`, and `approval_method`.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `COST_GUARD_ENABLED` | `true` | Apply the cache and the refusal rules. The timeframe requirement and timeout ceiling apply either way. |
+| `COST_GUARD_UNIT_BANDS` | `{"light":[0.001,0.4],"medium":[0.5,3.6],"heavy":[5,9],"extreme":[10,31]}` | Unit band per class. Decisions use the high bound. |
+| `COST_GUARD_DATASET_TIERS` | `{"xdr_data":"heavy","xdr_*":"heavy","*_story":"heavy","amazon_aws_raw":"heavy","msft_azure_raw":"heavy","google_gcp_*":"heavy"}` | Dataset name or `*` glob to `light`, `medium`, or `heavy`. Exact names win over globs. |
+| `COST_GUARD_DEFAULT_TIER` | `medium` | Tier for datasets the catalogue and tier map do not list. |
+| `COST_GUARD_SELECTIVE_FIELDS` | `agent_hostname,agent_id,endpoint_id,endpoint_name,host_name,hostname` | Fields whose positive equality scopes a heavy dataset to hosts. |
+| `COST_GUARD_HOST_FIELDS` | `{"xdr_data":"agent_hostname"}` | Field used by the host-filter alternative per heavy dataset. |
+| `COST_GUARD_CHEAPER_DATASETS` | `{"amazon_aws_raw":["cloud_audit_logs"],"msft_azure_raw":["cloud_audit_logs"]}` | Cheaper datasets for the same question. Catalogue datasets in the same domain that the principal's policy lists are added. |
+| `COST_GUARD_APPROVAL_THRESHOLD_UNITS` | `1.0` | Approval threshold used only if the engagement mode policy cannot be read. Matches the unset mode. |
+| `COST_GUARD_RESERVE_UNITS` | `20.0` | Reserve used only if the engagement mode policy cannot be read. Matches the unset mode. |
+| `COST_GUARD_APPROVAL_DAILY_CAP_UNITS` | `10.0` | Units one principal may approve per UTC day with the `approval` argument. `0` disables the argument, including for timeout extensions. Elicitation approvals are not capped. |
+| `COST_GUARD_DAILY_QUOTA_UNITS` | `0` | The tenant's daily API budget, used with `get_quota`'s `daily_used_quota` when that reply has no `remaining_quota`. `0` means unknown. `license_quota` is never used, because tenants report it either as an annual total or as a daily allowance. |
+| `COST_GUARD_QUOTA_STALE_SECONDS` | `300` | Age after which the last observed `remaining_quota` is refreshed from `get_quota`. |
+| `COST_GUARD_ELICITATION_ENABLED` | `true` | Ask the analyst through MCP elicitation when the client supports it. |
+| `COST_GUARD_ELICITATION_TIMEOUT_SECONDS` | `120` | Time to wait for an answer before treating the prompt as unanswered. |
+| `COST_GUARD_LONG_SLOT_SECONDS` | `60` | Slot age that counts as long-running. |
+| `COST_GUARD_LONG_SLOT_LIMIT` | `2` | Long-running slots that block new heavy queries. |
+| `COST_GUARD_CACHE_TTL_SECONDS` | `600` | Result cache lifetime. `0` disables the cache. |
+| `COST_GUARD_CACHE_MAX_ENTRIES` | `64` | Cached results kept per process, least recently used first out. |
+| `XQL_TIMEOUT_CEILING_SECONDS` | `120` | Ceiling for any query timeout, including `execute_xql_query`'s `timeout`. |
+| `XQL_TIMEOUT_APPROVED_CEILING_SECONDS` | `300` | Ceiling once the query is approved. An `approval` on a query below the threshold also lifts the ceiling, recorded with zero units. |
+
+Quota readings and in-flight reservations are keyed by the XSIAM API URL, so
+every credential profile shares them. Cache entries, approval totals, quota
+readings, reservations, and slot timings live in the gateway process. Each
+replica keeps its own, so N replicas allow up to N times the approval cap and
+can each admit queries against the same reserve; size the cap and reserve with
+the replica count in mind.
 
 ## XSIAM Credential Broker
 
@@ -196,8 +336,9 @@ MCP_IDENTITY_AUTH_MODE=entra
 ENTRA_TENANT_ID=replace-with-tenant-id
 ENTRA_AUDIENCE=api://your-mcp-app-registration
 LOG_SEARCH_DATASET_POLICY={"Security":["*"],"Tier1":["xdr_data"]}
-TOOL_ACCESS_POLICY={"Security":["*"],"Tier1":["get_dataset_query_guidance","list_log_datasets","discover_log_fields","query_dataset","continue_dataset_query"]}
+TOOL_ACCESS_POLICY={"Security":["*"],"Tier1":["get_dataset_query_guidance","list_log_datasets","discover_log_fields","query_dataset","continue_dataset_query","set_engagement","get_engagement","record_fact","get_engagement_log"]}
 RAW_XQL_PRIVILEGED_GROUPS=Security,Admin
+ENGAGEMENT_STORE_DIR=/var/lib/cortex-mcp/engagements
 DATASET_QUERY_CURSOR_SECRET=replace-with-a-long-random-secret
 AUDIT_LOG_ENABLED=true
 AUDIT_LOG_XSIAM_HTTP_COLLECTOR_ENABLED=false

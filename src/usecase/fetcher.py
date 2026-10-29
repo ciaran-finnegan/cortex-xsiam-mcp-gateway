@@ -91,13 +91,16 @@ async def get_fetcher(ctx: Context) -> Fetcher:
         xdr_id = config.papi_auth_id_key
 
     logger.info("Creating new fetcher with credential profile %s", selection.profile_name)
-    ctx.set_state(
+    # Both values describe this request only. Request-scoped state keeps a later
+    # tool call in the same session from inheriting a stale credential profile.
+    await ctx.set_state(
         "xsiam_credential_profile",
         {
             "profile_name": selection.profile_name,
             "matched_group": selection.matched_group,
         },
+        serializable=False,
     )
     fetcher = Fetcher(url, api_key, xdr_id)
-    ctx.set_state("fetcher", fetcher)
+    await ctx.set_state("fetcher", fetcher, serializable=False)
     return fetcher

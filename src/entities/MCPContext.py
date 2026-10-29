@@ -8,3 +8,9 @@ class MCPContext:
     groups: tuple[str, ...] = ()
     auth_source: str = "local-default"
     tenant_id: str | None = None
+    # Engagement mode and case for the current tool call. Modes only narrow what
+    # the groups above grant; they never widen it.
+    mode: str = "unset"
+    case_id: str | None = None
+    # Who chose the mode: human, agent_inferred, or header. Provenance only; never used for authorization.
+    engagement_source: str | None = None

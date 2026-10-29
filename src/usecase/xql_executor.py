@@ -5,6 +5,8 @@ import time
 from typing import Any
 
 from config.config import get_config
+from usecase import cost_guard
+from usecase.engagement import record_query_telemetry
 from usecase.fetcher import get_fetcher
 from usecase.xql_builder import MAX_XQL_RESULT_LIMIT
 from usecase.xql_errors import (
@@ -24,77 +26,145 @@ async def run_xql_query(
     timeframe: dict[str, int] | None = None,
     poll_interval_seconds: float = 1,
     timeout_seconds: int = 60,
+    approval: str | None = None,
+    tool: str | None = None,
 ) -> dict[str, Any]:
+    """Run one XQL query through the cost guard and record it in the engagement log.
+
+    A timeframe is required. The guard may return a cached reply, cap the timeout, or raise
+    CostGuardRefusal before anything is submitted; every reply it lets through carries a
+    ``quota`` block. Only queries that reach XSIAM are recorded: a refusal ran nothing and a
+    cache hit spent nothing, so recording either would count the same units twice. Recording
+    is telemetry only and never blocks or alters a query.
+    """
     if not isinstance(query, str) or not query.strip():
         raise ValueError("XQL query must be a non-empty string")
     if len(query) > get_config().xql_max_query_chars:
         raise ValueError(f"XQL query exceeds the configured {get_config().xql_max_query_chars}-character limit")
     safe_limit = min(max(int(result_limit), 1), MAX_XQL_RESULT_LIMIT)
-    async with _query_semaphore():
-        fetcher = await get_fetcher(ctx)
-        request_data: dict[str, Any] = {"query": query}
-        if timeframe is not None:
-            request_data["timeframe"] = timeframe
-
-        start_response = await fetcher.send_request(
-            "/xql/start_xql_query/",
-            data={"request_data": request_data},
+    ticket = await cost_guard.prepare_query(
+        ctx,
+        query,
+        timeframe=timeframe,
+        result_limit=safe_limit,
+        timeout_seconds=timeout_seconds,
+        approval=approval,
+        tool=tool,
+    )
+    if ticket.cached_response is not None:
+        return ticket.cached_response
+    # Duration uses its own clock so it stays independent of the polling deadline.
+    started = time.monotonic()
+    try:
+        response = await _submit_and_poll(
+            ctx,
+            query,
+            safe_limit,
+            timeframe=ticket.timeframe_api,
+            poll_interval_seconds=poll_interval_seconds,
+            timeout_seconds=ticket.timeout_seconds,
+            ticket=ticket,
         )
-        query_id = _extract_query_id(start_response)
-        start_failure = _failure_response(start_response, query_id=query_id, poll_attempts=0)
-        if start_failure is not None:
-            return start_failure
-        if _is_complete(start_response):
-            start_response["query_id"] = query_id
-            start_response["poll_attempts"] = 0
-            return start_response
-        if not query_id:
-            return {
-                "error": "XSIAM did not return a query identifier",
-                "query_id": None,
-            }
+    except BaseException as e:
+        cost_guard.abandon(ticket)
+        if ticket.submitted and isinstance(e, Exception):
+            await record_query_telemetry(
+                ctx,
+                query=query,
+                timeframe=ticket.timeframe_api,
+                response=None,
+                duration_ms=(time.monotonic() - started) * 1000,
+                error=e,
+            )
+        raise
+    # finish_query reads the session spend before this query is recorded and adds it itself.
+    response = await cost_guard.finish_query(ctx, ticket, response)
+    await record_query_telemetry(
+        ctx,
+        query=query,
+        timeframe=ticket.timeframe_api,
+        response=response,
+        duration_ms=(time.monotonic() - started) * 1000,
+    )
+    return response
 
-        result_payload = {
-            "request_data": {
-                "query_id": query_id,
-                "pending_flag": True,
-                "limit": safe_limit,
-                "format": "json",
+
+async def _submit_and_poll(
+    ctx,
+    query: str,
+    safe_limit: int,
+    *,
+    timeframe: dict[str, int],
+    poll_interval_seconds: float,
+    timeout_seconds: int,
+    ticket: cost_guard.GuardTicket,
+) -> dict[str, Any]:
+    async with _query_semaphore():
+        with cost_guard.track_slot():
+            fetcher = await get_fetcher(ctx)
+            await cost_guard.record_fetch_credential(ticket, fetcher)
+            request_data: dict[str, Any] = {"query": query, "timeframe": timeframe}
+
+            ticket.submitted = True
+            start_response = await fetcher.send_request(
+                "/xql/start_xql_query/",
+                data={"request_data": request_data},
+            )
+            query_id = _extract_query_id(start_response)
+            start_failure = _failure_response(start_response, query_id=query_id, poll_attempts=0)
+            if start_failure is not None:
+                return start_failure
+            if _is_complete(start_response):
+                start_response["query_id"] = query_id
+                start_response["poll_attempts"] = 0
+                return start_response
+            if not query_id:
+                return {
+                    "error": "XSIAM did not return a query identifier",
+                    "query_id": None,
+                }
+
+            result_payload = {
+                "request_data": {
+                    "query_id": query_id,
+                    "pending_flag": True,
+                    "limit": safe_limit,
+                    "format": "json",
+                }
             }
-        }
-        deadline = _monotonic() + max(int(timeout_seconds), 1)
-        attempts = 0
-        while _monotonic() < deadline:
-            await asyncio.sleep(max(float(poll_interval_seconds), 0))
-            attempts += 1
-            result_response = await fetcher.send_request("/xql/get_query_results/", data=result_payload)
-            reply = result_response.get("reply")
-            if isinstance(reply, dict):
-                status = str(reply.get("status", "")).upper()
-                if status in {"PENDING", "RUNNING"}:
-                    continue
-                if status in {"FAILED", "FAIL", "ERROR"}:
-                    failure = _failure_response(
-                        result_response,
-                        query_id=query_id,
-                        poll_attempts=attempts,
-                    )
-                    if failure is not None:
-                        return failure
-                if status in {"SUCCESS", "COMPLETED", "DONE"} or _has_results(result_response):
+            deadline = _monotonic() + max(int(timeout_seconds), 1)
+            attempts = 0
+            while _monotonic() < deadline:
+                await asyncio.sleep(max(float(poll_interval_seconds), 0))
+                attempts += 1
+                result_response = await fetcher.send_request("/xql/get_query_results/", data=result_payload)
+                reply = result_response.get("reply")
+                if isinstance(reply, dict):
+                    status = str(reply.get("status", "")).upper()
+                    if status in {"PENDING", "RUNNING"}:
+                        continue
+                    if status in {"FAILED", "FAIL", "ERROR"}:
+                        failure = _failure_response(
+                            result_response,
+                            query_id=query_id,
+                            poll_attempts=attempts,
+                        )
+                        if failure is not None:
+                            return failure
+                    if status in {"SUCCESS", "COMPLETED", "DONE"} or _has_results(result_response):
+                        result_response["query_id"] = query_id
+                        result_response["poll_attempts"] = attempts
+                        return result_response
+                elif _has_results(result_response):
                     result_response["query_id"] = query_id
                     result_response["poll_attempts"] = attempts
                     return result_response
-            elif _has_results(result_response):
-                result_response["query_id"] = query_id
-                result_response["poll_attempts"] = attempts
-                return result_response
 
-        return {
-            "query_id": query_id,
-            "poll_attempts": attempts,
-            "error": f"XQL query timed out after {max(int(timeout_seconds), 1)} seconds",
-        }
+            return {
+                "query_id": query_id,
+                "poll_attempts": attempts,
+                "error": f"XQL query timed out after {max(int(timeout_seconds), 1)} seconds",
+            }
 
 
 def _extract_query_id(response_data: dict[str, Any]) -> str | None:
