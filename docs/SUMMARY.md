@@ -9,6 +9,7 @@
 * [Enterprise Deployment](ENTERPRISE_DEPLOYMENT.md)
 * [Configuration](CONFIGURATION.md)
 * [Audit Logging](AUDIT_LOGGING.md)
+* [Learning](LEARNING.md)
 
 ## Security
 

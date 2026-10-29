@@ -1,6 +1,9 @@
 import hmac
 import time
 from collections import OrderedDict
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 from hashlib import sha256
 from threading import Lock
@@ -18,6 +21,7 @@ from usecase.engagement import apply_engagement
 VALID_IDENTITY_AUTH_MODES = {"none", "entra", "gateway", "entra_or_gateway"}
 _gateway_nonces: OrderedDict[tuple[str, str, str], int] = OrderedDict()
 _gateway_nonce_lock = Lock()
+_service_principal: ContextVar[MCPContext | None] = ContextVar("service_principal", default=None)
 
 class IdentityAuthenticationError(PermissionError):
     """Raised when incoming MCP identity cannot be verified."""
@@ -40,7 +44,24 @@ def default_mcp_context() -> MCPContext:
     )
 
 
+@contextmanager
+def service_principal(context: MCPContext) -> Iterator[MCPContext]:
+    """Run in-process background work, such as the learner, as a configured service principal.
+
+    Only code in the same process can set this; no MCP request input reaches it. Dataset
+    policy, tool policy, the credential broker and audit still apply to the principal.
+    """
+    token = _service_principal.set(context)
+    try:
+        yield context
+    finally:
+        _service_principal.reset(token)
+
+
 def resolve_mcp_context(ctx: Any | None) -> MCPContext:
+    service = _service_principal.get()
+    if service is not None:
+        return service
     fallback = _lifespan_context(ctx) or default_mcp_context()
     access_token = get_access_token()
     if access_token:

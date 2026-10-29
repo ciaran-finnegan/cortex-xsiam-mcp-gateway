@@ -10,6 +10,7 @@ from config.config import get_config
 from entities.MCPContext import MCPContext
 from service.cortex_mcp.audit_middleware import ToolAuditMiddleware
 from service.cortex_mcp.engagement_middleware import EngagementGuidanceMiddleware
+from service.cortex_mcp.learning_middleware import LearningMiddleware
 from service.cortex_mcp.tool_policy_middleware import ToolPolicyMiddleware
 from usecase.engagement import validate_engagement_settings
 from usecase.identity import parse_csv
@@ -107,7 +108,7 @@ def create_mcp_server(api_key: str | None = None, api_key_id: str | None = None)
     mcp = FastMCP(
         name="Cortex MCP Server",
         instructions=SERVER_INSTRUCTIONS,
-        middleware=[ToolAuditMiddleware(), ToolPolicyMiddleware(), EngagementGuidanceMiddleware()],
+        middleware=[ToolAuditMiddleware(), ToolPolicyMiddleware(), EngagementGuidanceMiddleware(), LearningMiddleware()],
         lifespan=lifespan,
     )
 

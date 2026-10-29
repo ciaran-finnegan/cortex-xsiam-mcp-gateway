@@ -8,6 +8,7 @@ from config.config import get_config
 from usecase import cost_guard
 from usecase.engagement import record_query_telemetry
 from usecase.fetcher import get_fetcher
+from usecase.learning_observers import classify_xql_failure, observe_xql_execution
 from usecase.xql_builder import MAX_XQL_RESULT_LIMIT
 from usecase.xql_errors import (
     XQL_VALIDATION_ERROR,
@@ -29,13 +30,15 @@ async def run_xql_query(
     approval: str | None = None,
     tool: str | None = None,
 ) -> dict[str, Any]:
-    """Run one XQL query through the cost guard and record it in the engagement log.
+    """Run one XQL query through the cost guard, record it, and pass it to the learning observers.
 
     A timeframe is required. The guard may return a cached reply, cap the timeout, or raise
     CostGuardRefusal before anything is submitted; every reply it lets through carries a
-    ``quota`` block. Only queries that reach XSIAM are recorded: a refusal ran nothing and a
-    cache hit spent nothing, so recording either would count the same units twice. Recording
-    is telemetry only and never blocks or alters a query.
+    ``quota`` block. Only queries that reach XSIAM are recorded and observed: a refusal ran
+    nothing, and a cache hit spent nothing and reuses an old query id, so recording or
+    observing either would count the same units twice. Recording and observing never block
+    or alter a query; the observers read only the query id, metadata, row count and
+    classified error of the response.
     """
     if not isinstance(query, str) or not query.strip():
         raise ValueError("XQL query must be a non-empty string")
@@ -79,12 +82,20 @@ async def run_xql_query(
         raise
     # finish_query reads the session spend before this query is recorded and adds it itself.
     response = await cost_guard.finish_query(ctx, ticket, response)
+    duration_ms = (time.monotonic() - started) * 1000
     await record_query_telemetry(
         ctx,
         query=query,
         timeframe=ticket.timeframe_api,
         response=response,
-        duration_ms=(time.monotonic() - started) * 1000,
+        duration_ms=duration_ms,
+    )
+    await observe_xql_execution(
+        ctx,
+        query=query,
+        timeframe=ticket.timeframe_api,
+        response=response,
+        duration_ms=duration_ms,
     )
     return response
 
@@ -111,7 +122,7 @@ async def _submit_and_poll(
                 data={"request_data": request_data},
             )
             query_id = _extract_query_id(start_response)
-            start_failure = _failure_response(start_response, query_id=query_id, poll_attempts=0)
+            start_failure = _failure_response(start_response, query=query, query_id=query_id, poll_attempts=0)
             if start_failure is not None:
                 return start_failure
             if _is_complete(start_response):
@@ -146,6 +157,7 @@ async def _submit_and_poll(
                     if status in {"FAILED", "FAIL", "ERROR"}:
                         failure = _failure_response(
                             result_response,
+                            query=query,
                             query_id=query_id,
                             poll_attempts=attempts,
                         )
@@ -199,6 +211,7 @@ def _is_complete(response_data: dict[str, Any]) -> bool:
 def _failure_response(
     response_data: dict[str, Any],
     *,
+    query: str,
     query_id: str | None,
     poll_attempts: int,
 ) -> dict[str, Any] | None:
@@ -223,6 +236,10 @@ def _failure_response(
         if classified is not None:
             result["error"] = XQL_VALIDATION_ERROR
             result.update(classified)
+        # For the learner: error_class and unknown_field only when the field is an identifier the query already contains.
+        learned_class = classify_xql_failure(detail, query)
+        if learned_class:
+            result.update(learned_class)
     record_xql_error_class(result.get("class", ""))
     return result
 

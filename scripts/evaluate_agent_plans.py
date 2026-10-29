@@ -54,6 +54,7 @@ Rules:
 - If a standard reader asks for raw XQL but the intent fits allowed discovered fields, preserve the intent with query_dataset rather than denying the request.
 - For top-N, sort the metric alias descending and use the requested limit.
 - A 24-hour timeframe is {\"relative_ms\": 86400000}.
+- learned_facts are tenant facts the gateway measured. For a field in enum_fields, filter with contains, never eq. Never use a field in absent_fields.
 - Each result must contain id, action, tool, arguments, and a short reason. The evaluation envelope requires every arguments key; set unused keys to null. Use null tool and all-null arguments for clarify or deny.
 
 Cases:
@@ -138,6 +139,17 @@ def _validate_case(case: dict[str, Any], result: dict[str, Any]) -> list[str]:
     required_filters = set(expected.get("required_filter_fields", []))
     if not required_filters.issubset(filter_fields):
         errors.append(f"{case_id}: missing required filter fields {sorted(required_filters)}")
+    filter_operators = {
+        item.get("field"): item.get("operator")
+        for item in arguments.get("filters", [])
+        if isinstance(item, dict)
+    }
+    for field_name, operator in expected.get("filter_operators", {}).items():
+        if filter_operators.get(field_name) != operator:
+            errors.append(f"{case_id}: filter on {field_name} must use {operator}")
+    learned_absent = set(case.get("learned_facts", {}).get(dataset, {}).get("absent_fields", []))
+    if used_fields & learned_absent:
+        errors.append(f"{case_id}: used learned absent fields {sorted(used_fields & learned_absent)}")
 
     metrics = arguments.get("metrics", [])
     if expected.get("metric") and not any(

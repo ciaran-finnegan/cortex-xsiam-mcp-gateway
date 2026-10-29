@@ -135,8 +135,8 @@ working tree. See [engagement modes](docs/ENGAGEMENT_MODES.md).
 | Check | Setting | Default |
 | --- | --- | --- |
 | Caller identity, HTTP | `MCP_IDENTITY_AUTH_MODE` (`none`, `entra`, `gateway`, `entra_or_gateway`) | `none` |
-| Tool access | `TOOL_ACCESS_POLICY` | Every tool for `Admin` and `Security`. Query, discovery, quota, case, issue and engagement tools for `SOC` and `Tier1`. |
-| Dataset access | `LOG_SEARCH_DATASET_POLICY` | `{"Security": ["*"], "SOC": ["xdr_data"], "Tier1": ["xdr_data"]}` |
+| Tool access | `TOOL_ACCESS_POLICY` | Every tool for `Admin` and `Security`. Query, discovery, quota, case, issue, engagement and learned-fact tools for `SOC` and `Tier1`. `query_dataset` and `discover_log_fields` for `learner`. |
+| Dataset access | `LOG_SEARCH_DATASET_POLICY` | `{"Security": ["*"], "SOC": ["xdr_data"], "Tier1": ["xdr_data"], "learner": ["xql_query_center_history"]}` |
 | Raw XQL | `RAW_XQL_PRIVILEGED_GROUPS` and a `*` dataset grant | `Security,Admin` |
 | XSIAM API key | `XSIAM_CREDENTIAL_BROKER_ENABLED`, `XSIAM_CREDENTIAL_PROFILES` | Off, one service key for every caller |
 
@@ -207,6 +207,31 @@ A failed export does not block the call unless `AUDIT_LOG_FAIL_CLOSED=true`.
 Cost guard refusals, approvals and elicitation answers are written as separate
 `cortex_xsiam_mcp.cost_guard` events.
 See [audit logging](docs/AUDIT_LOGGING.md).
+
+## Learned facts
+
+With `TENANT_PACK_DIR` set, the gateway records facts about the tenant from
+queries it already runs: field names and types, fields that only match with
+`contains`, fields XSIAM reports as unknown, compute units by dataset and
+window, tool timings and helper usage. Facts come from query metadata, error
+classes, field names and timings, never from result values. A fact is labelled
+`verified` after 5 confirmations from 3 engagements over 7 days with no
+contradiction.
+
+The gateway only appends to a journal under `TENANT_PACK_DIR/learned/journal/`.
+A separate learner process is the only writer of the fact files. It folds the
+journal in, runs nightly at 13:30 UTC and weekly on Monday at 20:00 UTC, and
+queries XSIAM only as the `learner` group, within 0.5 units a day. Run it every
+5 minutes from a timer or cron, and run `canary` after each deploy.
+
+```bash
+PYTHONPATH=src poetry run python -m learner tick
+```
+
+Agents read facts with `get_learned_facts`. `learning_digest` lists what
+changed, and `revert_learned` lets `LEARNING_ADMIN_GROUPS` revert, pin or unpin
+a fact. `LEARNING_ENABLED=false` stops both processes. See
+[learning](docs/LEARNING.md).
 
 ## Local development
 

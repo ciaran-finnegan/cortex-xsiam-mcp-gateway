@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     log_search_default_principal_id: str = Field("service-account", validation_alias="LOG_SEARCH_DEFAULT_PRINCIPAL_ID")
     log_search_default_groups: str = Field("", validation_alias="LOG_SEARCH_DEFAULT_GROUPS")
     log_search_dataset_policy: str = Field(
-        '{"Security": ["*"], "SOC": ["xdr_data"], "Tier1": ["xdr_data"]}',
+        '{"Security": ["*"], "SOC": ["xdr_data"], "Tier1": ["xdr_data"], "learner": ["xql_query_center_history"]}',
         validation_alias="LOG_SEARCH_DATASET_POLICY",
     )
     raw_xql_privileged_groups: str = Field(
@@ -52,11 +52,12 @@ class Settings(BaseSettings):
             '"SOC":["get_log_search_guidance","list_log_datasets","discover_log_fields","search_logs",'
             '"get_dataset_query_guidance","get_xql_help","query_dataset","continue_dataset_query",'
             '"get_xql_query_quota","get_cases","get_issues",'
-            '"set_engagement","get_engagement","record_fact","get_engagement_log"],'
+            '"set_engagement","get_engagement","record_fact","get_engagement_log","get_learned_facts"],'
             '"Tier1":["get_log_search_guidance","list_log_datasets","discover_log_fields","search_logs",'
             '"get_dataset_query_guidance","get_xql_help","query_dataset","continue_dataset_query",'
             '"get_xql_query_quota","get_cases","get_issues",'
-            '"set_engagement","get_engagement","record_fact","get_engagement_log"]}'
+            '"set_engagement","get_engagement","record_fact","get_engagement_log","get_learned_facts"],'
+            '"learner":["query_dataset","discover_log_fields"]}'
         ),
         validation_alias="TOOL_ACCESS_POLICY",
     )
@@ -188,7 +189,8 @@ class Settings(BaseSettings):
     cost_guard_dataset_tiers: str = Field(
         (
             '{"xdr_data":"heavy","xdr_*":"heavy","*_story":"heavy",'
-            '"amazon_aws_raw":"heavy","msft_azure_raw":"heavy","google_gcp_*":"heavy"}'
+            '"amazon_aws_raw":"heavy","msft_azure_raw":"heavy","google_gcp_*":"heavy",'
+            '"xql_query_center_history":"light"}'
         ),
         validation_alias="COST_GUARD_DATASET_TIERS",
     )
@@ -238,6 +240,74 @@ class Settings(BaseSettings):
         ge=1,
         le=1000,
         validation_alias="ENGAGEMENT_MAX_SCOPE_ITEMS",
+    )
+
+    # --- Tenant Pack and Learning Settings ---
+    tenant_pack_dir: str = Field("", validation_alias="TENANT_PACK_DIR")
+    learning_enabled: bool = Field(True, validation_alias="LEARNING_ENABLED")
+    learning_schema_ttl_days: int = Field(30, ge=1, le=365, validation_alias="LEARNING_SCHEMA_TTL_DAYS")
+    learning_cost_ttl_days: int = Field(90, ge=1, le=365, validation_alias="LEARNING_COST_TTL_DAYS")
+    learning_max_entries_per_kind: int = Field(
+        5000,
+        ge=1,
+        le=50000,
+        validation_alias="LEARNING_MAX_ENTRIES_PER_KIND",
+    )
+    learning_verify_min_confirmations: int = Field(
+        5,
+        ge=1,
+        le=1000,
+        validation_alias="LEARNING_VERIFY_MIN_CONFIRMATIONS",
+    )
+    learning_verify_min_engagements: int = Field(3, ge=1, le=20, validation_alias="LEARNING_VERIFY_MIN_ENGAGEMENTS")
+    learning_verify_min_days: int = Field(7, ge=0, le=365, validation_alias="LEARNING_VERIFY_MIN_DAYS")
+    learning_cost_min_observations: int = Field(
+        3,
+        ge=1,
+        le=100,
+        validation_alias="LEARNING_COST_MIN_OBSERVATIONS",
+    )
+    learning_admin_groups: str = Field("Admin", validation_alias="LEARNING_ADMIN_GROUPS")
+    learning_result_cache_enabled: bool = Field(False, validation_alias="LEARNING_RESULT_CACHE_ENABLED")
+    learning_result_max_bytes: int = Field(
+        262144,
+        ge=1024,
+        le=4194304,
+        validation_alias="LEARNING_RESULT_MAX_BYTES",
+    )
+    learning_result_cache_max_bytes: int = Field(
+        5242880,
+        ge=1024,
+        le=104857600,
+        validation_alias="LEARNING_RESULT_CACHE_MAX_BYTES",
+    )
+    learning_journal_max_bytes: int = Field(
+        67108864,
+        ge=65536,
+        le=1073741824,
+        validation_alias="LEARNING_JOURNAL_MAX_BYTES",
+    )
+
+    # --- Learner Process Settings (schedules are UTC) ---
+    learner_principal_id: str = Field("learning-service", validation_alias="LEARNER_PRINCIPAL_ID")
+    learner_groups: str = Field("learner", validation_alias="LEARNER_GROUPS")
+    learner_daily_unit_cap: float = Field(0.5, ge=0, le=100, validation_alias="LEARNER_DAILY_UNIT_CAP")
+    learner_reserve_units: float = Field(20.0, ge=0, validation_alias="LEARNER_RESERVE_UNITS")
+    learner_daily_quota_units: float = Field(0.0, ge=0, validation_alias="LEARNER_DAILY_QUOTA_UNITS")
+    learner_engagement_close_sla_minutes: int = Field(
+        15,
+        ge=1,
+        le=1440,
+        validation_alias="LEARNER_ENGAGEMENT_CLOSE_SLA_MINUTES",
+    )
+    learner_engagement_idle_hours: int = Field(24, ge=1, le=720, validation_alias="LEARNER_ENGAGEMENT_IDLE_HOURS")
+    learner_nightly_utc: str = Field("13:30", validation_alias="LEARNER_NIGHTLY_UTC")
+    learner_weekly_utc: str = Field("MON 20:00", validation_alias="LEARNER_WEEKLY_UTC")
+    learner_recalibration_max_ids: int = Field(
+        100,
+        ge=1,
+        le=500,
+        validation_alias="LEARNER_RECALIBRATION_MAX_IDS",
     )
 
     # --- Audit Settings ---

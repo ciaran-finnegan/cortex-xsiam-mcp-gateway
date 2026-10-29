@@ -58,6 +58,33 @@ This project follows a lightweight changelog format until stable releases begin.
   hashed. The audit event records `xql_error_class`.
 - `get_xql_help` topics carry a `docs` link to the vendor's documentation site.
   The gateway never fetches it.
+- Added tier-1 learning: measured tenant facts (schema, enum-like fields, absent
+  fields, cost table, timings, helper usage) in `<TENANT_PACK_DIR>/learned/`,
+  derived from queries the gateway already runs, with query-id evidence,
+  confidence, expiry, contradiction demotion and a forgery guard.
+- Gateway observers only append to a per-process journal; a separate learner
+  process (`python -m learner`, run by a timer) is the single writer of fact
+  files, audits each run, and runs UTC-scheduled engagement-close, nightly
+  (expiry, cost recalibration from the query history as a capped `learner`
+  principal) and weekly (digest, replay scoring, step mining) jobs, plus a deploy
+  canary.
+- Added automatic verification: a fact is labelled `verified` after 5
+  confirmations from 3 distinct engagements over 7 days with no contradiction
+  (all settings); one contradiction drops it back to `learned`.
+- Added `get_learned_facts`, the `tenant://learned/{kind}` resource,
+  `learning_digest`, admin-only `revert_learned` (revert, pin, unpin), and the
+  `LEARNING_ENABLED` kill switch for both processes.
+- Added the tier-2 replay foundation: an opt-in bounded per-case result cache and
+  `replay_engagement`, plus a synthetic IOC-flood triage agent-evaluation case.
+- For the learner, the executor also tags an unknown-field failure with
+  `error_class` and `unknown_field`, only when the field already appears in the
+  submitted query.
+- The cost guard reads the learned cost table before its seed band, floored at
+  the band's low bound, and the learning observers run after the cost guard and
+  query telemetry; refused queries and cache hits are not observed.
+- `xql_query_center_history` is seeded as a light dataset in
+  `COST_GUARD_DATASET_TIERS`, so the learner's nightly recalibration query
+  stays under the default approval threshold.
 
 ## 0.2.0-alpha.1 - 2026-07-10
 

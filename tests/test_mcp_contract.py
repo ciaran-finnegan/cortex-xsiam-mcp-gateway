@@ -72,6 +72,20 @@ async def test_fastmcp3_full_server_initialization_registers_builtin_and_openapi
 
 
 @pytest.mark.asyncio
+async def test_full_server_exposes_learning_tools_and_resource_template():
+    server = await initialize_mcp_server("test-key", "test-key-id", "https://api.example.test")
+    tool_names = {tool.name for tool in await server.list_tools(run_middleware=False)}
+    templates = {template.uri_template for template in await server.list_resource_templates()}
+
+    assert {"get_learned_facts", "learning_digest", "revert_learned"}.issubset(tool_names)
+    assert "tenant://learned/{kind}" in templates
+    revert_schema = (await server.get_tool("revert_learned")).parameters
+    assert set(revert_schema["properties"]) == {"entry_id", "action"}
+    assert revert_schema["required"] == ["entry_id"]
+    assert revert_schema["properties"]["action"]["enum"] == ["revert", "pin", "unpin"]
+
+
+@pytest.mark.asyncio
 async def test_validate_xql_mcp_schema_and_description():
     server = FastMCP()
     XQLValidationModule(server).register_tools()

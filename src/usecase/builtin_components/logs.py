@@ -24,6 +24,7 @@ from usecase.cost_guard import (
 from usecase.cost_guard import result_fields as cost_guard_result_fields
 from usecase.fetcher import get_fetcher
 from usecase.identity import resolve_mcp_context
+from usecase.learning_observers import observe_field_catalog
 from usecase.log_policy import (
     DatasetAuthorizationError,
     ensure_dataset_authorized,
@@ -354,6 +355,12 @@ async def discover_log_fields(
 
         rows = extract_xql_rows(response_data)
         all_fields = infer_field_catalog(rows)
+        await observe_field_catalog(
+            ctx,
+            dataset=dataset,
+            fields=all_fields,
+            query_id=response_data.get("query_id"),
+        )
         fields, truncated = filter_field_catalog(
             all_fields,
             field_name_contains=field_name_contains,

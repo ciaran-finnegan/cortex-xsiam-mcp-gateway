@@ -135,6 +135,40 @@ Collector.
 Raw XQL is hashed by default. Full query logging requires
 `AUDIT_LOG_INCLUDE_QUERY_TEXT=true`.
 
+## Learned Facts
+
+Tier-1 learning writes measured tenant facts to `<TENANT_PACK_DIR>/learned/`
+(see [Learning](LEARNING.md)). Controls:
+
+- gateway observers only append validated records to a per-process journal, off
+  the event loop and after the result is returned; they never write fact files,
+  never block a call and never raise into one;
+- the learner process is the single writer of fact files, under a lock, and
+  validates every journal record again; journal files that are symbolic links or
+  writable by group or others are ignored;
+- facts derive only from query metadata, row counts, classified error classes,
+  field names, value types and timings; result cell values are never read, and
+  filter literals are held only as in-memory hashes;
+- evidence must be query ids XSIAM returned to the journalling process; free
+  text, unknown keys, over-long values and instruction-shaped field names are
+  refused on write and ignored on read;
+- an `unknown_field` classification names only a field already present in the
+  submitted query outside string literals;
+- served facts are filtered by dataset policy, carry a trust label and
+  `content_trust: "measured_metadata"`; facts spanning datasets withhold their
+  evidence ids; the resource requires the `get_learned_facts` tool permission;
+- verification is automatic and needs repeated confirmation across several
+  engagements over at least a week with no contradiction, so one session cannot
+  verify a fact; one contradiction removes verification;
+- every learner run is audited before commit; `LEARNING_ENABLED=false` stops the
+  observers and the learner; revert, pin and unpin are restricted to
+  `LEARNING_ADMIN_GROUPS`;
+- the learner queries XSIAM only as its own `learner` principal under the normal
+  dataset and tool policy, within a daily unit cap, and not below the reserve;
+- the replay cache is off by default, holds only results the gateway already
+  returned, is capped, owner-only and git-ignored in the pack, and is not exposed
+  as an MCP tool.
+
 ## Credential Policy
 
 The credential broker does not dynamically provision per-user API keys. It

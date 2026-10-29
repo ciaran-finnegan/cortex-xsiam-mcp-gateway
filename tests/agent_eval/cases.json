@@ -69,5 +69,13 @@
     "allowed_datasets": ["authentication_events"],
     "discovered_fields": {"authentication_events": ["event_id", "user_name", "result", "_time"]},
     "expect": {"action": "query", "tool": "query_dataset", "dataset": "authentication_events", "mode": "rows", "required_filter_fields": ["result"]}
+  },
+  {
+    "id": "ioc_flood_triage",
+    "request": "An IOC rule fired hundreds of alerts in the last 24 hours. Count the alerts from the IOC alert source by host and alert name and show the top 10 so I can triage the flood.",
+    "allowed_datasets": ["alerts"],
+    "discovered_fields": {"alerts": ["alert_id", "alert_name", "alert_source", "host_name", "severity", "_time"]},
+    "learned_facts": {"alerts": {"enum_fields": ["alert_source"], "absent_fields": ["hostname"]}},
+    "expect": {"action": "query", "tool": "query_dataset", "dataset": "alerts", "mode": "aggregate", "metric": "count", "group_by": ["host_name", "alert_name"], "relative_ms": 86400000, "limit": 10, "descending_metric_sort": true, "required_filter_fields": ["alert_source"], "filter_operators": {"alert_source": "contains"}}
   }
 ]

@@ -398,7 +398,45 @@ def estimate_query(shape: QueryShape, window_ms: int) -> CostEstimate:
 def estimate_xql(query: str, timeframe: Any) -> CostEstimate:
     """Estimate a query for a dry run without applying any rule."""
     normalized = normalize_timeframe(timeframe)
-    return estimate_query(parse_query(query), timeframe_window_ms(normalized))
+    shape = parse_query(query)
+    window_ms = timeframe_window_ms(normalized)
+    return apply_learned_cost(estimate_query(shape, window_ms), query, shape, window_ms)
+
+
+def apply_learned_cost(estimate: CostEstimate, query: str, shape: QueryShape, window_ms: int) -> CostEstimate:
+    """Replace the seed units with the learned cost table entry for this query, when one exists.
+
+    Learned units may raise the estimate without bound but lower it only to the seed band's low
+    bound, so a learned entry can never rate a query cheaper than its seed class allows. The
+    class, and with it the long-running-slot rule, stays the seed class.
+    """
+    if len(shape.datasets) != 1:
+        return estimate
+    try:
+        observers = importlib.import_module("usecase.learning_observers")
+        learned_store = importlib.import_module("usecase.learned_store")
+        parsed = observers.parse_xql(query)
+        if parsed.dataset is None:
+            return estimate
+        bucket = observers.window_bucket(max(window_ms, shape.config_window_ms or 0))
+        learned = learned_store.lookup_cost(parsed.dataset, bucket, observers.selectivity_class(parsed))
+    except Exception:
+        return estimate
+    if learned is None:
+        return estimate
+    high = max(float(learned["high_units"]), estimate.low_units)
+    low = min(max(float(learned["median_units"]), estimate.low_units), high)
+    return replace(
+        estimate,
+        low_units=low,
+        high_units=high,
+        factors={
+            **estimate.factors,
+            "units_source": "learned",
+            "learned_entry_id": learned["entry_id"],
+            "learned_observations": learned["observations"],
+        },
+    )
 
 
 def dataset_tier(dataset: str) -> tuple[str, str]:
@@ -656,7 +694,8 @@ async def prepare_query(
     config = get_config()
     normalized = normalize_timeframe(timeframe)
     shape = parse_query(query)
-    estimate = estimate_query(shape, timeframe_window_ms(normalized))
+    window_ms = timeframe_window_ms(normalized)
+    estimate = apply_learned_cost(estimate_query(shape, window_ms), query, shape, window_ms)
     approval_text = _validate_approval(approval)
     principal = resolve_mcp_context(ctx)
     ticket = GuardTicket(

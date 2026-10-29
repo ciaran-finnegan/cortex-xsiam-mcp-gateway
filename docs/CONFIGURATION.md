@@ -195,6 +195,14 @@ the catalogue is installed (`very_high` is heavy, `high` medium, `medium` and
 Estimates are deliberately conservative; tune the tier map and bands against
 the `actual_units` each result records.
 
+When learning is enabled and the learned cost table has an active entry for a
+single-dataset query's dataset, window bucket and selectivity, the guard uses
+its units instead of the seed band: `high_units` is the learned high, but never
+below the seed band's low bound, so learned data can raise an estimate freely
+and lower it only to that floor. The class, and so the long-running-slot rule,
+stays the seed class. The estimate's `factors` then carry
+`units_source: "learned"` and the entry id.
+
 Rules, in order:
 
 1. A cached result for the same principal, groups, dataset policy, XSIAM
@@ -255,7 +263,7 @@ against a timed-out query), `remaining_units`,
 | --- | --- | --- |
 | `COST_GUARD_ENABLED` | `true` | Apply the cache and the refusal rules. The timeframe requirement and timeout ceiling apply either way. |
 | `COST_GUARD_UNIT_BANDS` | `{"light":[0.001,0.4],"medium":[0.5,3.6],"heavy":[5,9],"extreme":[10,31]}` | Unit band per class. Decisions use the high bound. |
-| `COST_GUARD_DATASET_TIERS` | `{"xdr_data":"heavy","xdr_*":"heavy","*_story":"heavy","amazon_aws_raw":"heavy","msft_azure_raw":"heavy","google_gcp_*":"heavy"}` | Dataset name or `*` glob to `light`, `medium`, or `heavy`. Exact names win over globs. |
+| `COST_GUARD_DATASET_TIERS` | `{"xdr_data":"heavy","xdr_*":"heavy","*_story":"heavy","amazon_aws_raw":"heavy","msft_azure_raw":"heavy","google_gcp_*":"heavy","xql_query_center_history":"light"}` | Dataset name or `*` glob to `light`, `medium`, or `heavy`. Exact names win over globs. |
 | `COST_GUARD_DEFAULT_TIER` | `medium` | Tier for datasets the catalogue and tier map do not list. |
 | `COST_GUARD_SELECTIVE_FIELDS` | `agent_hostname,agent_id,endpoint_id,endpoint_name,host_name,hostname` | Fields whose positive equality scopes a heavy dataset to hosts. |
 | `COST_GUARD_HOST_FIELDS` | `{"xdr_data":"agent_hostname"}` | Field used by the host-filter alternative per heavy dataset. |
@@ -324,6 +332,46 @@ execution fails closed. When several groups match, the lowest numeric
 
 Keep `AUDIT_LOG_INCLUDE_QUERY_TEXT=false` unless full query retention has been
 approved. Query hashes are logged by default.
+
+## Tenant Pack And Learning
+
+Learning runs in two processes: gateway observers append to a journal, and the
+learner (`python -m learner`, run by a timer) is the single writer of fact files.
+See [Learning](LEARNING.md) for the design, schedules and deployment.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `TENANT_PACK_DIR` | empty | Absolute path of the private tenant pack, outside the repository. Empty disables learning. |
+| `LEARNING_ENABLED` | `true` | Kill switch: `false` stops the observers and the learner. Revert requests are still accepted. |
+| `LEARNING_SCHEMA_TTL_DAYS` | `30` | Expiry of schema, enum and absent-field facts without a confirmation. |
+| `LEARNING_COST_TTL_DAYS` | `90` | Expiry of cost, timing and helper-usage facts without a confirmation. |
+| `LEARNING_MAX_ENTRIES_PER_KIND` | `5000` | Cap per fact kind; new entries beyond it are refused, not evicted. |
+| `LEARNING_COST_MIN_OBSERVATIONS` | `3` | Observations before the cost guard hook returns a learned cost. |
+| `LEARNING_ADMIN_GROUPS` | `Admin` | Groups allowed to revert, pin or unpin facts with `revert_learned`, independent of `TOOL_ACCESS_POLICY`. |
+| `LEARNING_VERIFY_MIN_CONFIRMATIONS` | `5` | Confirmations since the last contradiction before a fact is verified automatically. |
+| `LEARNING_VERIFY_MIN_ENGAGEMENTS` | `3` | Distinct engagements those confirmations must come from. |
+| `LEARNING_VERIFY_MIN_DAYS` | `7` | Days the confirmations must span. |
+| `LEARNING_JOURNAL_MAX_BYTES` | `67108864` | Largest journal file per gateway process per day. |
+| `LEARNING_RESULT_CACHE_ENABLED` | `false` | Cache bounded results of a case's tool calls for replay. Cached rows are tenant data. |
+| `LEARNING_RESULT_MAX_BYTES` | `262144` | Largest single tool result kept in the replay cache. |
+| `LEARNING_RESULT_CACHE_MAX_BYTES` | `5242880` | Replay cache size per case. |
+| `LEARNER_PRINCIPAL_ID` | `learning-service` | Principal the learner queries XSIAM as. |
+| `LEARNER_GROUPS` | `learner` | Groups of the learner principal for dataset policy, tool policy and the credential broker. |
+| `LEARNER_DAILY_UNIT_CAP` | `0.5` | Units the learner may spend per UTC day. |
+| `LEARNER_RESERVE_UNITS` | `20` | The learner skips queries when remaining units are below this; keep it equal to the cost guard's automation reserve. |
+| `LEARNER_DAILY_QUOTA_UNITS` | `0` | Daily units for the reserve check; `0` derives them from the annual licence quota. |
+| `LEARNER_ENGAGEMENT_CLOSE_SLA_MINUTES` | `15` | Closed engagements should be processed within this; run the learner at least this often. |
+| `LEARNER_ENGAGEMENT_IDLE_HOURS` | `24` | Inactivity after which an open engagement is processed. |
+| `LEARNER_NIGHTLY_UTC` | `13:30` | Nightly expiry and cost recalibration, `HH:MM` UTC. |
+| `LEARNER_WEEKLY_UTC` | `MON 20:00` | Weekly digest, replay scoring and step mining, weekday and `HH:MM` UTC. |
+| `LEARNER_RECALIBRATION_MAX_IDS` | `100` | Query ids looked up in `xql_query_center_history` per night. |
+
+The default `TOOL_ACCESS_POLICY` grants `get_learned_facts` to `SOC` and `Tier1`;
+`learning_digest` and `revert_learned` are reached only through `*` grants. It
+also grants the `learner` group `query_dataset` and `discover_log_fields`, and the
+default `LOG_SEARCH_DATASET_POLICY` grants `learner` only
+`xql_query_center_history`. Members of `LEARNING_ADMIN_GROUPS` also need a dataset
+policy that covers the facts they revert.
 
 ## Example `.env`
 
