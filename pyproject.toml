@@ -34,7 +34,7 @@ requests = "^2.34.2"
 fastmcp = "^3.4.4"
 mcp = "^1.28.1"
 starlette = "^1.6.0"
-authlib = "^1.8.0"
+authlib = "^1.9.1"
 cryptography = "^50.0.0"
 pydantic-settings = "^2.15.0"
 
