@@ -162,10 +162,11 @@ class LearnerContext:
         self.request_context = SimpleNamespace(lifespan_context=principal)
         self._state: dict[str, Any] = {}
 
-    def set_state(self, key: str, value: Any) -> None:
+    # Async, with FastMCP's keyword, because get_fetcher and the engagement store await these.
+    async def set_state(self, key: str, value: Any, *, serializable: bool = True) -> None:
         self._state[key] = value
 
-    def get_state(self, key: str) -> Any:
+    async def get_state(self, key: str) -> Any:
         return self._state.get(key)
 
 
