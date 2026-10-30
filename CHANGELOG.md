@@ -85,6 +85,10 @@ This project follows a lightweight changelog format until stable releases begin.
 - `xql_query_center_history` is seeded as a light dataset in
   `COST_GUARD_DATASET_TIERS`, so the learner's nightly recalibration query
   stays under the default approval threshold.
+- Fixed the learner's nightly cost recalibration failing with `TypeError` on a
+  live tenant: its request context now has FastMCP's async `get_state` and
+  `set_state(..., serializable=...)`, which `get_fetcher` has needed since
+  engagement modes landed.
 
 ## 0.2.0-alpha.1 - 2026-07-10
 

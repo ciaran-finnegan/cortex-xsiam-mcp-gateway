@@ -174,3 +174,45 @@ async def test_learned_cost_drives_the_approval_rule(monkeypatch, observed):
 
     assert response["query_id"] == "q-l1"
     assert response["quota"]["estimate_units"] == 0.5
+
+
+@pytest.mark.asyncio
+async def test_learner_recalibration_runs_through_the_real_fetcher_and_the_cost_guard(pack, monkeypatch):
+    from datetime import UTC, datetime
+
+    from usecase import fetcher as fetcher_module
+    from usecase import learner
+
+    monkeypatch.setattr(get_config(), "papi_url_env_key", "https://api-tenant.example.test")
+    requests = []
+
+    class TenantFetcher:
+        def __init__(self, url, api_key, api_key_id):
+            self.api_key, self.api_key_id = api_key, api_key_id
+
+        async def send_request(self, path, data):
+            requests.append(path)
+            if path == "/xql/get_quota":
+                return {"reply": {"daily_used_quota": 1.0, "license_quota": 36500.0}}
+            return success("q-hist", [{"execution_id": "q-2", "compute_units": 0.0003}], cost=0.0003)
+
+    # Only the HTTP client is faked: get_fetcher sets request state on the learner's own context,
+    # which must accept FastMCP's async set_state(..., serializable=False).
+    monkeypatch.setattr(fetcher_module, "Fetcher", TenantFetcher)
+    (pack / "learned").mkdir(mode=0o700, parents=True)
+
+    measured, skipped, spent = await learner.history_units(pack, ["q-2"], datetime.now(UTC))
+
+    assert (measured, skipped, spent) == ({"q-2": 0.0003}, None, 0.0003)
+    assert requests == ["/xql/get_quota", "/xql/start_xql_query/"]
+
+
+@pytest.mark.asyncio
+async def test_learner_context_state_matches_the_fastmcp_context():
+    from usecase import learner
+
+    context = learner.LearnerContext(learner.learner_principal())
+    await context.set_state("fetcher", "value", serializable=False)
+
+    assert await context.get_state("fetcher") == "value"
+    assert await context.get_state("missing") is None
