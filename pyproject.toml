@@ -29,7 +29,7 @@ packages = [
 python = ">=3.12,<3.14"
 fastapi = "^0.139.0"
 uvicorn = {version = "^0.51.0", extras = ["standard"]}
-types-requests = "^2.33.0.20260518"
+types-requests = "^2.33.0.20260712"
 requests = "^2.34.2"
 fastmcp = "^3.4.4"
 mcp = "^1.28.1"
