@@ -49,11 +49,11 @@ class Settings(BaseSettings):
     tool_access_policy: str = Field(
         (
             '{"Admin":["*"],"Security":["*"],'
-            '"SOC":["get_log_search_guidance","list_log_datasets","discover_log_fields","search_logs",'
+            '"SOC":["get_log_search_guidance","find_datasets","resolve_entity","firewall_traffic","firewall_verdict","entity_activity","dataset_health","threat_intel_lookup","coverage_gap","list_log_datasets","discover_log_fields","search_logs",'
             '"get_dataset_query_guidance","get_xql_help","query_dataset","continue_dataset_query",'
             '"get_xql_query_quota","get_cases","get_issues",'
             '"set_engagement","get_engagement","record_fact","get_engagement_log","get_learned_facts"],'
-            '"Tier1":["get_log_search_guidance","list_log_datasets","discover_log_fields","search_logs",'
+            '"Tier1":["get_log_search_guidance","find_datasets","resolve_entity","firewall_traffic","firewall_verdict","entity_activity","dataset_health","threat_intel_lookup","coverage_gap","list_log_datasets","discover_log_fields","search_logs",'
             '"get_dataset_query_guidance","get_xql_help","query_dataset","continue_dataset_query",'
             '"get_xql_query_quota","get_cases","get_issues",'
             '"set_engagement","get_engagement","record_fact","get_engagement_log","get_learned_facts"],'
@@ -128,6 +128,9 @@ class Settings(BaseSettings):
         "{}",
         validation_alias="XSIAM_CREDENTIAL_PROFILES",
     )
+
+    # --- Dataset Catalogue Settings ---
+    dataset_catalogue_overlay_path: str = Field("", validation_alias="DATASET_CATALOGUE_OVERLAY_PATH")
 
     # --- Structured Dataset Query Settings ---
     dataset_query_max_rows: int = Field(

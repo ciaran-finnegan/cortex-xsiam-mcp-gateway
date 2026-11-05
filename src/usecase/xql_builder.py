@@ -13,6 +13,16 @@ def _validate_identifier(value: str, label: str) -> str:
     return value
 
 
+ENUM_VALUE_RE = re.compile(r"^[A-Z][A-Z0-9_]*\Z")
+
+
+def format_xql_enum(value) -> str:
+    """Format an XQL enum member such as ENUM.PROCESS from a validated bare name."""
+    if not isinstance(value, str) or len(value) > 128 or not ENUM_VALUE_RE.match(value):
+        raise ValueError("Enum values must be uppercase names such as PROCESS or NETWORK")
+    return f"ENUM.{value}"
+
+
 def _format_xql_value(value) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
