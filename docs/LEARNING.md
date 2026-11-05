@@ -365,7 +365,8 @@ several, so 30 days takes some tens of minutes.
 `LEARNER_DAILY_UNIT_CAP` for this command. XSIAM reports quota per tenant and no
 cost per query, so the budget counts the drop in quota while each query runs, which
 includes anything else running on the tenant. `units_at_most` is therefore an upper
-bound: a run never spends more than its budget, but a busy tenant can stop one early.
+bound on what a run spent, and a busy tenant can stop one early. The budget is checked
+before each query, so the last query can take a run over it by that query's own cost.
 Run the command again to resume. The amount also goes to the spend ledger, so that
 day's recalibration may be skipped, keeping its deltas. The reserve
 (`LEARNER_RESERVE_UNITS`) is checked before every query.

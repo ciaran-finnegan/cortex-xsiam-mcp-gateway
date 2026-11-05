@@ -1140,8 +1140,9 @@ async def _backfill_query(run: _BackfillRun, from_ms: int, to_ms: int) -> tuple[
     """One history query within the budget and the reserve, or the reason to stop before it.
 
     XSIAM reports quota per tenant and no cost per query, so the drop in quota around a query also
-    holds whatever anyone else ran meanwhile. The budget therefore counts an upper bound: a run
-    never spends more than it, and a busy tenant can stop a run early, which the next run resumes.
+    holds whatever anyone else ran meanwhile. The budget therefore counts an upper bound, so a busy
+    tenant can stop a run early, which the next run resumes. It is checked before each query, so
+    the last query can take a run over it by that query's own cost.
     """
     before = await remaining_quota(run.ctx)
     if before is None:
