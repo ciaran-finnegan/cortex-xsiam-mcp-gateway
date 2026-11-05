@@ -89,6 +89,12 @@ This project follows a lightweight changelog format until stable releases begin.
   live tenant: its request context now has FastMCP's async `get_state` and
   `set_state(..., serializable=...)`, which `get_fetcher` has needed since
   engagement modes landed.
+- Documented keeping the XSIAM API key out of `.env`: a new
+  [Secrets And API Keys](docs/SECRETS.md) page with 1Password CLI, macOS
+  Keychain and Windows SecretStore examples that inject the key when the
+  gateway starts, after a person approves the read, plus `.env.op.example`
+  for `op://` references. `.env.example`, the README, configuration and
+  testing docs no longer show secrets in `.env`.
 
 ## 0.2.0-alpha.1 - 2026-07-10
 

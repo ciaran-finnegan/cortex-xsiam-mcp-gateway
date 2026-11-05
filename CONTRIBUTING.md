@@ -30,7 +30,8 @@ because the fork still carries inherited typing debt.
 ## Contribution Rules
 
 - Do not commit secrets, `.env` files, logs containing query results, or tenant
-  identifiers.
+  identifiers. Keep API keys out of `.env` altogether; see
+  [Secrets And API Keys](docs/SECRETS.md).
 - Preserve the upstream Palo Alto Networks license and notices.
 - Add tests for policy, auth, query translation, or API behavior changes.
 - Fail closed on authorization uncertainty.

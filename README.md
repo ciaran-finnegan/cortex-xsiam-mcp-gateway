@@ -241,16 +241,22 @@ Requires Python 3.12 or 3.13 and Poetry.
 poetry env use python3.12
 poetry install
 cp .env.example .env
+cp .env.op.example .env.op
 ```
 
-Fill in the three `CORTEX_MCP_PAPI_*` values (tenant API URL, API key, key ID)
-in `.env`, which git ignores. `.env.example` is set up for HTTP with Entra, so a
-local stdio session overrides three settings. Environment variables take
-precedence over `.env`.
+Set `CORTEX_MCP_PAPI_URL` in `.env`, which git ignores, and keep the API key
+out of it. Put the key in 1Password and let `op run` inject it when the
+gateway starts, after you approve the read with Touch ID or Windows Hello;
+`.env.op` holds the `op://` references. [Secrets and API keys](docs/SECRETS.md)
+has the macOS Keychain and Windows SecretStore variants and shows how to
+register the server in Claude Code or Claude Desktop without putting the key
+in the client's configuration file. `.env.example` is set up for HTTP with
+Entra, so a local stdio session overrides three settings. Environment
+variables take precedence over `.env`.
 
 ```bash
 MCP_TRANSPORT=stdio MCP_IDENTITY_AUTH_MODE=none LOG_SEARCH_DEFAULT_GROUPS=Tier1 \
-  poetry run python src/main.py
+  op run --env-file=.env.op -- poetry run python src/main.py
 ```
 
 `Tier1` can query `xdr_data` and `Security` can use everything. Run it from
@@ -289,10 +295,14 @@ store are per process, so they do not span replicas. See [enterprise deployment]
 
 ```bash
 docker build -t cortex-xsiam-mcp-gateway .
-docker run --rm -p 8080:8080 --env-file .env cortex-xsiam-mcp-gateway
+op run --env-file=.env.op -- docker run --rm -p 8080:8080 --env-file .env \
+  -e CORTEX_MCP_PAPI_AUTH_HEADER -e CORTEX_MCP_PAPI_AUTH_ID \
+  cortex-xsiam-mcp-gateway
 ```
 
-The image runs `python src/main.py` as a non-root user and serves HTTP only if
+`-e NAME` with no value copies that variable from the host environment, which
+`op run` has just populated, so the key is never in a file. The image runs
+`python src/main.py` as a non-root user and serves HTTP only if
 the env file sets `MCP_TRANSPORT=streamable-http` and an identity mode, as
 `.env.example` does. For stdio, run it with `docker run -i` and the three
 overrides above as `-e` flags.

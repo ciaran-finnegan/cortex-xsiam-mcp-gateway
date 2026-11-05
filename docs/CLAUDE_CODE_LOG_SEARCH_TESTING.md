@@ -93,12 +93,16 @@ The live suite receives secrets only through process environment variables:
 | `XSIAM_LIVE_PAGINATION_TIME_FIELD` | Timestamp sort field; default `_time`. |
 | `XSIAM_LIVE_PAGINATION_ID_FIELD` | Stable tie-breaker; default `event_id`. |
 
+Resolve them from your credential store rather than typing them into the
+shell, where they would stay in history. With 1Password, put `XSIAM_LIVE_*`
+`op://` references in a `.env.live.op` file (git ignores `.env.*`) and run:
+
 ```bash
-XSIAM_LIVE_API_URL=... \
-XSIAM_LIVE_API_KEY=... \
-XSIAM_LIVE_API_KEY_ID=... \
-poetry run pytest -q --run-live tests/test_xsiam_live.py
+op run --env-file=.env.live.op -- poetry run pytest -q --run-live tests/test_xsiam_live.py
 ```
+
+[Secrets And API Keys](SECRETS.md) has the macOS Keychain and Windows
+SecretStore equivalents.
 
 The tests do not print or persist result values. The implementation run on
 2026-07-10 passed both live workflows and found three issues before passing:
