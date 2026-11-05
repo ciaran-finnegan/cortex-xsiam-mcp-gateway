@@ -397,6 +397,24 @@ default `LOG_SEARCH_DATASET_POLICY` grants `learner` only
 `xql_query_center_history`. Members of `LEARNING_ADMIN_GROUPS` also need a dataset
 policy that covers the facts they revert.
 
+## Intent Labelling Pilot
+
+Read only by `python -m intents`, never by the gateway or the learner. See
+[Learning](LEARNING.md#intent-labelling-pilot). `TENANT_PACK_DIR` and
+`LEARNING_ENABLED` apply too. There is no default provider: with the first three
+unset, `python -m intents label` refuses to run.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `INTENT_PROVIDER_ENDPOINT` | empty | Full URL of a chat-completions JSON endpoint. HTTPS, or HTTP to a loopback address. |
+| `INTENT_PROVIDER_MODEL` | empty | Model name to send. |
+| `INTENT_PROVIDER_API_KEY` | empty | Credential. Required unless the endpoint is on loopback. Inject it at run time rather than storing it in `.env`. |
+| `INTENT_PROVIDER_AUTH_HEADER` | `Authorization` | Header for the credential. `Authorization` sends `Bearer <key>`; any other header sends the key as written. |
+| `INTENT_PROVIDER_EXTRA_BODY` | `{}` | JSON object merged into each request, for example `{"max_tokens": 800}`. Cannot replace `model` or `messages`. |
+| `INTENT_PROVIDER_TIMEOUT_SECONDS` | `120` | Read timeout per call. |
+| `INTENT_KEEP_LITERALS` | `ip,host` | Literal types sent as written: `ip`, `host`, `user`, `email`, `hash`, `uuid`, `number`, `duration`, `time`, `term`. All others become type tokens. Adding `term` sends free-text search terms, which can hold anything a person typed. |
+| `INTENT_SESSION_GAP_MINUTES` | `30` | Time between two of a person's queries that starts a new session. |
+
 ## Example `.env`
 
 ```bash
