@@ -132,6 +132,13 @@ This project follows a lightweight changelog format until stable releases begin.
   with the estimate, alternatives and the provenance of the queries already
   run, and each helper accepts the `approval` argument. `threat_intel_lookup`
   takes `window_days` (default 30) because every query needs a timeframe.
+- Cost guard: an early-exit sample now scores its tier and window points minus
+  two instead of its tier points minus one, so a short-window field-discovery
+  sample of a heavy dataset is light and runs below the approval threshold.
+  Before this, `discover_log_fields` and the `validate_xql` field check were
+  refused for `xdr_data` in operations mode, and validation passed queries that
+  named fields the dataset does not have.
+
 
 ## 0.2.0-alpha.1 - 2026-07-10
 
