@@ -98,6 +98,49 @@ This project follows a lightweight changelog format until stable releases begin.
   live tenant: its request context now has FastMCP's async `get_state` and
   `set_state(..., serializable=...)`, which `get_fetcher` has needed since
   engagement modes landed.
+- Added `coverage_gap`, which counts and lists hosts present in a reference
+  inventory and absent from a target inventory using one server-generated
+  anti-join built only from validated catalogue identifiers, with both datasets
+  policy checked. Added the authored `host_filter` catalogue attribute.
+- Added `threat_intel_lookup`, which resolves one indicator to its verdict and
+  related malware families and threat actors using sequential typed queries,
+  without returning free-text threat intelligence fields.
+- Added `value_type: enum` for typed filters so enum fields such as endpoint
+  `event_type` can be filtered; member names are validated as bare uppercase
+  identifiers.
+- Added `get_xql_help` topics `enum_fields`, `field_types`, `ingestion_health`,
+  and `helpers`.
+- Added `dataset_health`, a bounded arrival, schema, and sample check for one
+  data source, as the alternative to unfiltered dataset dumps.
+- Added `entity_activity`, which summarizes recent activity for one user,
+  computer, IP address, or cloud resource across allowed catalogued datasets
+  with one bounded aggregate per dataset and capped samples. Identity sources
+  are now read concurrently, and the helper query budget reserves slots before
+  each query so concurrent work cannot exceed it.
+- Corrected the built-in catalogue: in firewall session datasets the log source
+  name is the reporting firewall, not the subject host.
+- Added question-shaped investigation helpers: `resolve_entity` links a host,
+  user, or IP address to the others it is known by; `firewall_traffic` and
+  `firewall_verdict` answer traffic and blocking questions with aggregate-first
+  typed plans. Helpers select datasets from the catalogue under dataset policy,
+  verify fields against the live schema, and enforce a per-call query budget.
+- Audit events now record `helper_queries` (dataset, purpose, query hash, query
+  id, row count) for tools that choose datasets server-side.
+- Added the `identity_source` catalogue flag.
+- Added an authored dataset catalogue and the `find_datasets` tool so agents can
+  select datasets by topic, domain, or entity type instead of guessing from
+  names. Dataset policy is applied before catalogue lookup, catalogue text is
+  authored content only, and field names are candidates that helpers verify
+  against discovered fields.
+- Added `DATASET_CATALOGUE_OVERLAY_PATH` for operator-authored, out-of-repo
+  descriptions of site-specific datasets; an invalid overlay fails startup.
+- Added `offset` paging and `next_offset` to `list_log_datasets` so tenants with
+  more datasets than the response cap can be listed completely.
+- The investigation helpers run under the XQL cost guard: every helper query
+  carries the helper's tool name, a refusal is returned as the helper's result
+  with the estimate, alternatives and the provenance of the queries already
+  run, and each helper accepts the `approval` argument. `threat_intel_lookup`
+  takes `window_days` (default 30) because every query needs a timeframe.
 
 ## 0.2.0-alpha.1 - 2026-07-10
 
