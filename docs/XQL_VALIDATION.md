@@ -95,13 +95,16 @@ The caller's query never runs unless `probe` is true.
 
 - Dataset existence uses the `get_datasets` API, which spends no query quota, cached
   for an hour per tenant and credential profile.
-- Field discovery runs `dataset = <name> | limit 25` over the last seven days, at most
-  once per tenant, credential profile and dataset per hour. Failures and empty
-  samples are cached too, so a failing dataset is not retried within the hour.
-  Discovery goes through the cost guard like any other query. A heavy-tier dataset
-  such as `xdr_data` can be rated above the mode's approval threshold; the guard then
-  refuses it, `field_check` is `{"status": "skipped", "source": "cost_guard"}`, and the
-  refusal is not cached, so a mode with a higher threshold can still discover fields.
+- Field discovery runs `dataset = <name> | limit 25` over the last day and, only when
+  that day returns no rows, once more over the last seven days, at most once per
+  tenant, credential profile and dataset per hour. Failures and empty samples are
+  cached too, so a failing dataset is not retried within the hour. Discovery goes
+  through the cost guard like any other query. An early-exit sample over a day is
+  light on every dataset tier, so the first sample runs in every mode, `xdr_data`
+  included; the seven-day retry on an idle heavy-tier dataset can still be rated
+  above the mode's approval threshold. The guard then refuses it, `field_check` is
+  `{"status": "skipped", "source": "cost_guard"}`, and the refusal is not cached, so a
+  mode with a higher threshold can still discover fields.
 - The probe runs the comment-stripped query with its terminal limit replaced by
   `| limit 1` over one hour: the last hour of an absolute timeframe, or the last hour
   (or less) of a relative one. It goes through the cost guard. A refused probe returns

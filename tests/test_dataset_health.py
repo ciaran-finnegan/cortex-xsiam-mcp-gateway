@@ -86,6 +86,7 @@ async def test_dataset_health_reports_arrival_schema_and_bounded_samples(monkeyp
 
     discovery, trend, sample = (call["query"] for call in fake.calls)
     assert discovery == f"dataset = {AUDIT} | limit {health.SCHEMA_SAMPLE_ROWS}"
+    assert fake.calls[0]["timeframe"] == {"relativeTime": health.SCHEMA_SAMPLE_WINDOW_HOURS * 3_600_000}
     assert "bin _time span = 1h" in trend and "comp count() as events" in trend
     assert re.search(rf"\| limit {health.SAMPLE_ROWS}$", sample) and "user_name" in sample and "_raw" not in sample
     assert [item["purpose"] for item in response["provenance"]["queries"]] == ["field_discovery", "arrival_trend", "recent_samples"]
@@ -103,7 +104,12 @@ async def test_dataset_health_distinguishes_stale_from_no_data_and_uses_daily_bu
     assert stale["datasets"][0]["status"] == "stale" and stale["datasets"][0]["trend_bucket"] == "1d"
     assert "samples" not in stale["datasets"][0]
     assert empty["datasets"][0]["status"] == "no_data" and empty["datasets"][0]["events"] == 0
-    assert len([call for call in fake.calls if call["dataset"] == TRAFFIC]) == 1
+    # An empty day widens the schema sample once to the stale lookback, then stops.
+    traffic_windows = [call["timeframe"] for call in fake.calls if call["dataset"] == TRAFFIC]
+    assert traffic_windows == [
+        {"relativeTime": health.SCHEMA_SAMPLE_WINDOW_HOURS * 3_600_000},
+        {"relativeTime": health.STALE_LOOKBACK_HOURS * 3_600_000},
+    ]
 
 
 @pytest.mark.asyncio

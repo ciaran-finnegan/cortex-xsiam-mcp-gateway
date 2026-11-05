@@ -138,6 +138,13 @@ This project follows a lightweight changelog format until stable releases begin.
   Before this, `discover_log_fields` and the `validate_xql` field check were
   refused for `xdr_data` in operations mode, and validation passed queries that
   named fields the dataset does not have.
+- Field discovery samples one day first and widens to seven days only when the day
+  returns no rows, in `validate_xql`, the investigation helpers and `dataset_health`.
+  With the sample scoring change above, discovery on a heavy dataset such as
+  `xdr_data` is light and runs in every mode; before, the fixed seven-day sample
+  was rated medium and refused in operations mode, so `validate_xql` skipped its
+  field check there. An idle dataset now costs two cheap samples instead of one.
+
 
 
 ## 0.2.0-alpha.1 - 2026-07-10

@@ -125,6 +125,7 @@ async def test_clean_query_is_ok_without_rewrite_and_runs_only_field_discovery(x
     assert [item["query"] for item in xsiam.queries] == ["dataset = sample_auth_logs | limit 25"]
     discovery_window = xsiam.queries[0]["timeframe"]
     assert set(discovery_window) == {"from", "to"}
+    assert discovery_window["to"] - discovery_window["from"] == xql_validation.FIELD_DISCOVERY_WINDOW_MS == xql_validation.DAY_MS
 
 
 # --- Limit ---
@@ -336,6 +337,64 @@ async def test_discovery_refused_by_the_cost_guard_is_reported_and_not_cached(xs
     assert second["field_check"]["source"] == "cost_guard"
     assert len(xsiam.discovery_queries) == 2
     assert {query["tool"] for query in xsiam.discovery_queries} == {"validate_xql"}
+
+
+EMPTY_SAMPLE = {"reply": {"status": "SUCCESS", "results": {"data": []}}}
+FOUND_SAMPLE = {"reply": {"status": "SUCCESS", "results": {"data": [dict.fromkeys(AUTH_FIELDS)]}}}
+
+
+def _sequence(xsiam, responses):
+    """Answer discovery calls from a list of responses or exceptions, recording each call like FakeXSIAM."""
+    queue = list(responses)
+
+    async def run(ctx, query, result_limit, **kwargs):
+        xsiam.queries.append({"query": query, "limit": result_limit, **kwargs})
+        item = queue.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    return run
+
+
+def _spans(xsiam):
+    return [item["timeframe"]["to"] - item["timeframe"]["from"] for item in xsiam.discovery_queries]
+
+
+@pytest.mark.asyncio
+async def test_discovery_samples_a_day_and_widens_to_a_week_only_when_the_day_is_empty(xsiam, monkeypatch):
+    monkeypatch.setattr(xql_validation, "run_xql_query", _sequence(xsiam, [EMPTY_SAMPLE, FOUND_SAMPLE]))
+    first = await _validate("dataset = sample_auth_logs | fields made_up | limit 5")
+    second = await _validate("dataset = sample_auth_logs | fields made_up | limit 5")
+
+    assert first["field_check"] == {"status": "checked", "source": "discovery"}
+    assert _problem(first, "unknown_field")["field"] == "made_up"
+    assert _spans(xsiam) == [xql_validation.DAY_MS, 7 * xql_validation.DAY_MS]
+    assert second["field_check"]["source"] == "cache"
+
+
+@pytest.mark.asyncio
+async def test_idle_dataset_is_reported_over_the_week_after_two_empty_samples(xsiam, monkeypatch):
+    monkeypatch.setattr(xql_validation, "run_xql_query", _sequence(xsiam, [EMPTY_SAMPLE, EMPTY_SAMPLE]))
+    first = await _validate("dataset = sample_auth_logs | fields made_up | limit 5")
+    second = await _validate("dataset = sample_auth_logs | fields made_up | limit 5")
+
+    assert "over the last 7 days" in _problem(first, "field_check_skipped")["message"]
+    assert first["field_check"] == {"status": "skipped", "source": "discovery"}
+    assert second["field_check"] == {"status": "skipped", "source": "discovery"}
+    assert _spans(xsiam) == [xql_validation.DAY_MS, 7 * xql_validation.DAY_MS]
+
+
+@pytest.mark.asyncio
+async def test_week_refused_after_an_empty_day_is_reported_as_cost_guard_and_not_cached(xsiam, monkeypatch):
+    responses = [EMPTY_SAMPLE, CostGuardRefusal(REFUSAL), EMPTY_SAMPLE, CostGuardRefusal(REFUSAL)]
+    monkeypatch.setattr(xql_validation, "run_xql_query", _sequence(xsiam, responses))
+    first = await _validate("dataset = sample_auth_logs | fields made_up | limit 5")
+    second = await _validate("dataset = sample_auth_logs | fields made_up | limit 5")
+
+    assert first["field_check"] == {"status": "skipped", "source": "cost_guard"}
+    assert second["field_check"] == {"status": "skipped", "source": "cost_guard"}
+    assert _spans(xsiam) == [xql_validation.DAY_MS, 7 * xql_validation.DAY_MS] * 2
 
 
 def test_cache_scope_separates_tenants():

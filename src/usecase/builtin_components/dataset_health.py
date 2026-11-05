@@ -55,6 +55,8 @@ SCHEMA_SAMPLE_ROWS = 25
 SAMPLE_ROWS = 3
 SAMPLE_FIELDS = 8
 STALE_LOOKBACK_HOURS = 24 * 7
+# The schema sample tries a day first (light on every tier) and widens to the stale lookback when empty.
+SCHEMA_SAMPLE_WINDOW_HOURS = 24
 _PREFERRED_SAMPLE_ROLES = ("host", "user", "source_ip", "dest_ip", "operation", "action", "event_type", "name", "severity", "resource_name")
 
 
@@ -67,16 +69,25 @@ def _bucket(window_hours: int) -> QueryTimeBucket:
 async def _observed_fields(run: HelperRun, dataset: str) -> list[dict[str, Any]]:
     """Observed field names and types from a small sample. Values are discarded."""
     ensure_dataset_authorized(run.principal, dataset)
-    run._spend()
     xql = build_field_discovery_xql(dataset, SCHEMA_SAMPLE_ROWS)
-    record: dict[str, Any] = {"dataset": dataset, "purpose": "field_discovery", "query_sha256": query_hash(xql)}
-    response = await execute_query(run, xql, SCHEMA_SAMPLE_ROWS, window_timeframe(STALE_LOOKBACK_HOURS), record)
-    if response.get("error"):
-        record["error"] = True
+    for hours in (SCHEMA_SAMPLE_WINDOW_HOURS, STALE_LOOKBACK_HOURS):
+        run._spend()
+        record: dict[str, Any] = {"dataset": dataset, "purpose": "field_discovery", "query_sha256": query_hash(xql)}
+        try:
+            response = await execute_query(run, xql, SCHEMA_SAMPLE_ROWS, window_timeframe(hours), record)
+        except CostGuardRefusal:
+            if hours == SCHEMA_SAMPLE_WINDOW_HOURS:
+                raise
+            return []
+        if response.get("error"):
+            record["error"] = True
+            run.queries.append(record)
+            return []
         run.queries.append(record)
-        return []
-    run.queries.append(record)
-    return infer_field_catalog(extract_xql_rows(response))
+        fields = infer_field_catalog(extract_xql_rows(response))
+        if fields:
+            return fields
+    return []
 
 
 def _sample_fields(resolved: ResolvedDataset, fields: list[dict[str, Any]], time_field: str) -> list[str]:

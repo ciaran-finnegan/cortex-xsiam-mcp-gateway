@@ -237,7 +237,7 @@ async def test_firewall_traffic_compiles_bounded_aggregates_and_records_provenan
         assert re.search(r"\| limit \d+$", query)
     answers = [call for call in fake.calls if call["query"] in queries]
     assert all(call["timeframe"] == {"relativeTime": 86_400_000} for call in answers)
-    assert fake.calls[0]["timeframe"] == {"relativeTime": 7 * 86_400_000}
+    assert fake.calls[0]["timeframe"] == {"relativeTime": helper_runtime.FIELD_DISCOVERY_WINDOW_HOURS * 3_600_000}
 
     provenance = response["provenance"]["queries"]
     assert [item["purpose"] for item in provenance] == ["field_discovery", "sessions_by_action", "top_flows", "recent_samples"]
@@ -355,6 +355,29 @@ async def test_helper_query_budget_is_enforced(monkeypatch):
 
 
 # --- contract, policy defaults, audit -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_field_discovery_samples_a_day_first_and_widens_once_when_the_day_is_empty(monkeypatch):
+    fake = FakeXsiam(schemas={"acme_busy_raw": ["_time", "user_name"], "acme_quiet_raw": []})
+    datasets = ["acme_busy_raw", "acme_quiet_raw"]
+    _install(monkeypatch, fake, datasets, {"Tier1": datasets})
+    principal = MCPContext(auth_headers={}, principal_id="tier1@example.com", groups=("Tier1",))
+
+    busy = await helper_runtime.discovered_field_names(helper_runtime.HelperRun(_ctx(), principal, tool="firewall_traffic"), "acme_busy_raw")
+    quiet_run = helper_runtime.HelperRun(_ctx(), principal, tool="firewall_traffic")
+    quiet = await helper_runtime.discovered_field_names(quiet_run, "acme_quiet_raw")
+
+    assert busy == {"_time", "user_name"}
+    assert quiet == frozenset()
+    hour = 3_600_000
+    assert [call["timeframe"] for call in fake.calls] == [
+        {"relativeTime": helper_runtime.FIELD_DISCOVERY_WINDOW_HOURS * hour},
+        {"relativeTime": helper_runtime.FIELD_DISCOVERY_WINDOW_HOURS * hour},
+        {"relativeTime": helper_runtime.FIELD_DISCOVERY_WIDE_WINDOW_HOURS * hour},
+    ]
+    assert [item["purpose"] for item in quiet_run.queries] == ["field_discovery", "field_discovery"]
+    assert quiet_run.spent == 2
 
 
 @pytest.mark.asyncio
