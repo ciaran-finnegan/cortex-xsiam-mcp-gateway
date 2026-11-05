@@ -199,8 +199,9 @@ When learning is enabled and the learned cost table has an active entry for a
 single-dataset query's dataset, window bucket and selectivity, the guard uses
 its units instead of the seed band: `high_units` is the learned high, but never
 below the seed band's low bound, so learned data can raise an estimate freely
-and lower it only to that floor. The class, and so the long-running-slot rule,
-stays the seed class. The estimate's `factors` then carry
+and lower it only to that floor. An entry built only from the
+[history backfill](LEARNING.md#history-backfill) can raise the estimate but not
+lower it. The class, and so the long-running-slot rule, stays the seed class. The estimate's `factors` then carry
 `units_source: "learned"` and the entry id.
 
 Rules, in order:

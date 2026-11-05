@@ -71,6 +71,15 @@ This project follows a lightweight changelog format until stable releases begin.
 - Added automatic verification: a fact is labelled `verified` after 5
   confirmations from 3 distinct engagements over 7 days with no contradiction
   (all settings); one contradiction drops it back to `learned`.
+- Added `python -m learner backfill --days N --max-units X`, run once by an
+  operator, which reads older queries from `xql_query_center_history` into cost
+  and absent-field facts with the source class `query_history_backfill`. It is
+  resumable, never selects `issuer`, and keeps query text in memory. Its facts
+  never count towards verification, leave live facts alone, and can raise a cost
+  guard estimate but not lower it. It calls no model.
+- Nightly recalibration now keeps a sample's quota delta when the history reports
+  zero units, because zero there is not a measurement. Confirmed against a live
+  tenant that `execution_id` in the history equals the public API's query id.
 - Added `get_learned_facts`, the `tenant://learned/{kind}` resource,
   `learning_digest`, admin-only `revert_learned` (revert, pin, unpin), and the
   `LEARNING_ENABLED` kill switch for both processes.

@@ -61,6 +61,9 @@ logger = logging.getLogger(__name__)
 KINDS: tuple[str, ...] = ("schema", "enum_fields", "absent_fields", "cost_table", "timings", "helper_usage")
 SCHEMA_KINDS = frozenset({"schema", "enum_fields", "absent_fields"})
 MEASUREMENT_KINDS = frozenset({"cost_table", "timings", "helper_usage"})
+# History rows read by the operator-run backfill. Whoever ran a query wrote its text, so this class
+# never counts towards verification, never contradicts, and never lowers a cost estimate.
+BACKFILL_SOURCE_CLASS = "query_history_backfill"
 SOURCE_CLASSES = frozenset(
     {
         "field_discovery_sample",  # field names and value types from a discovery sample
@@ -69,6 +72,7 @@ SOURCE_CLASSES = frozenset(
         "query_pair_outcome",  # an equality query with no rows, then the same query with contains and rows
         "tool_step_timing",  # tool durations and gaps between engagement steps
         "tool_call_outcome",  # helper usage: calls, outcomes, queries per tool
+        BACKFILL_SOURCE_CLASS,
     }
 )
 STATUSES = ("active", "demoted", "reverted")
@@ -612,6 +616,8 @@ def _is_outlier(kind: str, fact: dict[str, Any], sample: dict[str, Any]) -> bool
 
 def _note_engagement(entry: dict[str, Any], observation: Observation, now: datetime) -> None:
     """Count the observation towards verification: the window opens at the first confirmation after a reset."""
+    if observation.source_class == BACKFILL_SOURCE_CLASS:
+        return
     if entry.get("verify_window_start") is None:
         entry["verify_window_start"] = iso_timestamp(now)
     tags = list(entry.get("verify_engagements") or [])
@@ -640,6 +646,8 @@ def _maybe_verify(entry: dict[str, Any], now: datetime) -> list[dict[str, Any]]:
 
 def _confirm(entry: dict[str, Any], observation: Observation, now: datetime) -> list[dict[str, Any]]:
     entry["confirmations"] += 1
+    if observation.source_class == BACKFILL_SOURCE_CLASS:
+        return [_change("confirmed", entry, now)]
     entry["streak"] += 1
     entry["confidence"] = _confidence(entry["streak"])
     _note_engagement(entry, observation, now)
@@ -724,7 +732,8 @@ def apply_observation(
 
     _touch(entry, observation, now)
     if observation.effect == "measure":
-        outlier = _is_outlier(observation.kind, entry["fact"], observation.fact)
+        # A backfill only establishes the range: an old expensive query is no news about the entry.
+        outlier = observation.source_class != BACKFILL_SOURCE_CLASS and _is_outlier(observation.kind, entry["fact"], observation.fact)
         entry["fact"] = _merge_sample(observation.kind, entry["fact"], observation.fact)
         return [_contradict(entry, now)] if outlier else _confirm(entry, observation, now)
     if entry["fact"] == observation.fact:
@@ -911,12 +920,12 @@ class LearnedStore:
                 changes.append(change)
         return changes
 
-    def locked(self):
-        return directory_lock(self.pack_root, self.root)
+    def locked(self, *, wait_seconds: float | None = None):
+        return directory_lock(self.pack_root, self.root, wait_seconds=wait_seconds)
 
 
 @contextlib.asynccontextmanager
-async def directory_lock(pack_root: Path, directory: Path):
+async def directory_lock(pack_root: Path, directory: Path, *, wait_seconds: float | None = None):
     """Serialise writes to one pack directory: an asyncio lock in-process, a non-blocking flock across processes.
 
     The flock is polled with ``asyncio.sleep`` so a write held by another process never blocks the event loop.
@@ -930,7 +939,8 @@ async def directory_lock(pack_root: Path, directory: Path):
             return
         descriptor = os.open(directory / ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
-            for _ in range(LOCK_ATTEMPTS):
+            attempts = LOCK_ATTEMPTS if wait_seconds is None else max(1, math.ceil(wait_seconds / LOCK_RETRY_SECONDS))
+            for _ in range(attempts):
                 try:
                     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
@@ -1156,6 +1166,7 @@ def lookup_cost(dataset: str, window_bucket: str, selectivity: str) -> dict[str,
                 "observations": entry["fact"]["observations"],
                 "confidence": entry["confidence"],
                 "units_source": entry["fact"]["units_source"],
+                "source_class": entry["source_class"],
             }
     return None
 

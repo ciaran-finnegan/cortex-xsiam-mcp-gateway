@@ -63,6 +63,7 @@ All times are UTC and are settings.
 | Nightly | Daily | `LEARNER_NIGHTLY_UTC` (`13:30`) | Expire entries; recalibrate held cost samples from `xql_query_center_history`. |
 | Weekly | Weekly | `LEARNER_WEEKLY_UTC` (`MON 20:00`) | Write `learned/digests/<date>.json`; score a replay of each engagement recorded in the week; list the most frequent step sequences. |
 | Canary | On every deploy | `python -m learner canary` | Replay every scored engagement; exit 1 if one now reaches fewer cache hits or facts than its score. |
+| History backfill | Once, by an operator | `python -m learner backfill --days N --max-units X` | Read older queries from `xql_query_center_history` into cost and absent-field facts. See [History backfill](#history-backfill). |
 | Agent evaluation | CI only | `scripts/evaluate_agent_plans.py` | The synthetic cases in `tests/agent_eval/cases.json` run in CI, never against the tenant. |
 
 `tick` folds the journal and runs the nightly and weekly jobs when their last
@@ -76,10 +77,11 @@ Run `tick` at least as often as the close SLA: every 5 minutes is a good default
 PYTHONPATH=/app/src python -m learner tick
 ```
 
-Commands: `tick` (default), `nightly`, `weekly`, `canary`, `status`. Each prints
-one JSON report. Exit codes: `0` success or skipped, `1` canary regression, `2`
-error (for example an audit export failure under fail-closed, an unreadable
-state file, or an invalid schedule setting).
+Commands: `tick` (default), `nightly`, `weekly`, `canary`, `status`, `backfill`.
+Each prints one JSON report. Exit codes: `0` success or skipped, `1` canary
+regression or a backfill that stopped before the end, `2` error (for example an
+audit export failure under fail-closed, an unreadable state file, or an invalid
+schedule setting).
 
 A systemd timer:
 
@@ -111,8 +113,8 @@ or as users in a group that does not grant write access to others' journal files
 
 ## Learner principal and quota
 
-The learner reaches XSIAM only for nightly recalibration, in-process, as the
-principal `LEARNER_PRINCIPAL_ID` (`learning-service`) in the groups
+The learner reaches XSIAM only for nightly recalibration and the operator-run
+[history backfill](#history-backfill), in-process, as the principal `LEARNER_PRINCIPAL_ID` (`learning-service`) in the groups
 `LEARNER_GROUPS` (`learner`). It goes through the gateway's normal query path:
 
 - dataset policy: the default `LOG_SEARCH_DATASET_POLICY` gives `learner` only
@@ -137,7 +139,7 @@ When recalibration is skipped (`not_authorized`, `daily_cap`, `below_reserve`,
 `quota_unknown`, `query_failed`), the held samples are applied with their
 remaining-quota delta, so no measurement is lost. Recalibration matches
 `execution_id` in the history to the query id the gateway received; samples with
-no match also keep their delta.
+no match, or with zero units in the history, also keep their delta.
 
 The service principal is set through a context variable that only in-process code
 can set; no MCP request reaches it.
@@ -162,7 +164,8 @@ Never automatic:
   can; no human step is needed for verification);
 - changing gateway code, prompts or skills, or calling a model (the gateway and
   the learner call no model);
-- quota spent to learn, beyond the learner's nightly history query under its cap.
+- quota spent to learn, beyond the learner's nightly history query under its cap
+  and a backfill an operator starts under its own budget.
 
 ## Tenant pack layout
 
@@ -180,7 +183,7 @@ Never automatic:
     changes.jsonl                lifecycle history read by learning_digest
     digests/<date>.json          weekly digest
     journal/                     gateway journal files (pruned two days after they are read)
-    learner_state.json           read offsets, open engagements, held samples, replay scores
+    learner_state.json           read offsets, open engagements, held samples, replay scores, backfill progress
     learner_spend.json           the learner's units for the current UTC day
   engagements/
     .gitignore                   keeps cached results out of the pack's history
@@ -264,7 +267,9 @@ Learned facts are read by agents, so they must not be writable from tenant data.
   hand-edited fact file with free text is ignored.
 - An XSIAM error message is classified `unknown_field` only when the field it
   names already appears in the submitted query outside string literals.
-- `source_class` is one of six classes; there is no free-form source.
+- `source_class` is one of seven classes; there is no free-form source.
+- The [history backfill](#history-backfill) is the one exception to the first and
+  third rules above, and is bounded separately.
 
 Served facts carry `content_trust: "measured_metadata"` and guidance that field
 names are identifiers, not instructions.
@@ -301,6 +306,74 @@ names are identifiers, not instructions.
 - **Capacity**: at `LEARNING_MAX_ENTRIES_PER_KIND` new entries are refused rather
   than evicting existing ones, so a flood of new names cannot push out
   established facts.
+
+## History backfill
+
+Learning normally starts empty and fills from queries the gateway runs. An
+operator can prime it once from the queries already in the tenant's history:
+
+```bash
+PYTHONPATH=/app/src python -m learner backfill --days 30 --max-units 5
+```
+
+It calls no model. Each row is parsed by the same functions the observers use.
+
+| Fact | Learned from | Rows used |
+| --- | --- | --- |
+| `cost_table` | `xql_query`, `timeframe_duration_secs`, `compute_units` | `STATUS_040_OK` or `STATUS_050_DATA_DELETED`, source `investigation`, `dataset = X` with no `join`, `union` or `call`, more than zero units. |
+| `absent_fields` | `xql_query`, the `validation_message` in `status_details` | `STATUS_030_FAILED`, classified `unknown_field`, field read straight from the dataset, no older than `LEARNING_SCHEMA_TTL_DAYS`. |
+
+Enum-like fields are not backfilled: pairing an equality query with a later
+`contains` query without an engagement would produce too many false facts. Schema,
+timing and helper facts and the replay cache cannot be: the history holds no value
+types, tool steps or results.
+
+**One run.** The first run fixes the range and commits progress one day at a time
+in `learner_state.json`. A run that stops is resumed by the same command, and a
+finished backfill reports `already_completed`, so nothing is counted twice. `--days`
+is ignored on a resume. To run again, an operator removes the `backfill` key from
+the state file, knowing that samples will repeat.
+
+**Identity.** Rows with `issuer = System` are excluded in the query, and `issuer`
+is never selected. Nothing about who ran a query is read or stored.
+
+**Query text.** Whoever runs a query writes its text, so this is tenant data that
+anyone with XQL access can shape, which the observers' guard normally excludes.
+Text stays in memory for one row: only validated identifiers, enumerated tokens,
+the execution id and XSIAM's measured units leave that function. Nothing is written
+to the journal, and filter literals are not read. To bound what a crafted query can
+do, facts use the source class `query_history_backfill`, and:
+
+- they never count towards verification: confirmations rise, but the streak,
+  confidence, engagement count and verification window do not, so a fact still needs
+  live confirmations from three engagements over seven days;
+- a fact the gateway has measured live is left alone, and a field discovered live is
+  not marked absent (`kept_live_fact` in the report);
+- they never contradict anything, and a high cost widens an entry's range rather
+  than demoting it;
+- a cost entry built only from history can raise a cost guard estimate but not lower
+  it; the first live sample ends that restriction;
+- a reverted fact stays reverted.
+
+**Paging.** Each day is queried on its own. A full page is discarded and its window
+split in two, because XSIAM returns rows in no particular order after `sort` and
+`limit`. Windows are half open on `_time`, so a row on a boundary counts once. Each
+query costs about 0.0003 units and takes about 15 seconds, and a busy day needs
+several, so 30 days takes some tens of minutes.
+
+**Budget.** `--max-units` applies per invocation and replaces
+`LEARNER_DAILY_UNIT_CAP` for this command. XSIAM reports quota per tenant and no
+cost per query, so the budget counts the drop in quota while each query runs, which
+includes anything else running on the tenant. `units_at_most` is therefore an upper
+bound: a run never spends more than its budget, but a busy tenant can stop one early.
+Run the command again to resume. The amount also goes to the spend ledger, so that
+day's recalibration may be skipped, keeping its deltas. The reserve
+(`LEARNER_RESERVE_UNITS`) is checked before every query.
+
+The report's `outcomes` counts rows by what became of them: the fact kind, or
+`kept_live_fact`, `no_units`, `unmetered_source`, `multi_source`,
+`no_single_dataset`, `query_truncated`, `status_not_used`, `failure_not_classified`,
+`field_not_from_dataset`, `too_old_for_field_facts`, `refused` or `invalid_row`.
 
 ## Serving
 
@@ -453,9 +526,16 @@ that it uses `contains` and avoids absent fields.
   so the two queries must reach the same replica (sticky MCP sessions do this).
 - `remaining_quota` deltas are approximate when queries overlap or other clients
   share the quota; that is why they wait for nightly recalibration.
-- Recalibration assumes the history's `execution_id` equals the query id the
-  public API returns; this has not been verified against a live tenant. Without a
-  match the delta is kept.
+- The history's `compute_units` is rounded to 0.001 units, and is zero for some
+  long `xdr_data` queries too, so zero is treated as no measurement. Cheap queries
+  therefore teach the backfill nothing and keep the seed estimate, which errs high.
+- XSIAM's replies carry `remaining_quota` but no `query_cost` on the tenant tested,
+  so recalibration counts the rest of the day's cap for each query it runs.
+- The backfill skips queries longer than `DATASET_QUERY_MAX_CELL_CHARS`, because a
+  truncated query cannot be parsed reliably. Long queries are often indicator lists
+  and can be the expensive ones; raise the setting for the run to keep them.
+- A query prefixed with `config` has no single leading `dataset =` stage, so neither
+  the observers, the backfill nor the learned cost lookup use it.
 - Unknown-field classification relies on XSIAM error wording; a message it does
   not recognise simply produces no fact.
 - The instruction-shaped field-name guard is a word list, so it is defence in

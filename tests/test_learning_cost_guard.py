@@ -150,6 +150,35 @@ def test_learned_cost_is_ignored_for_multi_dataset_queries_and_without_an_entry(
     assert "units_source" not in multi.factors
 
 
+@pytest.mark.parametrize(
+    "learned_high, expected_high",
+    [
+        (0.01, 3.6),  # history below the seed band cannot lower the estimate
+        (1.2, 3.6),  # nor can history inside it
+        (6.0, 6.0),  # history above it raises the estimate
+    ],
+)
+def test_a_cost_built_only_from_the_history_backfill_can_only_raise_the_estimate(monkeypatch, learned_high, expected_high):
+    monkeypatch.setattr(
+        learned_store,
+        "lookup_cost",
+        lambda *args: {
+            "entry_id": "cost_table:synthetic",
+            "median_units": learned_high,
+            "high_units": learned_high,
+            "observations": 20,
+            "confidence": 0.5,
+            "units_source": "query_history",
+            "source_class": learned_store.BACKFILL_SOURCE_CLASS,
+        },
+    )
+
+    estimate = cost_guard.estimate_xql('dataset = sample_auth_logs | filter user_name = "a" | limit 5', _window(2 * DAY_MS))
+
+    assert estimate.high_units == expected_high
+    assert estimate.factors["units_source"] == "learned"
+
+
 @pytest.mark.asyncio
 async def test_learned_cost_drives_the_approval_rule(monkeypatch, observed):
     monkeypatch.setattr(
@@ -205,6 +234,47 @@ async def test_learner_recalibration_runs_through_the_real_fetcher_and_the_cost_
 
     assert (measured, skipped, spent) == ({"q-2": 0.0003}, None, 0.0003)
     assert requests == ["/xql/get_quota", "/xql/start_xql_query/"]
+
+
+@pytest.mark.asyncio
+async def test_backfill_runs_through_the_real_fetcher_and_the_cost_guard(pack, audit_events, monkeypatch):
+    from datetime import UTC, datetime
+
+    from usecase import fetcher as fetcher_module
+    from usecase import learner
+
+    monkeypatch.setattr(get_config(), "papi_url_env_key", "https://api-tenant.example.test")
+    requests = []
+    now = datetime(2026, 10, 1, tzinfo=UTC)
+    moment = int(now.timestamp() * 1000) - HOUR_MS
+    row = {
+        "_time": moment,
+        "execution_id": "q-old",
+        "status": "STATUS_050_DATA_DELETED",
+        "timeframe_duration_secs": 3600,
+        "compute_units": 0.2,
+        "xql_query_source": "investigation",
+        "xql_query": 'dataset = sample_auth_logs | filter user_name = "a" | limit 5',
+    }
+
+    class TenantFetcher:
+        def __init__(self, url, api_key, api_key_id):
+            self.api_key, self.api_key_id = api_key, api_key_id
+
+        async def send_request(self, path, data):
+            requests.append(path)
+            if path == "/xql/get_quota":
+                return {"reply": {"daily_used_quota": 1.0, "license_quota": 36500.0}}
+            return success("q-hist", [row], remaining=99.0)
+
+    monkeypatch.setattr(fetcher_module, "Fetcher", TenantFetcher)
+
+    report = await learner.run_backfill(1, 0.5, now=now)
+
+    assert report["stopped"] is None
+    assert report["outcomes"] == {"cost_table": 1}
+    assert report["this_run"]["queries"] == 1
+    assert "/xql/start_xql_query/" in requests
 
 
 @pytest.mark.asyncio

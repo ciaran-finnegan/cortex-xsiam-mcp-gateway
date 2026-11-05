@@ -165,6 +165,11 @@ Tier-1 learning writes measured tenant facts to `<TENANT_PACK_DIR>/learned/`
   `LEARNING_ADMIN_GROUPS`;
 - the learner queries XSIAM only as its own `learner` principal under the normal
   dataset and tool policy, within a daily unit cap, and not below the reserve;
+- the history backfill, which an operator starts once, is the one path that reads
+  query text from XSIAM rows. That text is author-controlled, so it stays in memory
+  and only validated identifiers and tokens leave it; its facts never count towards
+  verification, never contradict or replace a live fact, and can raise a cost
+  estimate but not lower it. It never selects `issuer`;
 - the replay cache is off by default, holds only results the gateway already
   returned, is capped, owner-only and git-ignored in the pack, and is not exposed
   as an MCP tool.
