@@ -132,12 +132,10 @@ This project follows a lightweight changelog format until stable releases begin.
   with the estimate, alternatives and the provenance of the queries already
   run, and each helper accepts the `approval` argument. `threat_intel_lookup`
   takes `window_days` (default 30) because every query needs a timeframe.
-- Documented keeping the XSIAM API key out of `.env`: a new
-  [Secrets And API Keys](docs/SECRETS.md) page with 1Password CLI, macOS
-  Keychain and Windows SecretStore examples that inject the key when the
-  gateway starts, after a person approves the read, plus `.env.op.example`
-  for `op://` references. `.env.example`, the README, configuration and
-  testing docs no longer show secrets in `.env`.
+- Added [Secrets And API Keys](docs/SECRETS.md): 1Password CLI, macOS Keychain
+  and Windows SecretStore examples that inject the XSIAM key at start after a
+  person approves, plus `.env.op.example`. `.env.example`, the README and the
+  configuration and testing docs no longer put secrets in `.env`.
 
 ## 0.2.0-alpha.1 - 2026-07-10
 

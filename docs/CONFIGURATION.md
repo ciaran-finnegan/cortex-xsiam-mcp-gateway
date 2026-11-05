@@ -1,11 +1,9 @@
 # Configuration
 
 Configuration is loaded from environment variables and an optional `.env`
-file in the working directory; environment variables win. Keep non-secret
-settings in `.env` and keep API keys and other secrets out of it: inject them
-into the environment when the gateway starts, from 1Password or the operating
-system's credential store, as [Secrets And API Keys](SECRETS.md) describes.
-Do not commit `.env` files.
+file in the working directory, environment variables win. Keep API keys and
+other secrets out of `.env` and inject them at start, see
+[Secrets And API Keys](SECRETS.md). Do not commit `.env` files.
 
 ## Required XSIAM API Settings
 
@@ -15,11 +13,9 @@ Do not commit `.env` files.
 | `CORTEX_MCP_PAPI_AUTH_HEADER` | XSIAM API key value. |
 | `CORTEX_MCP_PAPI_AUTH_ID` | XSIAM API key ID. |
 
-The key is a bearer credential for the tenant. Do not write it into `.env`,
-the MCP client's configuration file or a command line; see
-[Secrets And API Keys](SECRETS.md) for 1Password, macOS Keychain and Windows
-SecretStore examples that release it to the gateway at start, after a person
-approves.
+Do not write the key into `.env`, the MCP client's config file or a command
+line. [Secrets And API Keys](SECRETS.md) shows how to inject it at start from
+1Password, the macOS Keychain or the Windows SecretStore.
 
 ## MCP Server Settings
 
@@ -345,9 +341,9 @@ export XSIAM_CREDENTIAL_PROFILES='{
 }'
 ```
 
-Store the actual API key values in your secret manager or credential store and
-inject them at start, as [Secrets And API Keys](SECRETS.md) describes; with
-1Password, add one `op://` reference per variable to `.env.op`.
+Inject the key values at start from your secret manager or credential store
+(see [Secrets And API Keys](SECRETS.md)), with 1Password that is one `op://`
+line per variable in `.env.op`.
 If the broker is enabled and no profile matches the verified principal, tool
 execution fails closed. When several groups match, the lowest numeric
 `priority` wins; group claim order is not trusted as authorization policy.
@@ -410,9 +406,8 @@ policy that covers the facts they revert.
 
 ## Example `.env`
 
-Non-secret settings only. The API key, key id and cursor secret are injected
-into the environment at start (see [Secrets And API Keys](SECRETS.md)), and
-environment variables take precedence over this file.
+Non-secret settings only, the key, key id and cursor secret are injected at
+start (see [Secrets And API Keys](SECRETS.md)).
 
 ```bash
 CORTEX_MCP_PAPI_URL=https://api-your-xsiam-tenant.example
@@ -433,8 +428,8 @@ AUDIT_LOG_XSIAM_HTTP_COLLECTOR_ENABLED=false
 
 ## Production Notes
 
-- Keep API credentials in a secret manager or credential store and inject them
-  at start; see [Secrets And API Keys](SECRETS.md).
+- Inject API credentials at start from a secret manager or credential store,
+  see [Secrets And API Keys](SECRETS.md).
 - Rotate API keys regularly.
 - Use separate credentials for development and production tenants.
 - Use role-scoped XSIAM API keys through the credential broker for shared HTTP
