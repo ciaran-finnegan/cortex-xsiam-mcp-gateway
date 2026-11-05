@@ -38,7 +38,9 @@ check dataset policy.
 | --- | --- |
 | `get_log_search_guidance`, `get_dataset_query_guidance`, `get_xql_help` | Agent workflow, rules and XQL recipes. |
 | `set_engagement`, `get_engagement`, `record_fact`, `get_engagement_log` | Session mode (`incident_response`, `threat_hunt`, `operations`), scope and findings tied to queries the session ran. A mode can only narrow access. |
-| `list_log_datasets` | Datasets the caller is allowed to query. |
+| `find_datasets` | Datasets from the authored catalogue that match a topic, domain or entity type, filtered by dataset policy, with candidate key fields. |
+| `resolve_entity`, `firewall_traffic`, `firewall_verdict`, `entity_activity`, `dataset_health`, `threat_intel_lookup`, `coverage_gap` | Question-shaped helpers. The gateway picks datasets from the catalogue under dataset policy, verifies fields against the live schema and runs bounded typed queries within a per-call budget. See [investigation helpers](docs/INVESTIGATION_HELPERS.md). |
+| `list_log_datasets` | Datasets the caller is allowed to query, with offset paging. |
 | `discover_log_fields` | Field names and types from a small sample of one dataset, without values. |
 | `query_dataset` | Typed row or aggregate query on one dataset, compiled to XQL by the gateway. |
 | `continue_dataset_query` | Next page of a row query, from an encrypted cursor. |
@@ -68,8 +70,9 @@ signed gateway headers gets a 401 before it reaches MCP. See
 ## Agent workflow
 
 The agent sets the mode and scope with `set_engagement`, calls
-`get_dataset_query_guidance`, finds a dataset and its fields with
-`list_log_datasets` and `discover_log_fields`, then calls `query_dataset`.
+`get_dataset_query_guidance`, and calls an investigation helper when the
+question fits one. Otherwise it finds a dataset and its fields with
+`find_datasets` and `discover_log_fields`, then calls `query_dataset`.
 It calls `continue_dataset_query` only when the user wants another page. The
 gateway does not accept natural-language queries. A typed plan looks like this.
 

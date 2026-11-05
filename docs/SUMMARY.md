@@ -22,6 +22,8 @@
 ## Agents And Tools
 
 * [Agent Dataset Queries](AGENT_LOG_SEARCH.md)
+* [Dataset Catalogue](DATASET_CATALOGUE.md)
+* [Investigation Helpers](INVESTIGATION_HELPERS.md)
 * [XQL Validation And Error Classes](XQL_VALIDATION.md)
 * [Engagement Modes](ENGAGEMENT_MODES.md)
 * [Agent And XSIAM Testing](CLAUDE_CODE_LOG_SEARCH_TESTING.md)

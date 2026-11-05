@@ -31,13 +31,27 @@ def normalize_dataset_record(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def parse_dataset_reply(response_data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalize a ``/xql/get_datasets`` response into compact dataset records."""
+    reply = response_data.get("reply", [])
+    if not isinstance(reply, list):
+        raise ValueError("Unexpected get_datasets response: reply must be a list")
+    return [
+        normalized
+        for item in reply
+        if isinstance(item, dict) and (normalized := normalize_dataset_record(item)).get("dataset_name")
+    ]
+
+
 def filter_authorized_dataset_records(
     records: list[dict[str, Any]],
     context: MCPContext,
     name_contains: str | None = None,
     max_datasets: int = DEFAULT_DISCOVERY_DATASET_COUNT,
+    offset: int = 0,
 ) -> tuple[list[dict[str, Any]], bool]:
     safe_limit = min(max(int(max_datasets), 1), MAX_DISCOVERY_DATASET_COUNT)
+    safe_offset = max(int(offset), 0)
     name_filter = name_contains.lower() if name_contains else None
     allowed_records = []
     for record in records:
@@ -49,16 +63,19 @@ def filter_authorized_dataset_records(
         decision = authorize_dataset(context, dataset_name)
         if decision.allowed:
             allowed_records.append({**record, "dataset_policy": decision.__dict__})
-    return allowed_records[:safe_limit], len(allowed_records) > safe_limit
+    page = allowed_records[safe_offset : safe_offset + safe_limit]
+    return page, len(allowed_records) > safe_offset + safe_limit
 
 
 def policy_dataset_records(
     context: MCPContext,
     name_contains: str | None = None,
     max_datasets: int = DEFAULT_DISCOVERY_DATASET_COUNT,
+    offset: int = 0,
 ) -> tuple[list[dict[str, Any]], bool]:
     decision = authorize_dataset(context, ALL_DATASETS)
     safe_limit = min(max(int(max_datasets), 1), MAX_DISCOVERY_DATASET_COUNT)
+    safe_offset = max(int(offset), 0)
     name_filter = name_contains.lower() if name_contains else None
     allowed = [
         dataset
@@ -76,7 +93,7 @@ def policy_dataset_records(
         }
         for dataset in allowed
     ]
-    return records[:safe_limit], len(records) > safe_limit
+    return records[safe_offset : safe_offset + safe_limit], len(records) > safe_offset + safe_limit
 
 
 def extract_xql_rows(response_data: dict[str, Any]) -> list[dict[str, Any]]:

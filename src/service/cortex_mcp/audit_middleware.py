@@ -167,6 +167,9 @@ async def _summarize_tool_result(result: ToolResult, fastmcp_context: Any | None
             summary["quota"] = quota
         if payload.get("error") == "cost_guard" and payload.get("rule") in COST_GUARD_RULES:
             summary["cost_guard_rule"] = payload["rule"]
+        helper_queries = _summarize_helper_queries(payload.get("provenance"))
+        if helper_queries:
+            summary["helper_queries"] = helper_queries
     return summary
 
 
@@ -194,6 +197,23 @@ def _quota_summary(quota: Any) -> dict[str, Any] | None:
         if isinstance(quota.get(key), bool):
             summary[key] = quota[key]
     return summary
+
+
+def _summarize_helper_queries(provenance: Any) -> list[dict[str, Any]]:
+    """Record the datasets and query hashes a helper chose server-side. Never records values."""
+    if not isinstance(provenance, dict) or not isinstance(provenance.get("queries"), list):
+        return []
+    allowed_keys = ("dataset", "purpose", "query_sha256", "query_id", "returned", "error")
+    summaries = []
+    for query in provenance["queries"][:32]:
+        if not isinstance(query, dict):
+            continue
+        summary = {key: query[key] for key in allowed_keys if key in query}
+        # A refused helper query names the cost guard rule; copy it only when it is a known rule.
+        if query.get("cost_guard_rule") in COST_GUARD_RULES:
+            summary["cost_guard_rule"] = query["cost_guard_rule"]
+        summaries.append(summary)
+    return summaries
 
 
 def _extract_json_payload(result: ToolResult) -> dict[str, Any] | None:
