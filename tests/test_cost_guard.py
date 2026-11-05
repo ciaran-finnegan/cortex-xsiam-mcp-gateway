@@ -205,9 +205,53 @@ def test_query_without_a_dataset_is_priced_as_the_default_query_target():
     assert estimate.cost_class == "extreme"
 
 
-def test_early_exit_samples_ignore_the_window():
-    assert cost_guard.estimate_xql("dataset = xdr_data | limit 25", _days(30)).cost_class == "medium"
-    assert cost_guard.estimate_xql("dataset = acme_flow_logs | limit 25", _days(30)).cost_class == "light"
+def _hours(hours):
+    return {"from_ms": NOW_MS - hours * 3_600_000, "to_ms": NOW_MS}
+
+
+@pytest.mark.parametrize(
+    "query, timeframe, expected",
+    [
+        # A heavy dataset's early-exit sample grows with the window but skips the selectivity penalty.
+        ("dataset = xdr_data | limit 5", _hours(1), "light"),
+        ("dataset = xdr_data | fields agent_hostname, _time | limit 25", _days(1), "light"),
+        ("dataset = xdr_data | limit 25", _days(7), "medium"),
+        ("dataset = xdr_data | limit 25", _days(30), "medium"),
+        ("dataset = acme_flow_logs | limit 25", _days(30), "light"),
+        # A filter stage is not a sample: the same window on a heavy dataset keeps its full score.
+        ('dataset = xdr_data | filter action_process_image_name = "x" | limit 5', _hours(1), "heavy"),
+    ],
+)
+def test_early_exit_samples_score_two_below_tier_and_window(query, timeframe, expected):
+    estimate = cost_guard.estimate_xql(query, timeframe)
+
+    assert estimate.cost_class == expected
+    assert estimate.factors["sample"] is (" filter " not in query)
+
+
+def test_long_window_samples_keep_climbing_past_the_policy_cap():
+    """Windows above DATASET_QUERY_MAX_TIMEFRAME_MS never reach the guard, but the gradient must stay monotone."""
+    shape = cost_guard.parse_query("dataset = xdr_data | limit 25")
+
+    assert cost_guard.estimate_query(shape, 90 * DAY_MS).cost_class == "heavy"
+    assert cost_guard.estimate_query(shape, 365 * DAY_MS).cost_class == "heavy"
+    assert cost_guard.estimate_query(cost_guard.parse_query("dataset = acme_flow_logs | limit 25"), 91 * DAY_MS).cost_class == "medium"
+
+
+@pytest.mark.asyncio
+async def test_short_window_discovery_sample_of_a_heavy_dataset_runs_without_approval(fetcher, audit_events):
+    """The field-discovery shape (`dataset | limit N` over an hour) must stay below the 1-unit threshold."""
+    _observe(50.0)
+    fetcher.fetcher = SequenceFetcher([_success(rows=[{"agent_hostname": "wks-0001"}], remaining_quota=49.9)])
+
+    response = json.loads(await issues.execute_xql_query(_ctx(), "dataset = xdr_data | limit 5", timeframe=_hours(1)))
+
+    assert response["success"] == "true"
+    assert response["quota"]["estimate_class"] == "light"
+    assert response["quota"]["approved"] is False
+    assert response["quota"]["approval_method"] is None
+    assert len(fetcher.fetcher.requests) == 1
+    assert audit_events == []  # plain allows raise no cost-guard event
 
 
 def test_catalogue_volume_is_used_before_the_tier_map(monkeypatch):
