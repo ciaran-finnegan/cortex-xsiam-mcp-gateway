@@ -417,6 +417,40 @@ async def test_a_run_stopped_by_its_budget_resumes(pack, intent_audit, monkeypat
     assert len(history.requests) == 2
 
 
+@pytest.mark.parametrize("damage", ["missing", "incomplete"])
+@pytest.mark.asyncio
+async def test_a_finished_history_rebuilds_a_lost_sessions_file_without_querying(pack, intent_audit, monkeypatch, damage):
+    history = _use_history(monkeypatch, _two_step_rows())
+    await run_sessions(1, 1.0, now=NOW)
+    path = pack / "intents" / "sessions.json"
+    if damage == "missing":
+        path.unlink()
+    else:
+        path.write_text(json.dumps({**json.loads(path.read_text()), "complete": False, "sessions": []}))
+    queries = len(history.requests)
+
+    report = await run_sessions(1, 1.0, now=NOW)
+
+    assert report["skipped"] == "already_completed"
+    assert report["sessions_rebuilt"] is True
+    assert len(history.requests) == queries
+    assert _read_sessions(pack)["complete"] is True
+    assert len(_read_sessions(pack)["sessions"]) == 1
+    assert (await run_label(provider=FakeProvider()))["labelled"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_finished_history_leaves_a_good_sessions_file_alone(pack, intent_audit, monkeypatch):
+    _use_history(monkeypatch, _two_step_rows())
+    await run_sessions(1, 1.0, now=NOW)
+    before = (pack / "intents" / "sessions.json").read_text()
+
+    report = await run_sessions(1, 1.0, now=NOW)
+
+    assert report["sessions_rebuilt"] is False
+    assert (pack / "intents" / "sessions.json").read_text() == before
+
+
 @pytest.mark.asyncio
 async def test_a_run_stops_below_the_reserve_and_spends_nothing(pack, intent_audit, monkeypatch):
     history = _use_history(monkeypatch, _two_step_rows(), daily_used=99.0)
@@ -1216,6 +1250,36 @@ async def test_a_formula_in_a_hostile_summary_does_not_run_in_a_spreadsheet(pack
     run_review()
 
     assert _read_review(pack)[0]["summary_inferred"] == f"'{payload}"
+
+
+@pytest.mark.asyncio
+async def test_review_shows_only_what_the_model_received_for_a_large_session(pack, intent_audit, monkeypatch):
+    rows = [
+        _row(f"q-{index}", at=NOW_MS - 2 * HOUR_MS + index * 1000, query=f"dataset = xdr_data | alter step_{index} = 1")
+        for index in range(100)
+    ]
+    rows.append(_row("q-long", at=NOW_MS - 2 * HOUR_MS + 100_000, query="dataset = xdr_data | filter pid in (" + "1," * 900 + "1)"))
+    rows.append(_row("q-cut", at=NOW_MS - 2 * HOUR_MS + 101_000, query=_query() + TRUNCATION_MARKER))
+    await _build_sessions(monkeypatch, rows)
+    provider = FakeProvider(json.dumps({**GOOD_REPLY, "fields": []}))
+    await run_label(provider=provider)
+    run_review()
+
+    (row,) = _read_review(pack)
+
+    payload = json.loads(provider.calls[0][1].split("\n")[1])
+    assert row["steps"] == "101"
+    assert row["steps_not_sent"] == "62"
+    sent = row["queries_as_sent"]
+    assert "(61 steps not sent here)" in sent
+    assert "step_0 " in sent and "step_19 " in sent
+    assert "step_20 " not in sent and "step_80 " not in sent
+    assert "step_81 " in sent
+    # A query cut for the prompt is cut here too, and all execution ids stay for looking up the originals.
+    long_sent = payload["steps"][-1]["query"]
+    assert len(long_sent) == intent_labels.MAX_PROMPT_QUERY_CHARS
+    assert sent.endswith(long_sent)
+    assert "q-50" in row["execution_ids"]
 
 
 @pytest.mark.asyncio

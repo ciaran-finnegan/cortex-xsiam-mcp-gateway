@@ -445,9 +445,10 @@ format, implement the one-method `LabelProvider` interface in
 `sessions` reuses the backfill's query path as the learner principal, so dataset
 policy, tool policy, audit, the reserve and a per-invocation unit budget all apply.
 Each day is queried on its own, a full page is split rather than walked, and progress
-is committed daily, so a run that stops is resumed by the same command. The range is
-fixed by the first run. To read another range, delete `intents/history.json` and
-`intents/sessions.json`. The history queries are observed like any other, so they add
+is committed daily, so a run that stops is resumed by the same command. A finished
+history is not read again, and `sessions.json` is rebuilt from it if a run stopped
+before writing the final file. The range is fixed by the first run. To read another
+range, delete `intents/history.json` and `intents/sessions.json`. The history queries are observed like any other, so they add
 cost samples for `xql_query_center_history` to the journal, and their units go to the
 learner's spend ledger.
 
@@ -526,7 +527,7 @@ failed export under `AUDIT_LOG_FAIL_CLOSED` stops the call.
 ### Measuring precision
 
 `review` writes `intents/review.csv`, one row per label, with the queries as they were
-sent and the execution ids, so a reviewer can look up the originals in XSIAM. Fill in:
+sent, how many steps were not sent, and the execution ids, so a reviewer can look up the originals in XSIAM. Fill in:
 
 | Column | Values |
 | --- | --- |

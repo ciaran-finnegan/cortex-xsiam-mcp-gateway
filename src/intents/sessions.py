@@ -266,7 +266,8 @@ async def run_sessions(days: int, max_units: float, *, now: datetime | None = No
     """Read the history into tokenised steps and write ``sessions.json``. Run by an operator.
 
     The range is fixed by the first run. To read a different range, an operator deletes
-    ``intents/history.json`` and ``intents/sessions.json``.
+    ``intents/history.json`` and ``intents/sessions.json``. A finished history is not read again,
+    but ``sessions.json`` is rebuilt from it when a run stopped before writing the final file.
     """
     if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= BACKFILL_MAX_DAYS:
         raise ValueError(f"days must be between 1 and {BACKFILL_MAX_DAYS}")
@@ -312,7 +313,11 @@ async def run_sessions(days: int, max_units: float, *, now: datetime | None = No
             }
             intents_store.write_json(path, progress)
         elif progress["completed_at"] is not None:
-            return _skipped("already_completed", steps=len(progress["steps"]))
+            stored = intents_store.read_json(sessions_path(root))
+            rebuilt = stored is None or not stored["complete"]
+            if rebuilt:
+                _write_sessions(root, progress, settings.session_gap_minutes, now)
+            return _skipped("already_completed", steps=len(progress["steps"]), sessions_rebuilt=rebuilt)
         elif progress["keep_literals"] != sorted(keep):
             # Stored steps are already tokenised, so one run cannot mix two settings.
             return {"command": "sessions", "refused": "keep_literals_changed"}

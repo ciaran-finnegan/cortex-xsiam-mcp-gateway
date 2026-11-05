@@ -15,7 +15,13 @@ from typing import Any
 
 from config.config import get_config
 from intents import store as intents_store
-from intents.labels import CONTENT_TRUST, load_labels, load_sessions
+from intents.labels import (
+    CONTENT_TRUST,
+    MAX_PROMPT_STEPS,
+    load_labels,
+    load_sessions,
+    session_payload,
+)
 from usecase.learned_store import get_learned_store, write_private_file
 
 VERDICTS = ("right", "wrong", "unsure")
@@ -28,6 +34,7 @@ LABEL_COLUMNS = (
     "summary_inferred",
     "outcome",
     "steps",
+    "steps_not_sent",
     "failed_steps",
     "term_tokens",
     "datasets",
@@ -48,11 +55,14 @@ def _safe_cell(value: Any) -> str:
     return f"'{text}" if text[:1] in {"=", "+", "-", "@", "\t", "\r"} else text
 
 
-def _queries_as_sent(session: dict[str, Any]) -> str:
+def _queries_as_sent(payload: dict[str, Any]) -> str:
+    """The prompt's own steps, so a reviewer judges a label on what the model received."""
     lines = []
-    for number, step in enumerate(session["steps"], start=1):
+    for number, step in enumerate(payload["steps"], start=1):
         failure = f" [{step['failure_class']}]" if step["failure_class"] else ""
         lines.append(f"{number}. rows={step['result_count']}{failure} {step['query']}")
+    if payload["steps_omitted_from_the_middle"]:
+        lines.insert(MAX_PROMPT_STEPS // 2, f"({payload['steps_omitted_from_the_middle']} steps not sent here)")
     return "\n".join(lines)
 
 
@@ -61,6 +71,7 @@ def _term_tokens(session: dict[str, Any]) -> int:
 
 
 def _row(session: dict[str, Any], label: dict[str, Any], entered: dict[str, str]) -> dict[str, str]:
+    payload = session_payload(session)
     values = {
         "session_id": session["session_id"],
         **{column: entered.get(column, "") for column in REVIEWER_COLUMNS},
@@ -70,11 +81,12 @@ def _row(session: dict[str, Any], label: dict[str, Any], entered: dict[str, str]
         "summary_inferred": label["summary"],
         "outcome": session["signals"]["outcome"],
         "steps": len(session["steps"]),
+        "steps_not_sent": payload["steps_omitted_from_the_middle"] + payload["steps_omitted_as_too_long"],
         "failed_steps": session["signals"]["failed_steps"],
         "term_tokens": _term_tokens(session),
         "datasets": ", ".join(label["datasets"]),
         "fields": ", ".join(label["fields"]),
-        "queries_as_sent": _queries_as_sent(session),
+        "queries_as_sent": _queries_as_sent(payload),
         "execution_ids": " ".join(session["execution_ids"]),
     }
     return {column: _safe_cell(value) for column, value in values.items()}
