@@ -8,6 +8,7 @@
 
 * [Enterprise Deployment](ENTERPRISE_DEPLOYMENT.md)
 * [Configuration](CONFIGURATION.md)
+* [Secrets And API Keys](SECRETS.md)
 * [Audit Logging](AUDIT_LOGGING.md)
 * [Learning](LEARNING.md)
 

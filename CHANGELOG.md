@@ -138,7 +138,10 @@ This project follows a lightweight changelog format until stable releases begin.
   Before this, `discover_log_fields` and the `validate_xql` field check were
   refused for `xdr_data` in operations mode, and validation passed queries that
   named fields the dataset does not have.
-
+- Added [Secrets And API Keys](docs/SECRETS.md): 1Password CLI, macOS Keychain
+  and Windows SecretStore examples that inject the XSIAM key at start after a
+  person approves, plus `.env.op.example`. `.env.example`, the README and the
+  configuration and testing docs no longer put secrets in `.env`.
 
 ## 0.2.0-alpha.1 - 2026-07-10
 

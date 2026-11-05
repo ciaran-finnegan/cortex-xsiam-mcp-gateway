@@ -83,7 +83,7 @@ it is not required for direct MCP deployments.
 - Keep `LOG_SEARCH_DATASET_POLICY` restrictive.
 - Do not expose `streamable-http` publicly until incoming auth is implemented.
 - Treat raw XQL as privileged.
-- Store secrets in a secret manager; do not commit `.env` files.
+- Keep secrets out of `.env` files, see [Secrets And API Keys](docs/SECRETS.md).
 
 ## Coordinated Disclosure
 

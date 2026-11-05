@@ -244,16 +244,20 @@ Requires Python 3.12 or 3.13 and Poetry.
 poetry env use python3.12
 poetry install
 cp .env.example .env
+cp .env.op.example .env.op
 ```
 
-Fill in the three `CORTEX_MCP_PAPI_*` values (tenant API URL, API key, key ID)
-in `.env`, which git ignores. `.env.example` is set up for HTTP with Entra, so a
-local stdio session overrides three settings. Environment variables take
-precedence over `.env`.
+Set `CORTEX_MCP_PAPI_URL` in `.env`, which git ignores. The API key stays in
+1Password, `.env.op` holds the `op://` references and `op run` injects the
+values at start after a Touch ID or Windows Hello prompt. [Secrets and API
+keys](docs/SECRETS.md) covers the macOS Keychain, Windows SecretStore and MCP
+client registration. `.env.example` is set up for HTTP with Entra, so a local
+stdio session overrides three settings. Environment variables take precedence
+over `.env`.
 
 ```bash
 MCP_TRANSPORT=stdio MCP_IDENTITY_AUTH_MODE=none LOG_SEARCH_DEFAULT_GROUPS=Tier1 \
-  poetry run python src/main.py
+  op run --env-file=.env.op -- poetry run python src/main.py
 ```
 
 `Tier1` can query `xdr_data` and `Security` can use everything. Run it from
@@ -292,10 +296,14 @@ store are per process, so they do not span replicas. See [enterprise deployment]
 
 ```bash
 docker build -t cortex-xsiam-mcp-gateway .
-docker run --rm -p 8080:8080 --env-file .env cortex-xsiam-mcp-gateway
+op run --env-file=.env.op -- docker run --rm -p 8080:8080 --env-file .env \
+  -e CORTEX_MCP_PAPI_AUTH_HEADER -e CORTEX_MCP_PAPI_AUTH_ID \
+  cortex-xsiam-mcp-gateway
 ```
 
-The image runs `python src/main.py` as a non-root user and serves HTTP only if
+`-e NAME` with no value copies the variable from the host environment that
+`op run` populated. The image runs
+`python src/main.py` as a non-root user and serves HTTP only if
 the env file sets `MCP_TRANSPORT=streamable-http` and an identity mode, as
 `.env.example` does. For stdio, run it with `docker run -i` and the three
 overrides above as `-e` flags.
