@@ -51,7 +51,7 @@ environment, and nothing else sees it.
 
 ```mermaid
 flowchart LR
-  Client["MCP client<br/>Claude, Kiro, Codex"] -->|starts| Launcher["Launcher<br/>wrapper script or op run"]
+  Client["MCP client<br/>Kiro, Claude, Codex, OpenCode"] -->|starts| Launcher["Launcher<br/>wrapper script or op run"]
   Launcher -->|reads| Store["Keychain, SecretStore<br/>or secrets manager"]
   Store -.->|Allow, Touch ID, password| Person["Person"]
   Launcher -->|key in environment| Gateway["Gateway"]
@@ -261,19 +261,8 @@ go in `env`. Desktop apps start with a short `PATH`, use full paths
 `C:\Program Files\1Password CLI\op.exe`). If nobody approves before the client's
 start-up timeout the server fails to start, approve and reconnect it.
 
-Claude Code:
-
-```bash
-claude mcp add cortex-xsiam \
-  -e MCP_TRANSPORT=stdio -e MCP_IDENTITY_AUTH_MODE=none -e LOG_SEARCH_DEFAULT_GROUPS=Tier1 \
-  -- sh -c 'cd /path/to/cortex-xsiam-mcp-gateway && exec op run --env-file=.env.op -- .venv/bin/python src/main.py'
-```
-
-With the Keychain launcher, the command is the script:
-`claude mcp add cortex-xsiam -e ... -- /path/to/run-gateway.sh`.
-
-Claude Desktop (`claude_desktop_config.json`) and Kiro (`.kiro/settings/mcp.json`
-in the workspace, or `~/.kiro/settings/mcp.json`) take the same JSON:
+Kiro (`.kiro/settings/mcp.json` in the workspace, or `~/.kiro/settings/mcp.json`).
+Claude Desktop's `claude_desktop_config.json` takes the same JSON:
 
 ```json
 {
@@ -294,12 +283,43 @@ in the workspace, or `~/.kiro/settings/mcp.json`) take the same JSON:
 }
 ```
 
+Claude Code:
+
+```bash
+claude mcp add cortex-xsiam \
+  -e MCP_TRANSPORT=stdio -e MCP_IDENTITY_AUTH_MODE=none -e LOG_SEARCH_DEFAULT_GROUPS=Tier1 \
+  -- sh -c 'cd /path/to/cortex-xsiam-mcp-gateway && exec op run --env-file=.env.op -- .venv/bin/python src/main.py'
+```
+
+With the Keychain or SecretStore launcher the command is the script,
+`claude mcp add cortex-xsiam -e ... -- /path/to/run-gateway.sh`.
+
 Codex CLI (`~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.cortex-xsiam]
 command = "/path/to/run-gateway.sh"
 env = { MCP_TRANSPORT = "stdio", MCP_IDENTITY_AUTH_MODE = "none", LOG_SEARCH_DEFAULT_GROUPS = "Tier1" }
+```
+
+OpenCode (`opencode.json` in the project, or `~/.config/opencode/opencode.json`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "cortex-xsiam": {
+      "type": "local",
+      "command": ["/path/to/run-gateway.sh"],
+      "enabled": true,
+      "environment": {
+        "MCP_TRANSPORT": "stdio",
+        "MCP_IDENTITY_AUTH_MODE": "none",
+        "LOG_SEARCH_DEFAULT_GROUPS": "Tier1"
+      }
+    }
+  }
+}
 ```
 
 Windows, any client: `"command": "pwsh"`,
@@ -324,7 +344,7 @@ flowchart LR
   SM["Secret manager"] -->|workload identity| Runtime["Container runtime<br/>or systemd"]
   Runtime -->|environment at start| Gateway["Gateway<br/>HTTP, Entra"]
   Gateway --> XSIAM["XSIAM API"]
-  Clients["Claude, Kiro, Codex,<br/>Copilot Studio"] -->|Entra token| Gateway
+  Clients["Kiro, Claude, Codex,<br/>OpenCode, Copilot Studio"] -->|Entra token| Gateway
 ```
 
 | Where | Store | Injection |
