@@ -62,7 +62,7 @@ Each option has two modes. Approval on every use is recommended, the store
 asks the person each time the client starts the gateway. Approval for the MCP
 is the pragmatic mode, the store releases the key silently while you are
 logged in and the login password and screen lock are the gate. Choose per
-machine, a shared or travelling laptop gets the first.
+machine.
 
 ### Option 1: macOS Keychain
 
