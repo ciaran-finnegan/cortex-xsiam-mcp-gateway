@@ -365,7 +365,11 @@ def estimate_query(shape: QueryShape, window_ms: int) -> CostEstimate:
     days = window / DAY_MS
     stage_hits = sorted(stage for stage in _STAGE_POINTS if stage in shape.stages)
     if shape.sample:
-        score = tier_points - 1
+        # An early-exit sample stops after `limit` rows, so selectivity, text scans and
+        # stages do not apply and the window matters far less: two points below the
+        # tier-plus-window score makes a bounded sample of a heavy dataset over a day
+        # or less light, while the same sample over 90 days stays heavy.
+        score = tier_points + _window_points(days) - 2
     else:
         score = (
             tier_points

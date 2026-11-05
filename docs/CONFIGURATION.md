@@ -216,7 +216,10 @@ from a score:
 
 Scores up to 2 are light, up to 4 medium, up to 6 heavy, and above that
 extreme. A query with only dataset, `fields`, `limit`, and `config` stages is an
-early-exit sample and scores its tier points minus one, whatever the window.
+early-exit sample: it scores its tier and window points minus two and takes no
+selectivity, text-scan, or stage penalties, so a bounded sample of a heavy
+dataset over a day or less is light and the same sample over 90 days is heavy.
+Field discovery and `validate_xql` field checks are such samples.
 Comments and string literals are removed before parsing, so neither can hide or
 fake a stage. The dataset tier comes from the authored catalogue `volume` when
 the catalogue is installed (`very_high` is heavy, `high` medium, `medium` and
