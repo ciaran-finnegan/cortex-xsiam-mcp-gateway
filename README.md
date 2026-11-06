@@ -38,7 +38,9 @@ check dataset policy.
 | --- | --- |
 | `get_log_search_guidance`, `get_dataset_query_guidance`, `get_xql_help` | Agent workflow, rules and XQL recipes. |
 | `set_engagement`, `get_engagement`, `record_fact`, `get_engagement_log` | Session mode (`incident_response`, `threat_hunt`, `operations`), scope and findings tied to queries the session ran. A mode can only narrow access. |
-| `list_log_datasets` | Datasets the caller is allowed to query. |
+| `find_datasets` | Datasets from the authored catalogue that match a topic, domain or entity type, filtered by dataset policy, with candidate key fields. |
+| `resolve_entity`, `firewall_traffic`, `firewall_verdict`, `entity_activity`, `dataset_health`, `threat_intel_lookup`, `coverage_gap` | Question-shaped helpers. The gateway picks datasets from the catalogue under dataset policy, verifies fields against the live schema and runs bounded typed queries within a per-call budget. See [investigation helpers](docs/INVESTIGATION_HELPERS.md). |
+| `list_log_datasets` | Datasets the caller is allowed to query, with offset paging. |
 | `discover_log_fields` | Field names and types from a small sample of one dataset, without values. |
 | `query_dataset` | Typed row or aggregate query on one dataset, compiled to XQL by the gateway. |
 | `continue_dataset_query` | Next page of a row query, from an encrypted cursor. |
@@ -68,8 +70,9 @@ signed gateway headers gets a 401 before it reaches MCP. See
 ## Agent workflow
 
 The agent sets the mode and scope with `set_engagement`, calls
-`get_dataset_query_guidance`, finds a dataset and its fields with
-`list_log_datasets` and `discover_log_fields`, then calls `query_dataset`.
+`get_dataset_query_guidance`, and calls an investigation helper when the
+question fits one. Otherwise it finds a dataset and its fields with
+`find_datasets` and `discover_log_fields`, then calls `query_dataset`.
 It calls `continue_dataset_query` only when the user wants another page. The
 gateway does not accept natural-language queries. A typed plan looks like this.
 
@@ -241,16 +244,20 @@ Requires Python 3.12 or 3.13 and Poetry.
 poetry env use python3.12
 poetry install
 cp .env.example .env
+cp .env.op.example .env.op
 ```
 
-Fill in the three `CORTEX_MCP_PAPI_*` values (tenant API URL, API key, key ID)
-in `.env`, which git ignores. `.env.example` is set up for HTTP with Entra, so a
-local stdio session overrides three settings. Environment variables take
-precedence over `.env`.
+Set `CORTEX_MCP_PAPI_URL` in `.env`, which git ignores. The API key stays in
+1Password, `.env.op` holds the `op://` references and `op run` injects the
+values at start after a Touch ID or Windows Hello prompt. [Secrets and API
+keys](docs/SECRETS.md) covers the macOS Keychain, Windows SecretStore and MCP
+client registration. `.env.example` is set up for HTTP with Entra, so a local
+stdio session overrides three settings. Environment variables take precedence
+over `.env`.
 
 ```bash
 MCP_TRANSPORT=stdio MCP_IDENTITY_AUTH_MODE=none LOG_SEARCH_DEFAULT_GROUPS=Tier1 \
-  poetry run python src/main.py
+  op run --env-file=.env.op -- poetry run python src/main.py
 ```
 
 `Tier1` can query `xdr_data` and `Security` can use everything. Run it from
@@ -289,10 +296,14 @@ store are per process, so they do not span replicas. See [enterprise deployment]
 
 ```bash
 docker build -t cortex-xsiam-mcp-gateway .
-docker run --rm -p 8080:8080 --env-file .env cortex-xsiam-mcp-gateway
+op run --env-file=.env.op -- docker run --rm -p 8080:8080 --env-file .env \
+  -e CORTEX_MCP_PAPI_AUTH_HEADER -e CORTEX_MCP_PAPI_AUTH_ID \
+  cortex-xsiam-mcp-gateway
 ```
 
-The image runs `python src/main.py` as a non-root user and serves HTTP only if
+`-e NAME` with no value copies the variable from the host environment that
+`op run` populated. The image runs
+`python src/main.py` as a non-root user and serves HTTP only if
 the env file sets `MCP_TRANSPORT=streamable-http` and an identity mode, as
 `.env.example` does. For stdio, run it with `docker run -i` and the three
 overrides above as `-e` flags.

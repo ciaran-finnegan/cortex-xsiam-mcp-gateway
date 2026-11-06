@@ -45,7 +45,7 @@ from usecase.xql_discovery import (
     filter_authorized_dataset_records,
     filter_field_catalog,
     infer_field_catalog,
-    normalize_dataset_record,
+    parse_dataset_reply,
     policy_dataset_records,
 )
 from usecase.xql_errors import xql_error_details
@@ -66,7 +66,8 @@ async def get_log_search_guidance() -> str:
         data={
             "recommended_agent_workflow": [
                 "Convert the user's plain-English goal into a small investigation plan.",
-                "Call list_log_datasets with name_contains when possible to find allowed candidate datasets.",
+                "Call find_datasets with the user's topic, and entity_type when the question names a host, user, IP address, or cloud resource, to get allowed candidate datasets with their key fields.",
+                "Call list_log_datasets with name_contains only when the user names a dataset or you need the plain allowed list.",
                 "Call discover_log_fields for one candidate dataset with a short timeframe, using field_name_contains when the user mentioned a likely concept such as user, host, ip, process, or severity.",
                 "Call query_dataset with explicit dataset, fields or metrics, a required timeframe, and a low limit.",
                 "Refine with another discover_log_fields or search_logs call only when needed.",
@@ -81,6 +82,7 @@ async def get_log_search_guidance() -> str:
                 "Every query needs a timeframe. If the cost guard refuses a query (error cost_guard), show the analyst the estimate and alternatives; pass an approval argument only when the analyst typed it.",
             ],
             "tools": {
+                "find_datasets": "Searches the authored dataset catalogue by topic, domain, or entity type, restricted to datasets allowed by policy.",
                 "list_log_datasets": "Returns datasets allowed by current dataset policy.",
                 "discover_log_fields": "Samples one allowed dataset with XQL and returns capped observed field metadata, not event data.",
                 "query_dataset": "Preferred typed row and aggregate query tool for any allowed XSIAM dataset.",
@@ -236,9 +238,15 @@ async def list_log_datasets(
         int,
         Field(description=f"Maximum datasets to return. Capped at {MAX_DISCOVERY_DATASET_COUNT}."),
     ] = DEFAULT_DISCOVERY_DATASET_COUNT,
+    offset: Annotated[
+        int,
+        Field(description="Number of allowed datasets to skip. Use the returned next_offset to page past a truncated list."),
+    ] = 0,
 ) -> str:
     """
     List XSIAM datasets the current principal is allowed to query.
+
+    Prefer find_datasets when the question names a topic rather than a dataset.
 
     Uses the XSIAM `get_datasets` API when available, then filters results
     through `LOG_SEARCH_DATASET_POLICY`. If the API cannot be reached, returns
@@ -248,29 +256,24 @@ async def list_log_datasets(
     try:
         fetcher = await get_fetcher(ctx)
         response_data = await fetcher.send_request("/xql/get_datasets", data={"request_data": {}})
-        reply = response_data.get("reply", [])
-        if not isinstance(reply, list):
-            raise ValueError("Unexpected get_datasets response: reply must be a list")
-
-        dataset_records = [
-            normalized
-            for item in reply
-            if isinstance(item, dict)
-            and (normalized := normalize_dataset_record(item)).get("dataset_name")
-        ]
+        dataset_records = parse_dataset_reply(response_data)
         allowed_records, truncated = filter_authorized_dataset_records(
             dataset_records,
             context,
             name_contains=name_contains,
             max_datasets=max_datasets,
+            offset=offset,
         )
+        safe_offset = max(int(offset), 0)
         return create_response(
             data={
                 "source": "xsiam_api",
                 "datasets": allowed_records,
                 "count": len(allowed_records),
                 "truncated": truncated,
-                "guidance": "Use a name_contains filter to narrow broad dataset lists before selecting one dataset for field discovery.",
+                "offset": safe_offset,
+                "next_offset": safe_offset + len(allowed_records) if truncated else None,
+                "guidance": "Use find_datasets to search by topic. Use name_contains or next_offset to narrow or page a broad list before field discovery.",
             }
         )
     except (PAPIConnectionError, PAPIAuthenticationError, PAPIServerError, PAPIClientRequestError, PAPIResponseError, PAPIClientError, ValueError) as e:
@@ -279,7 +282,9 @@ async def list_log_datasets(
             context,
             name_contains=name_contains,
             max_datasets=max_datasets,
+            offset=offset,
         )
+        fallback_offset = max(int(offset), 0)
         return create_response(
             data={
                 "source": "dataset_policy_fallback",
@@ -287,6 +292,8 @@ async def list_log_datasets(
                 "datasets": fallback,
                 "count": len(fallback),
                 "truncated": truncated,
+                "offset": fallback_offset,
+                "next_offset": fallback_offset + len(fallback) if truncated else None,
             }
         )
     except Exception as e:

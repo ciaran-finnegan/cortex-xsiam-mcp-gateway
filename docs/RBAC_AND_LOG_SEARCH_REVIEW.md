@@ -42,6 +42,7 @@ subqueries can be securely authorized by parsing one declared dataset.
 
 - `get_dataset_query_guidance`: compact client-agent rules.
 - `get_xql_help`: focused typed/XQL recipes.
+- `find_datasets`: topic and entity search over the authored dataset catalogue, filtered by dataset policy before lookup.
 - `list_log_datasets`: policy-filtered dataset discovery.
 - `discover_log_fields`: observed field metadata from a bounded sample, without
   sample values.

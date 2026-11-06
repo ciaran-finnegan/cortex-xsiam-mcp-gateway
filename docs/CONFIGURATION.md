@@ -1,7 +1,9 @@
 # Configuration
 
-Configuration is loaded from environment variables and optional `.env` files.
-Do not commit `.env` files.
+Configuration is loaded from environment variables and an optional `.env`
+file in the working directory, environment variables win. Keep API keys and
+other secrets out of `.env` and inject them at start, see
+[Secrets And API Keys](SECRETS.md). Do not commit `.env` files.
 
 ## Required XSIAM API Settings
 
@@ -10,6 +12,10 @@ Do not commit `.env` files.
 | `CORTEX_MCP_PAPI_URL` | XSIAM tenant API URL. If missing `api-`, the client normalizes the hostname. |
 | `CORTEX_MCP_PAPI_AUTH_HEADER` | XSIAM API key value. |
 | `CORTEX_MCP_PAPI_AUTH_ID` | XSIAM API key ID. |
+
+Do not write the key into `.env`, the MCP client's config file or a command
+line. [Secrets And API Keys](SECRETS.md) shows how to inject it at start from
+1Password, the macOS Keychain or the Windows SecretStore.
 
 ## MCP Server Settings
 
@@ -43,6 +49,21 @@ export LOG_SEARCH_DEFAULT_GROUPS="Security"
 ```
 
 Do not use default groups as a production authorization mechanism.
+
+## Dataset Catalogue
+
+`find_datasets` searches an authored catalogue that describes what each dataset
+holds and which fields identify a host, user, IP address, or cloud resource.
+The gateway ships a built-in catalogue of vendor-standard Cortex and marketplace
+datasets. Describe site-specific datasets in an overlay file that lives outside
+this repository.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DATASET_CATALOGUE_OVERLAY_PATH` | empty | Path to an operator-authored overlay JSON file. Overlay entries win over built-in entries. An unreadable, oversized, or invalid overlay stops the server at startup. |
+
+See [Dataset Catalogue](DATASET_CATALOGUE.md) for the file format and security
+properties.
 
 ## Raw XQL Privilege
 
@@ -102,6 +123,14 @@ export TOOL_ACCESS_POLICY='{
     "get_log_search_guidance",
     "get_dataset_query_guidance",
     "get_xql_help",
+    "find_datasets",
+    "resolve_entity",
+    "firewall_traffic",
+    "firewall_verdict",
+    "entity_activity",
+    "dataset_health",
+    "threat_intel_lookup",
+    "coverage_gap",
     "list_log_datasets",
     "discover_log_fields",
     "query_dataset",
@@ -187,7 +216,10 @@ from a score:
 
 Scores up to 2 are light, up to 4 medium, up to 6 heavy, and above that
 extreme. A query with only dataset, `fields`, `limit`, and `config` stages is an
-early-exit sample and scores its tier points minus one, whatever the window.
+early-exit sample: it scores its tier and window points minus two and takes no
+selectivity, text-scan, or stage penalties, so a bounded sample of a heavy
+dataset over a day or less is light and the same sample over 90 days is heavy.
+Field discovery and `validate_xql` field checks are such samples.
 Comments and string literals are removed before parsing, so neither can hide or
 fake a stage. The dataset tier comes from the authored catalogue `volume` when
 the catalogue is installed (`very_high` is heavy, `high` medium, `medium` and
@@ -312,7 +344,9 @@ export XSIAM_CREDENTIAL_PROFILES='{
 }'
 ```
 
-Store the actual API key values in your secret manager or local environment.
+Inject the key values at start from your secret manager or credential store
+(see [Secrets And API Keys](SECRETS.md)), with 1Password that is one `op://`
+line per variable in `.env.op`.
 If the broker is enabled and no profile matches the verified principal, tool
 execution fails closed. When several groups match, the lowest numeric
 `priority` wins; group claim order is not trusted as authorization policy.
@@ -375,26 +409,30 @@ policy that covers the facts they revert.
 
 ## Example `.env`
 
+Non-secret settings only, the key, key id and cursor secret are injected at
+start (see [Secrets And API Keys](SECRETS.md)).
+
 ```bash
 CORTEX_MCP_PAPI_URL=https://api-your-xsiam-tenant.example
-CORTEX_MCP_PAPI_AUTH_HEADER=replace-me
-CORTEX_MCP_PAPI_AUTH_ID=replace-me
+# CORTEX_MCP_PAPI_AUTH_HEADER and CORTEX_MCP_PAPI_AUTH_ID: injected at start,
+# never written here.
 MCP_TRANSPORT=streamable-http
 MCP_IDENTITY_AUTH_MODE=entra
 ENTRA_TENANT_ID=replace-with-tenant-id
 ENTRA_AUDIENCE=api://your-mcp-app-registration
 LOG_SEARCH_DATASET_POLICY={"Security":["*"],"Tier1":["xdr_data"]}
-TOOL_ACCESS_POLICY={"Security":["*"],"Tier1":["get_dataset_query_guidance","list_log_datasets","discover_log_fields","query_dataset","continue_dataset_query","set_engagement","get_engagement","record_fact","get_engagement_log"]}
+TOOL_ACCESS_POLICY={"Security":["*"],"Tier1":["get_dataset_query_guidance","find_datasets","resolve_entity","firewall_traffic","firewall_verdict","entity_activity","dataset_health","threat_intel_lookup","coverage_gap","list_log_datasets","discover_log_fields","query_dataset","continue_dataset_query","set_engagement","get_engagement","record_fact","get_engagement_log"]}
 RAW_XQL_PRIVILEGED_GROUPS=Security,Admin
 ENGAGEMENT_STORE_DIR=/var/lib/cortex-mcp/engagements
-DATASET_QUERY_CURSOR_SECRET=replace-with-a-long-random-secret
+# DATASET_QUERY_CURSOR_SECRET: a long random value, injected the same way.
 AUDIT_LOG_ENABLED=true
 AUDIT_LOG_XSIAM_HTTP_COLLECTOR_ENABLED=false
 ```
 
 ## Production Notes
 
-- Use a secret manager for API credentials.
+- Inject API credentials at start from a secret manager or credential store,
+  see [Secrets And API Keys](SECRETS.md).
 - Rotate API keys regularly.
 - Use separate credentials for development and production tenants.
 - Use role-scoped XSIAM API keys through the credential broker for shared HTTP
