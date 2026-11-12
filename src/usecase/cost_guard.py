@@ -72,15 +72,23 @@ MAX_APPROVAL_CHARS = 500
 MAX_HOST_FILTER_VALUES = 20
 NARROWER_WINDOWS_DAYS: tuple[int, ...] = (7, 1)
 
-# Score points. A query's class is the first threshold its score does not exceed.
-_TIER_POINTS = {"light": 0, "medium": 2, "heavy": 4}
+# Score points. A query's class is the first threshold its score does not exceed. The points and
+# the default unit bands were fitted to measured compute units; docs/CONFIGURATION.md has the figures.
+_TIER_POINTS = {"light": 0, "medium": 1, "heavy": 4}
 _CLASS_THRESHOLDS: tuple[tuple[int, str], ...] = ((2, "light"), (4, "medium"), (6, "heavy"))
 _WINDOW_POINTS: tuple[tuple[int, int], ...] = ((1, 0), (7, 1), (30, 2), (90, 3))
 _LONG_WINDOW_POINTS = 4
 # A call stage runs a saved query the guard cannot see, so it is priced as unknown and expensive.
 _STAGE_POINTS = {"join": 1, "union": 1, "dedup": 1, "search": 2, "call": 3}
 _TEXT_SCAN_POINTS = {"pattern": 1, "raw_text": 2}
-# Catalogue ingest volume is a coarse proxy for scan cost; pin datasets in
+# Window points a filter takes off a heavy dataset's scan. An equality on a host key leaves one
+# endpoint's rows, so the window stops mattering inside the policy cap; an equality on a partition
+# field such as event_type leaves a slice of every endpoint's rows.
+_HOST_NARROWING_POINTS = 3
+_PARTITION_NARROWING_POINTS = 2
+# An in-list on a partition field naming more values than this is treated as no narrowing at all.
+MAX_PARTITION_VALUES = 2
+# Catalogue ingest volume is a coarse proxy for scan cost; pin a dataset by its exact name in
 # COST_GUARD_DATASET_TIERS where the recorded actual_units disagree.
 _VOLUME_TIERS = {"low": "light", "medium": "light", "high": "medium", "very_high": "heavy"}
 # Stages that leave a query an early-exit sample: no filter, sort, aggregate or join.
@@ -108,7 +116,12 @@ _DURATION_MS = {
     "y": 365 * DAY_MS,
 }
 _OR_RE = re.compile(r"\bor\b", re.IGNORECASE)
-_NEGATED_TAIL_RE = re.compile(r"not\s*\(\s*$", re.IGNORECASE)
+_NEGATED_TAIL_RE = re.compile(r"\bnot\b[\s(]*$", re.IGNORECASE)
+# What a narrowing filter may compare a field with. Strings are already masked to their quotes.
+# An enum member is upper case, so a field compared with itself or with another field earns nothing.
+_LITERAL_VALUE = r'"[^"]*"|-?\d+(?:\.\d+)?'
+_ENUM_VALUE = r"(?:(?:ENUM|enum)\.)?[A-Z][A-Z0-9_]*"
+_VALUE_END = r"(?![\w.(\"])"
 _FIELD_LIST_ITEM_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*\Z")
 APPROVAL_ARGUMENT_DESCRIPTION = (
     "Only for a query the cost guard refused with rule approval_required: the analyst's own typed approval, "
@@ -195,8 +208,8 @@ def _parse_dataset_lists(raw: str, label: str) -> dict[str, tuple[str, ...]]:
 
 
 @lru_cache(maxsize=8)
-def _parse_selective_fields(raw: str) -> tuple[str, ...]:
-    return tuple(validate_identifier(item.strip(), "COST_GUARD_SELECTIVE_FIELDS field") for item in raw.split(",") if item.strip())
+def _parse_selective_fields(raw: str, label: str = "COST_GUARD_SELECTIVE_FIELDS") -> tuple[str, ...]:
+    return tuple(validate_identifier(item.strip(), f"{label} field") for item in raw.split(",") if item.strip())
 
 
 def _load_json_object(raw: str, label: str) -> dict[str, Any]:
@@ -313,6 +326,7 @@ class QueryShape:
     aggregate: bool
     sample: bool
     config_window_ms: int | None
+    partition_scoped: bool = False
 
 
 @dataclass(frozen=True)
@@ -339,17 +353,17 @@ def parse_query(query: str) -> QueryShape:
     masked = _mask_strings(stripped)
     datasets = _datasets(masked)
     stages = frozenset(match.group(1).lower() for match in _STAGE_KEYWORD_RE.finditer(masked))
-    pieces = masked.split("|")
-    filters = [piece for piece in pieces if _first_word(piece) == "filter"]
     text_scan = "raw_text" if _RAW_TEXT_RE.search(masked) else "pattern" if _PATTERN_RE.search(masked) else None
+    host_scoped, partition_scoped = _narrowing(masked)
     return QueryShape(
         datasets=datasets,
         stages=stages,
         text_scan=text_scan,
-        host_scoped=any(_has_selective_key(piece) for piece in filters),
+        host_scoped=host_scoped,
         aggregate="comp" in stages,
         sample=stages <= _SAMPLE_STAGES,
         config_window_ms=_config_window_ms(masked),
+        partition_scoped=partition_scoped,
     )
 
 
@@ -371,11 +385,20 @@ def estimate_query(shape: QueryShape, window_ms: int) -> CostEstimate:
         # or less light, while the same sample over 90 days stays heavy.
         score = tier_points + _window_points(days) - 2
     else:
+        window_points = _window_points(days)
+        narrowing = _narrowing_points(shape) if tier == "heavy" else 0
+        # A scan of a heavy dataset that nothing narrows costs a point more once it spans more than
+        # a day, and only there does pattern matching add cost: measured units for a contains or
+        # regex on a narrowed scan, or on a light or medium dataset, match the same query without it.
+        unnarrowed = tier == "heavy" and narrowing == 0 and window_points > 0
+        text_points = _TEXT_SCAN_POINTS.get(shape.text_scan or "", 0)
+        if shape.text_scan == "pattern" and not unnarrowed:
+            text_points = 0
         score = (
             tier_points
-            + _window_points(days)
-            + (1 if tier == "heavy" and not shape.host_scoped else 0)
-            + _TEXT_SCAN_POINTS.get(shape.text_scan or "", 0)
+            + max(window_points - narrowing, 0)
+            + (1 if unnarrowed else 0)
+            + text_points
             + sum(_STAGE_POINTS[stage] for stage in stage_hits)
         )
     cost_class = next((name for limit, name in _CLASS_THRESHOLDS if score <= limit), "extreme")
@@ -391,6 +414,7 @@ def estimate_query(shape: QueryShape, window_ms: int) -> CostEstimate:
             "tier_source": tier_source,
             "window_days": round(days, 3),
             "host_scoped": shape.host_scoped,
+            "partition_scoped": shape.partition_scoped,
             "text_scan": shape.text_scan,
             "stages": stage_hits,
             "aggregate": shape.aggregate,
@@ -444,12 +468,20 @@ def apply_learned_cost(estimate: CostEstimate, query: str, shape: QueryShape, wi
 
 
 def dataset_tier(dataset: str) -> tuple[str, str]:
-    """Return (tier, source): catalogue volume when catalogued, else the tier map, else the default tier."""
+    """Return (tier, source) for a dataset.
+
+    An exact name in the tier map pins the tier. Otherwise the catalogue volume applies when the
+    dataset is catalogued, then the tier map's globs, then the default tier.
+    """
+    lowered = dataset.lower()
+    tier_map = _parse_tier_map(get_config().cost_guard_dataset_tiers)
+    for pattern, tier in tier_map:
+        if pattern == lowered:
+            return tier, "tier_map"
     volume = _catalogue_volume(dataset)
     if volume in _VOLUME_TIERS:
         return _VOLUME_TIERS[volume], "catalogue"
-    lowered = dataset.lower()
-    for pattern, tier in _parse_tier_map(get_config().cost_guard_dataset_tiers):
+    for pattern, tier in tier_map:
         if fnmatch.fnmatchcase(lowered, pattern):
             return tier, "tier_map"
     default = get_config().cost_guard_default_tier
@@ -501,17 +533,101 @@ def _first_word(piece: str) -> str:
     return match.group(1).lower() if match else ""
 
 
+def _narrowing_points(shape: QueryShape) -> int:
+    if shape.host_scoped:
+        return _HOST_NARROWING_POINTS
+    return _PARTITION_NARROWING_POINTS if shape.partition_scoped else 0
+
+
+def _pipelines(masked: str) -> list[str]:
+    """Split a masked query into its pipelines: each parenthesised subquery that names a dataset, then the top level.
+
+    A pipeline's text has its own subqueries blanked out, so a filter is only ever read in
+    the pipeline whose rows it filters.
+    """
+    chars = list(masked)
+    stack: list[int] = []
+    pipelines: list[str] = []
+    for position, char in enumerate(masked):
+        if char == "(":
+            stack.append(position)
+        elif char == ")" and stack:
+            start = stack.pop()
+            inner = "".join(chars[start + 1 : position])
+            if _DATASET_EQ_RE.search(inner) or _DATASET_IN_RE.search(inner):
+                pipelines.append(inner)
+                chars[start : position + 1] = " " * (position + 1 - start)
+    pipelines.append("".join(chars))
+    return pipelines
+
+
+def _narrowing(masked: str) -> tuple[bool, bool]:
+    """Return (host_scoped, partition_scoped) for a masked query.
+
+    Each is true only when every pipeline that reads a heavy dataset carries such a filter of
+    its own, so a filter on one side of a join cannot vouch for an unfiltered heavy dataset on
+    the other, and a heavy dataset pulled in by ``union <name>`` is never narrowed. A query
+    that reads no heavy dataset reports what its top-level filters say.
+    """
+    scopes: list[tuple[bool, bool, bool]] = []
+    for pipeline in _pipelines(masked):
+        filters = [piece for piece in pipeline.split("|") if _first_word(piece) == "filter"]
+        host = any(_has_selective_key(piece) for piece in filters)
+        partition = any(_has_partition_key(piece) for piece in filters)
+        named = [match.group(1) for match in _DATASET_EQ_RE.finditer(pipeline)]
+        for match in _DATASET_IN_RE.finditer(pipeline):
+            named.extend(item.strip() for item in match.group(1).split(",") if _FIELD_LIST_ITEM_RE.match(item.strip()))
+        scopes.append((host, partition, any(dataset_tier(name)[0] == "heavy" for name in named)))
+        for match in _UNION_NAME_RE.finditer(pipeline):
+            if dataset_tier(match.group(1))[0] == "heavy":
+                scopes.append((False, False, True))
+    heavy = [(host, partition) for host, partition, is_heavy in scopes if is_heavy]
+    if not heavy:
+        # No heavy dataset is named: either none is read, or the query runs against the default
+        # query target, which the top-level pipeline filters.
+        host, partition, _ = scopes[-1]
+        return host, partition
+    return all(host for host, _ in heavy), all(partition for _, partition in heavy)
+
+
 def _has_selective_key(filter_piece: str) -> bool:
-    if _OR_RE.search(filter_piece):
-        return False
     fields = _parse_selective_fields(get_config().cost_guard_selective_fields)
-    if not fields:
+    return _has_positive_equality(filter_piece, fields, max_values=MAX_HOST_FILTER_VALUES, enum_values=False)
+
+
+def _has_partition_key(filter_piece: str) -> bool:
+    fields = _parse_selective_fields(get_config().cost_guard_partition_fields, "COST_GUARD_PARTITION_FIELDS")
+    return _has_positive_equality(filter_piece, fields, max_values=MAX_PARTITION_VALUES, enum_values=True)
+
+
+def _has_positive_equality(filter_piece: str, fields: tuple[str, ...], *, max_values: int, enum_values: bool) -> bool:
+    """True when a filter stage without ``or`` holds a non-negated ``=`` or ``in (...)`` between a field and literals.
+
+    The right-hand side must be a string or number literal, or an upper-case enum member when
+    ``enum_values`` is set, and an in-list may name at most ``max_values`` of them. A comparison
+    with another field or with a function result does not count.
+    """
+    if not fields or _OR_RE.search(filter_piece):
         return False
     pattern = re.compile(
-        r"(?<![\w.])(?:" + "|".join(re.escape(name) for name in fields) + r")\s*(?:=|in\s*\()",
+        r"(?<![\w.])`?(?:" + "|".join(re.escape(name) for name in fields) + r")`?\s*(=(?!=)|in\s*\()",
         re.IGNORECASE,
     )
-    return any(not _NEGATED_TAIL_RE.search(filter_piece[: match.start()]) for match in pattern.finditer(filter_piece))
+    value = re.compile(rf"(?:{_LITERAL_VALUE}|{_ENUM_VALUE})" if enum_values else rf"(?:{_LITERAL_VALUE})")
+    single = re.compile(rf"\s*{value.pattern}{_VALUE_END}")
+    for match in pattern.finditer(filter_piece):
+        if _NEGATED_TAIL_RE.search(filter_piece[: match.start()]):
+            continue
+        rest = filter_piece[match.end() :]
+        if match.group(1) == "=":
+            if single.match(rest):
+                return True
+            continue
+        closing = rest.find(")")
+        items = [item.strip() for item in rest[:closing].split(",")] if closing != -1 else []
+        if 0 < len(items) <= max_values and all(value.fullmatch(item) for item in items):
+            return True
+    return False
 
 
 def _config_window_ms(masked: str) -> int | None:
@@ -1093,7 +1209,8 @@ async def _elicitation_message(context: _RefusalContext) -> str:
         f"({estimate.cost_class}), above the {context.policy.approval_threshold_units:g}-unit approval threshold "
         f"for {context.policy.mode} mode.",
         f"Datasets: {', '.join(factors['datasets']) or 'default query target'}; window {factors['window_days']:g} days; "
-        f"host filter: {'yes' if factors['host_scoped'] else 'no'}.",
+        f"host filter: {'yes' if factors['host_scoped'] else 'no'}; "
+        f"partition filter: {'yes' if factors.get('partition_scoped') else 'no'}.",
         f"Remaining today: {'unknown' if remaining is None else f'{remaining:g}'} units; reserve "
         f"{context.policy.reserve_units:g} units.",
         "Cheaper options:",

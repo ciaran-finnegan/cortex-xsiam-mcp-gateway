@@ -142,6 +142,24 @@ This project follows a lightweight changelog format until stable releases begin.
   and Windows SecretStore examples that inject the XSIAM key at start after a
   person approves, plus `.env.op.example`. `.env.example`, the README and the
   configuration and testing docs no longer put secrets in `.env`.
+- Cost guard: refitted the score and the default unit bands to 880 queries with
+  recorded compute units. A positive equality on a host key or on a field in the
+  new `COST_GUARD_PARTITION_FIELDS` (default `event_type`) now takes window
+  points off a heavy dataset instead of saving one point, pattern matching adds
+  cost only to an un-narrowed multi-day scan of a heavy dataset, and the
+  `medium` tier scores 1 point, down from 2. Un-narrowed scans of a heavy
+  dataset over more than a day score as before. Default bands are now
+  `{"light":[0.001,0.5],"medium":[0.05,2.5],"heavy":[2,9],"extreme":[5,32]}`.
+- Cost guard: the narrowing credit needs a comparison with literals (a field
+  compared with itself, another field or a function result earns nothing; a
+  host list is capped at 20 values and a partition list at two), and every
+  pipeline that reads a heavy dataset must carry its own filter, so a filter on
+  one side of a join no longer narrows the other side.
+- Cost guard: an exact dataset name in `COST_GUARD_DATASET_TIERS` now pins the
+  tier ahead of the catalogue volume, as the catalogue comment always said it
+  would; globs stay a fallback. The default map pins the firewall traffic, URL
+  and cloud flow log datasets to `medium`, and its existing `light` pin for
+  `xql_query_center_history` now takes effect.
 
 ## 0.2.0-alpha.1 - 2026-07-10
 

@@ -207,10 +207,12 @@ from a score:
 
 | Factor | Points |
 | --- | --- |
-| Dataset tier `light` / `medium` / `heavy` (highest tier referenced; no dataset clause counts as `heavy`) | 0 / 2 / 4 |
+| Dataset tier `light` / `medium` / `heavy` (highest tier referenced; no dataset clause counts as `heavy`) | 0 / 1 / 4 |
 | Window up to 1 d / 7 d / 30 d / 90 d / longer | 0 / 1 / 2 / 3 / 4 |
-| Heavy dataset without a positive `=` or `in` filter on a field in `COST_GUARD_SELECTIVE_FIELDS` | +1 |
-| `contains`, `~=`, `regextract`, `regexcapture` | +1 |
+| Heavy dataset with a positive `=` or `in` filter on a field in `COST_GUARD_SELECTIVE_FIELDS` | up to 3 window points removed |
+| Heavy dataset with a positive `=`, or an `in` list of at most two values, on a field in `COST_GUARD_PARTITION_FIELDS` | up to 2 window points removed |
+| Heavy dataset with neither filter, over more than a day | +1 |
+| `contains`, `~=`, `regextract`, `regexcapture` on that same un-narrowed scan | +1 |
 | `_raw_log` or `to_json_string(` | +2 |
 | `join`, `union`, `dedup` / `search` / `call` | +1 each / +2 / +3 |
 
@@ -221,11 +223,42 @@ selectivity, text-scan, or stage penalties, so a bounded sample of a heavy
 dataset over a day or less is light and the same sample over 90 days is heavy.
 Field discovery and `validate_xql` field checks are such samples.
 Comments and string literals are removed before parsing, so neither can hide or
-fake a stage. The dataset tier comes from the authored catalogue `volume` when
-the catalogue is installed (`very_high` is heavy, `high` medium, `medium` and
-`low` light), then `COST_GUARD_DATASET_TIERS`, then `COST_GUARD_DEFAULT_TIER`.
-Estimates are deliberately conservative; tune the tier map and bands against
-the `actual_units` each result records.
+fake a stage. A host or partition filter counts only in a filter stage without
+`or`, never under `not`, and only when it compares the field with literals: a
+field compared with itself, with another field or with a function result earns
+nothing, and a host list may name at most 20 values. Every pipeline that reads a
+heavy dataset needs its own filter, so a filter on one side of a join does not
+narrow the other, and a heavy dataset added by `union <name>` is never narrowed.
+The narrowing credits take points off the window only, so a narrowed query never
+scores below its tier.
+
+The dataset tier is the first of: an exact dataset name in
+`COST_GUARD_DATASET_TIERS`; the authored catalogue `volume` when the catalogue
+is installed (`very_high` is heavy, `high` medium, `medium` and `low` light); a
+glob in `COST_GUARD_DATASET_TIERS`; `COST_GUARD_DEFAULT_TIER`. Pin a dataset by
+exact name when its recorded `actual_units` disagree with its catalogue volume.
+
+The points and the default bands were fitted to 880 queries with recorded
+compute units, taken from eight days of one tenant's `xql_query_center_history`.
+What that sample showed:
+
+- The dataset and the window alone do not predict cost. On endpoint telemetry
+  an equality on a host key cost 0.1 units at the median and 1.1 at the 90th
+  percentile for any window up to 30 days, and an `event_type` equality over 30
+  days cost 0.2 to 1.4. The same 30 days with neither filter cost up to 15.
+- Pattern matching made no measurable difference on light and medium datasets
+  or on narrowed scans.
+- Firewall traffic, URL and cloud flow logs on their own never cost more than
+  0.4 units, including 90-day pattern scans, so the defaults pin them to medium.
+  Joined to endpoint telemetry, a 7-day query cost 5 to 8.
+- The same query cost 0.06 units on a quiet day and up to 3.6 in a burst of
+  thirty concurrent runs. A band is a typical range, and the reserve and the
+  session budget are what bound a bad day.
+
+Against that sample the old points asked for approval on 635 of 880 queries in
+`threat_hunt` mode, 621 of which cost less than the threshold. These points ask
+on 66, and every query that cost more than 3.7 units is among them. Refit the
+tier map and bands against the `actual_units` each result records.
 
 When learning is enabled and the learned cost table has an active entry for a
 single-dataset query's dataset, window bucket and selectivity, the guard uses
@@ -294,10 +327,11 @@ against a timed-out query), `remaining_units`,
 | Variable | Default | Description |
 | --- | --- | --- |
 | `COST_GUARD_ENABLED` | `true` | Apply the cache and the refusal rules. The timeframe requirement and timeout ceiling apply either way. |
-| `COST_GUARD_UNIT_BANDS` | `{"light":[0.001,0.4],"medium":[0.5,3.6],"heavy":[5,9],"extreme":[10,31]}` | Unit band per class. Decisions use the high bound. |
-| `COST_GUARD_DATASET_TIERS` | `{"xdr_data":"heavy","xdr_*":"heavy","*_story":"heavy","amazon_aws_raw":"heavy","msft_azure_raw":"heavy","google_gcp_*":"heavy","xql_query_center_history":"light"}` | Dataset name or `*` glob to `light`, `medium`, or `heavy`. Exact names win over globs. |
+| `COST_GUARD_UNIT_BANDS` | `{"light":[0.001,0.5],"medium":[0.05,2.5],"heavy":[2,9],"extreme":[5,32]}` | Unit band per class. Decisions use the high bound. |
+| `COST_GUARD_DATASET_TIERS` | `{"xdr_data":"heavy","xdr_*":"heavy","*_story":"heavy","amazon_aws_raw":"heavy","msft_azure_raw":"heavy","google_gcp_*":"heavy","panw_ngfw_traffic_raw":"medium","panw_ngfw_url_raw":"medium","msft_azure_flowlogs_raw":"medium","xql_query_center_history":"light"}` | Dataset name or `*` glob to `light`, `medium`, or `heavy`. Exact names win over globs. |
 | `COST_GUARD_DEFAULT_TIER` | `medium` | Tier for datasets the catalogue and tier map do not list. |
 | `COST_GUARD_SELECTIVE_FIELDS` | `agent_hostname,agent_id,endpoint_id,endpoint_name,host_name,hostname` | Fields whose positive equality scopes a heavy dataset to hosts. |
+| `COST_GUARD_PARTITION_FIELDS` | `event_type` | Fields whose positive equality, or `in` list of at most two values, narrows a heavy dataset to a slice of its rows. Empty disables the credit. |
 | `COST_GUARD_HOST_FIELDS` | `{"xdr_data":"agent_hostname"}` | Field used by the host-filter alternative per heavy dataset. |
 | `COST_GUARD_CHEAPER_DATASETS` | `{"amazon_aws_raw":["cloud_audit_logs"],"msft_azure_raw":["cloud_audit_logs"]}` | Cheaper datasets for the same question. Catalogue datasets in the same domain that the principal's policy lists are added. |
 | `COST_GUARD_APPROVAL_THRESHOLD_UNITS` | `1.0` | Approval threshold used only if the engagement mode policy cannot be read. Matches the unset mode. |
