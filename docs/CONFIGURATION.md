@@ -151,6 +151,10 @@ Tool policy is enforced for every MCP tool invocation. Dataset policy still
 runs inside discovery and query tools. Tools a principal cannot invoke are not
 advertised in `tools/list`.
 
+`run_endpoint_script` and `get_endpoint_script_run` also need a group in
+`SCRIPT_RUN_GROUPS`; a `*` grant does not cover them. See
+[Endpoint script execution](#endpoint-script-execution).
+
 ## Engagement Modes
 
 | Variable | Default | Description |
@@ -358,6 +362,191 @@ readings, reservations, and slot timings live in the gateway process. Each
 replica keeps its own, so N replicas allow up to N times the approval cap and
 can each admit queries against the same reserve; size the cap and reserve with
 the replica count in mind.
+
+## Endpoint script execution
+
+Off by default. When on, three tools run a script from the XSIAM agent script
+library on named endpoints and read the result: `list_endpoint_scripts`,
+`run_endpoint_script` and `get_endpoint_script_run`. See
+[Security Model](SECURITY_MODEL.md#endpoint-script-execution) for every rule.
+
+XSIAM prerequisites:
+
+- The API key's role needs permission to run agent scripts. Use a separate key
+  through the credential broker so query-only groups keep a key without that
+  permission.
+- The script must already be in the tenant's script library. The gateway never
+  uploads a script and never runs code passed in a request.
+- Copy each script's uid from the library into `SCRIPT_RUN_ALLOWED_SCRIPTS`.
+  Scripts XSIAM marks high risk are refused even when listed.
+- The same key must be able to read endpoints: every endpoint id is looked up
+  before approval.
+
+A run needs all of these:
+
+1. `SCRIPT_RUN_ENABLED=true`.
+2. `TOOL_ACCESS_POLICY` grants the tool, and the principal is in a group named
+   in `SCRIPT_RUN_GROUPS`. A `*` tool grant alone is not enough, and
+   `SCRIPT_RUN_GROUPS` has no wildcard.
+3. The engagement mode is `incident_response` or `threat_hunt`.
+4. The script uid is on `SCRIPT_RUN_ALLOWED_SCRIPTS`, not high risk, and
+   unchanged if it is pinned.
+5. An explicit list of endpoint ids within `SCRIPT_RUN_MAX_ENDPOINTS`, every
+   one known to XSIAM.
+6. A stated reason and the analyst's approval, for every run.
+7. Room under both daily caps.
+8. A usable run ledger, when `SCRIPT_RUN_STATE_DIR` is set.
+
+```bash
+SCRIPT_RUN_ENABLED=true
+SCRIPT_RUN_GROUPS=Responders
+SCRIPT_RUN_ALLOWED_SCRIPTS='{"0a1b2c3d4e5f60718293a4b5c6d7e8f9":1800000000000}'
+SCRIPT_RUN_STATE_DIR=/var/lib/cortex-mcp/script-state
+SCRIPT_RUN_RESULTS_DIR=/var/lib/cortex-mcp/script-results
+```
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SCRIPT_RUN_ENABLED` | `false` | Master switch. When false the three tools are not registered, not listed, and refused on call. |
+| `SCRIPT_RUN_GROUPS` | empty | Comma-separated groups allowed to use `run_endpoint_script` and `get_endpoint_script_run`, checked in addition to `TOOL_ACCESS_POLICY`. Empty grants nobody. |
+| `SCRIPT_RUN_ALLOWED_SCRIPTS` | `[]` | Scripts that may run: a JSON list of uids, or a JSON object mapping each uid to the script's `modification_date` (or `null` for no pin). Empty means nothing can run. An invalid value stops startup when the feature is on. |
+| `SCRIPT_RUN_MAX_ENDPOINTS` | `30` | Endpoints per run after de-duplication; valid range 1-200. 200 is a hard ceiling. |
+| `SCRIPT_RUN_DAILY_MAX_RUNS` | `5` | Runs one principal may submit per UTC day. `0` blocks every run. |
+| `SCRIPT_RUN_DAILY_MAX_ENDPOINTS` | `100` | Endpoints one principal may target per UTC day, summed over runs. |
+| `SCRIPT_RUN_ELICITATION_ENABLED` | `true` | Ask the analyst through MCP elicitation when the client supports it. |
+| `SCRIPT_RUN_ELICITATION_TIMEOUT_SECONDS` | `120` | Time to wait for an answer before treating the prompt as unanswered. |
+| `SCRIPT_RUN_MAX_OUTPUT_BYTES_PER_ENDPOINT` | `8192` | Bytes of standard output and returned values returned per endpoint. Each returned value is charged its key name and its serialised size, numbers and booleans included; a value that does not fit is omitted and counted in `returned_values_omitted`. |
+| `SCRIPT_RUN_MAX_OUTPUT_BYTES` | `65536` | Bytes of script output returned per call, over all endpoints. |
+| `SCRIPT_RUN_API_TIMEOUT_SECONDS` | `30` | Deadline for each XSIAM call this feature makes; valid range 1-300. |
+| `SCRIPT_RUN_STATE_DIR` | empty | Absolute directory for the durable run ledger, `script_runs.json`. Same rules as `SCRIPT_RUN_RESULTS_DIR`. Empty keeps run records and daily counts in memory only. |
+| `SCRIPT_RUN_RECORD_RETENTION_DAYS` | `30` | Age after which a run record is dropped; valid range 1-3650. At most 1000 records are kept, fewer when the ledger file reaches its size budget. |
+| `SCRIPT_RUN_RESULTS_DIR` | empty | Absolute directory for retrieved files on the gateway host. Must not be a symbolic link, inside the repository, or inside a git working tree. Created owner-only; an existing directory open to group or others is refused. Empty disables file retrieval. |
+| `SCRIPT_RUN_MAX_FILE_BYTES` | `52428800` | Largest retrieved-files zip the gateway will save. |
+| `SCRIPT_RUN_ALLOW_FOREIGN_ACTIONS` | `false` | Let `get_endpoint_script_run` read any script action in the tenant, including runs started in the console. |
+
+Limits fixed in code: script timeout 1 to 3600 seconds (default 600), at most
+20 parameters, parameter strings up to 500 characters, reason up to 500
+characters, files for at most 5 endpoints per call, a 300-second deadline per
+file download, pending approvals kept 15 minutes (at most 256), and 50 runs per
+listing.
+
+### Approval
+
+With elicitation the gateway asks the analyst directly; a declined prompt
+refuses the run even if an `approval` argument was passed. A cancelled,
+timed-out, or unsupported prompt falls back to the `approval` argument, which
+must be the analyst's own typed words and is stored only as a SHA-256.
+
+The prompt and the `approval_required` refusal show everything, with nothing
+shortened: the script name and uid, every endpoint as `name (id), status`,
+every parameter as `name = value` with the whole value, the timeout, and the
+reason. Strings are quoted. A backslash and a double quote are escaped, and
+control characters, direction overrides, zero-width and other format
+characters, and unusual spaces are written as visible escapes such as `\n` or
+`\u202e`, never removed. Two different values therefore never look the same,
+and a value cannot start a new line in the prompt. With the largest allowed
+run, 200 endpoints and 20 parameters of 500 characters, the prompt is long;
+keep `SCRIPT_RUN_MAX_ENDPOINTS` at a size an analyst can read.
+
+A typed approval is bound to exactly what was shown. It is accepted only when
+this gateway process has already refused the same request with
+`approval_required` for the same principal: same script uid and
+`modification_date` as XSIAM reported it, same set of endpoint ids, same
+parameters, same timeout, same reason. The first call is always refused, even
+if it carries an approval. The pending entry is used once and expires after 15
+minutes. Changing any of those needs a new refusal and a new approval.
+
+After the approval, and immediately before the run is sent, the gateway reads
+the script again. If its `modification_date` is no longer the one shown, if
+XSIAM now marks it high risk, if a pin no longer matches, or if it cannot be
+read, the run is refused, nothing is sent, and the attempt is not counted. This
+covers a script edited while an approval prompt is open.
+
+### Pinning a script version
+
+An allow-listed uid names a script, not its content. To pin the reviewed
+version, use the object form and copy `modification_date` from
+`list_endpoint_scripts`:
+
+```bash
+SCRIPT_RUN_ALLOWED_SCRIPTS='{"0a1b2c3d4e5f60718293a4b5c6d7e8f9":1800000000000}'
+```
+
+In a shell, keep the single quotes: without them the shell removes the inner
+double quotes and the value is no longer JSON. In a `.env` file read by the
+gateway or passed with `docker --env-file`, write the JSON without surrounding
+quotes, as `.env.example` does.
+
+If XSIAM later reports a different date, or none, the run is refused with rule
+`script_changed` until an operator reviews the script and updates the pin.
+
+### Run ledger
+
+A script action can take days to finish: offline endpoints pick it up when
+they reconnect. Set `SCRIPT_RUN_STATE_DIR` so the gateway still knows its runs
+after a restart.
+
+With the directory set, one file, `script_runs.json`, holds every run record
+(action id, a hash of the owner, script uid and name, endpoint ids and names,
+start time, approval method, request hash) and each principal's daily counts.
+The daily caps then hold across restarts. The run is counted and saved before
+the request goes to XSIAM, and the action id is added after the reply. The file
+is replaced atomically, owner-only, and never holds parameter values, the
+approval text, or the reason.
+
+The file stays under a 6 MiB write budget, below the 8 MiB the gateway will
+read back, so the gateway never writes a ledger it would then refuse. Stored
+script and endpoint names are cut at 128 characters. When the budget is
+reached, the oldest records that already have an action id are dropped first.
+Daily counts are always kept, and a run still waiting for XSIAM's answer is
+never dropped. If the ledger still cannot fit, the write fails and the run is
+refused before anything is sent.
+
+The gateway fails closed. If the directory is invalid, or the file is
+unreadable, malformed, a symbolic link, or open to group or others, new runs
+are refused with rule `state_unavailable`, and so are listing and reads of
+actions the process does not already hold. The message says why. An operator
+must repair or remove the file. If the action id cannot be saved after a
+successful submit, the action id is still returned with a warning.
+
+With the directory empty, records and counts live in memory only. A restart
+loses the records and resets the daily caps, so the caps can be bypassed by
+restarting the gateway. Earlier runs stay visible in the XSIAM Action Center.
+
+`get_endpoint_script_run` with no `action_id` lists the caller's own recorded
+runs, newest first, at most 50. A run whose outcome is unknown is listed
+without an action id.
+
+The ledger file belongs to one gateway process. Do not point two replicas at
+the same directory: give each its own, or use a shared store. Each replica
+keeps its own counts, so N replicas allow up to N times the daily caps.
+
+### Timeouts and submission outcome
+
+Every XSIAM call the feature makes has its own deadline,
+`SCRIPT_RUN_API_TIMEOUT_SECONDS`. A script or endpoint lookup that does not
+answer refuses the run.
+
+Once `run_script` has been sent, the run is reported as not executed
+(`executed: false`) only when XSIAM's own response says so:
+
+- a 4xx reply, including authentication and permission errors;
+- a well-formed reply that reports failure and names no action.
+
+The record is then removed. Everything else is reported as submitted with
+outcome unknown (`executed: "unknown"`), because the action may be running:
+
+- no answer before the deadline, or a lost connection;
+- any 5xx, which a proxy can return after XSIAM started the action;
+- a reply that cannot be decoded, or that names no action without reporting
+  failure;
+- a reply that names an action and also reports failure. The action id is
+  kept and returned.
+
+An unknown outcome keeps its record, without an action id unless XSIAM gave
+one, so it stays in the caller's run list. The analyst should check the Action
+Center before submitting again. Either way the attempt counts against the
+daily caps.
 
 ## XSIAM Credential Broker
 

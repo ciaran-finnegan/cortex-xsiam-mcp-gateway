@@ -50,6 +50,7 @@ check dataset policy.
 | `get_xql_query_quota` | XQL quota usage. |
 | `get_issues`, `get_cases` | Issues (alerts) and cases. |
 | `get_tenant_info`, `get_assets`, `get_asset_by_id`, `get_filtered_endpoints`, `get_vulnerabilities`, `get_assessment_profile_results` | Tenant, asset, endpoint, vulnerability and assessment data. |
+| `list_endpoint_scripts`, `run_endpoint_script`, `get_endpoint_script_run` | Off by default. Run an allow-listed script from the XSIAM agent script library on named endpoints and read the capped result. Every run needs an explicit group, a response mode and the analyst's approval. See [endpoint script execution](docs/CONFIGURATION.md#endpoint-script-execution). |
 
 ## Request path
 
@@ -152,6 +153,11 @@ until it is set. HTTP will not start with `none` unless
 `MCP_ALLOW_UNAUTHENTICATED_HTTP=true`. `tools/list` shows only the tools the
 caller's groups and current mode allow, and hidden tools are denied on call.
 The `operations` and `unset` modes hide `execute_xql_query`.
+
+Every tool only reads from XSIAM except `run_endpoint_script`. It is off until
+`SCRIPT_RUN_ENABLED=true`, and a `*` tool grant does not cover it: the caller
+must also be in `SCRIPT_RUN_GROUPS`, the script uid must be on
+`SCRIPT_RUN_ALLOWED_SCRIPTS`, and the analyst approves each run.
 
 Raw XQL needs the `*` grant because the gateway does not parse it for datasets.
 It must end in `| limit N`, which is clamped to the server row limit. Comments

@@ -186,6 +186,43 @@ def create_cost_guard_audit_event(
     }
 
 
+def create_script_run_audit_event(
+    *,
+    decision: str,
+    outcome: str,
+    principal: MCPContext,
+    tool: str,
+    details: dict[str, Any],
+) -> dict[str, Any]:
+    """Build an endpoint script decision event.
+
+    Callers pass identifiers, counts, parameter names and hashes only: never parameter
+    values, approval text, script output or a download link.
+    """
+    config = get_config()
+    return {
+        "schema_version": "1.0",
+        "event_type": "cortex_xsiam_mcp.script_run",
+        "event_id": str(uuid.uuid4()),
+        "timestamp": datetime.now(UTC).isoformat(),
+        "service": "cortex-xsiam-mcp-gateway",
+        "decision": decision,
+        "outcome": outcome,
+        "tool": tool,
+        "transport": config.mcp_transport,
+        "principal": {
+            "id": principal.principal_id,
+            "groups": list(principal.groups),
+        },
+        "engagement": {
+            "mode": principal.mode,
+            "case_id": principal.case_id,
+            "source": principal.engagement_source,
+        },
+        "script_run": {key: value for key, value in details.items() if value is not None},
+    }
+
+
 MAX_LEARNING_AUDIT_CHANGES = 100
 
 
