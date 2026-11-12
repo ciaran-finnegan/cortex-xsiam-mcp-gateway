@@ -156,7 +156,7 @@ invocation events. See
 | `principal.id`, `principal.groups` | As in tool invocation events. |
 | `engagement.mode`, `engagement.case_id`, `engagement.source` | Engagement at the decision. |
 | `script_run.rule` | Refusal rule, for example `disabled`, `group_required`, `mode`, `script_not_allowed`, `script_changed`, `high_risk_script`, `endpoint_cap`, `endpoint_unknown`, `endpoint_lookup_failed`, `approval_required`, `approval_declined`, `daily_cap`, `state_unavailable`, or `not_owner`. |
-| `script_run.request_sha256` | SHA-256 of the script uid, sorted endpoint ids, parameters, and timeout. The same value on a refusal and on the approved retry shows the approval was for that request. |
+| `script_run.request_sha256` | SHA-256 of the script uid, the script's `modification_date` as XSIAM reported it, the sorted endpoint ids, the parameters, the timeout, and the reason. The same value on a refusal and on the approved retry shows the approval was for that request. Set once the script has been read. |
 | `script_run.script_uid`, `script_run.script_name`, `script_run.script_modification_date` | Script requested and the modification date XSIAM reported. A malformed uid is logged as `invalid`. |
 | `script_run.endpoint_count`, `script_run.endpoint_ids` | Endpoints requested. Only well-formed ids are logged, at most 200. Endpoint names are never logged. |
 | `script_run.unknown_endpoint_ids` | Ids XSIAM did not know, on an `endpoint_unknown` refusal. |

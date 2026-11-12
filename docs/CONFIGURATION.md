@@ -400,7 +400,7 @@ A run needs all of these:
 ```bash
 SCRIPT_RUN_ENABLED=true
 SCRIPT_RUN_GROUPS=Responders
-SCRIPT_RUN_ALLOWED_SCRIPTS={"0a1b2c3d4e5f60718293a4b5c6d7e8f9":1800000000000}
+SCRIPT_RUN_ALLOWED_SCRIPTS='{"0a1b2c3d4e5f60718293a4b5c6d7e8f9":1800000000000}'
 SCRIPT_RUN_STATE_DIR=/var/lib/cortex-mcp/script-state
 SCRIPT_RUN_RESULTS_DIR=/var/lib/cortex-mcp/script-results
 ```
@@ -415,7 +415,7 @@ SCRIPT_RUN_RESULTS_DIR=/var/lib/cortex-mcp/script-results
 | `SCRIPT_RUN_DAILY_MAX_ENDPOINTS` | `100` | Endpoints one principal may target per UTC day, summed over runs. |
 | `SCRIPT_RUN_ELICITATION_ENABLED` | `true` | Ask the analyst through MCP elicitation when the client supports it. |
 | `SCRIPT_RUN_ELICITATION_TIMEOUT_SECONDS` | `120` | Time to wait for an answer before treating the prompt as unanswered. |
-| `SCRIPT_RUN_MAX_OUTPUT_BYTES_PER_ENDPOINT` | `8192` | Bytes of standard output and returned values returned per endpoint. |
+| `SCRIPT_RUN_MAX_OUTPUT_BYTES_PER_ENDPOINT` | `8192` | Bytes of standard output and returned values returned per endpoint. Each returned value is charged its key name and its serialised size, numbers and booleans included; a value that does not fit is omitted and counted in `returned_values_omitted`. |
 | `SCRIPT_RUN_MAX_OUTPUT_BYTES` | `65536` | Bytes of script output returned per call, over all endpoints. |
 | `SCRIPT_RUN_API_TIMEOUT_SECONDS` | `30` | Deadline for each XSIAM call this feature makes; valid range 1-300. |
 | `SCRIPT_RUN_STATE_DIR` | empty | Absolute directory for the durable run ledger, `script_runs.json`. Same rules as `SCRIPT_RUN_RESULTS_DIR`. Empty keeps run records and daily counts in memory only. |
@@ -437,17 +437,30 @@ refuses the run even if an `approval` argument was passed. A cancelled,
 timed-out, or unsupported prompt falls back to the `approval` argument, which
 must be the analyst's own typed words and is stored only as a SHA-256.
 
-The prompt and the `approval_required` refusal show the script name and uid,
-each endpoint as `name (id)` with its status, each parameter as `name = value`,
-the timeout, and the reason. Control characters are removed from displayed
-values and long strings are cut at 120 characters with a note.
+The prompt and the `approval_required` refusal show everything, with nothing
+shortened: the script name and uid, every endpoint as `name (id), status`,
+every parameter as `name = value` with the whole value, the timeout, and the
+reason. Strings are quoted. A backslash and a double quote are escaped, and
+control characters, direction overrides, zero-width and other format
+characters, and unusual spaces are written as visible escapes such as `\n` or
+`\u202e`, never removed. Two different values therefore never look the same,
+and a value cannot start a new line in the prompt. With the largest allowed
+run, 200 endpoints and 20 parameters of 500 characters, the prompt is long;
+keep `SCRIPT_RUN_MAX_ENDPOINTS` at a size an analyst can read.
 
-A typed approval is bound to the exact request. It is accepted only when this
-gateway process has already refused the same request with `approval_required`
-for the same principal: same script uid, same set of endpoint ids, same
-parameters, same timeout. The first call is always refused, even if it carries
-an approval. The pending entry is used once and expires after 15 minutes.
-Changing any of those arguments needs a new refusal and a new approval.
+A typed approval is bound to exactly what was shown. It is accepted only when
+this gateway process has already refused the same request with
+`approval_required` for the same principal: same script uid and
+`modification_date` as XSIAM reported it, same set of endpoint ids, same
+parameters, same timeout, same reason. The first call is always refused, even
+if it carries an approval. The pending entry is used once and expires after 15
+minutes. Changing any of those needs a new refusal and a new approval.
+
+After the approval, and immediately before the run is sent, the gateway reads
+the script again. If its `modification_date` is no longer the one shown, if
+XSIAM now marks it high risk, if a pin no longer matches, or if it cannot be
+read, the run is refused, nothing is sent, and the attempt is not counted. This
+covers a script edited while an approval prompt is open.
 
 ### Pinning a script version
 
@@ -456,8 +469,13 @@ version, use the object form and copy `modification_date` from
 `list_endpoint_scripts`:
 
 ```bash
-SCRIPT_RUN_ALLOWED_SCRIPTS={"0a1b2c3d4e5f60718293a4b5c6d7e8f9":1800000000000}
+SCRIPT_RUN_ALLOWED_SCRIPTS='{"0a1b2c3d4e5f60718293a4b5c6d7e8f9":1800000000000}'
 ```
+
+In a shell, keep the single quotes: without them the shell removes the inner
+double quotes and the value is no longer JSON. In a `.env` file read by the
+gateway or passed with `docker --env-file`, write the JSON without surrounding
+quotes, as `.env.example` does.
 
 If XSIAM later reports a different date, or none, the run is refused with rule
 `script_changed` until an operator reviews the script and updates the pin.

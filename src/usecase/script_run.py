@@ -40,6 +40,7 @@ import stat
 import tempfile
 import threading
 import time
+import unicodedata
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -110,10 +111,8 @@ MAX_RETURNED_VALUES = 50
 MAX_DOWNLOAD_REDIRECTS = 3
 DOWNLOAD_TIMEOUT_SECONDS = 60
 DOWNLOAD_DEADLINE_SECONDS = 300
-ELICITATION_ENDPOINT_IDS = 10
 # XSIAM returns at most this many endpoints per get_endpoint request.
 ENDPOINT_LOOKUP_PAGE = 100
-PARAMETER_DISPLAY_CHARS = 120
 PENDING_APPROVAL_TTL_SECONDS = 900
 MAX_PENDING_APPROVALS = 256
 STATE_FILE_NAME = "script_runs.json"
@@ -127,6 +126,9 @@ MAX_STORED_NAME_CHARS = 128
 # Upper bound on one serialised record: 200 endpoints, each a 64-character id held twice and a
 # 128-character name that JSON may escape to 12 bytes per character, plus the fixed fields.
 MAX_RECORD_BYTES = 350_000
+# A reserved record is written with a null action id. The room its real id may need (up to 18
+# digits) is counted from the start, so adding the id can never push the file over the budget.
+ACTION_ID_HEADROOM_BYTES = 18 - len("null")
 MAX_LISTED_RUNS = 50
 
 APPROVAL_ARGUMENT_DESCRIPTION = (
@@ -147,8 +149,12 @@ _ACTION_ID = re.compile(r"[0-9]{1,18}")
 _RUN_ID = re.compile(r"[0-9a-f]{32}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
-# Everything that could start a new line or hide text in a value shown to the analyst.
-_DISPLAY_UNSAFE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]")
+# Unicode categories written as visible escapes in anything shown to the analyst: controls, format
+# characters such as direction overrides and zero-width marks, line and paragraph separators,
+# surrogates, private-use and unassigned code points. Spaces other than U+0020 are escaped as well.
+_ESCAPED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp", "Zs"})
+_SHORT_ESCAPES = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+_OMITTED = object()
 _PUBLIC_TLD = re.compile(r"[a-z]{2,63}|xn--[a-z0-9-]{1,59}")
 _RESULT_FIELDS = frozenset(
     {
@@ -360,10 +366,10 @@ def _daily_cap_refusal(owner: str, endpoint_count: int) -> str | None:
     return None
 
 
-def _count_run(owner: str, endpoint_count: int, *, sign: int = 1) -> None:
+def _count_run(owner: str, endpoint_count: int) -> None:
     day = _utc_day()
-    _daily_runs[(owner, day)] = max(_daily_runs.get((owner, day), 0) + sign, 0)
-    _daily_endpoints[(owner, day)] = max(_daily_endpoints.get((owner, day), 0) + sign * endpoint_count, 0)
+    _daily_runs[(owner, day)] = _daily_runs.get((owner, day), 0) + 1
+    _daily_endpoints[(owner, day)] = _daily_endpoints.get((owner, day), 0) + endpoint_count
     _prune_daily()
 
 
@@ -409,13 +415,16 @@ def _reserve_run(record: _RunRecord) -> str | None:
     """Count a run and save its record before anything is sent to XSIAM.
 
     Returns daily-cap refusal text and changes nothing when a cap is reached. Raises
-    ScriptRunStateError, with the count and record rolled back, when the ledger cannot be written.
+    ScriptRunStateError when the ledger cannot be written, with the record gone and the
+    counts exactly as they were, so one failed reservation cannot block a later run.
     """
     with _state_lock:
         _load_state_if_needed()
         capped = _daily_cap_refusal(record.owner, len(record.endpoint_ids))
         if capped is not None:
             return capped
+        key = (record.owner, _utc_day())
+        before = (_daily_runs.get(key), _daily_endpoints.get(key))
         _count_run(record.owner, len(record.endpoint_ids))
         _runs[record.run_id] = record
         _prune_runs()
@@ -423,16 +432,24 @@ def _reserve_run(record: _RunRecord) -> str | None:
             _persist()
         except ScriptRunStateError:
             _runs.pop(record.run_id, None)
-            _count_run(record.owner, len(record.endpoint_ids), sign=-1)
+            for ledger, value in zip((_daily_runs, _daily_endpoints), before, strict=True):
+                if value is None:
+                    ledger.pop(key, None)
+                else:
+                    ledger[key] = value
             raise
         return None
 
 
 def _complete_run(record: _RunRecord, action_id: int) -> None:
-    """Attach XSIAM's action id to a reserved run. Raises ScriptRunStateError if it cannot be saved; memory keeps it."""
+    """Attach XSIAM's action id to a reserved run.
+
+    The record is never the one left out to make the file fit. Raises ScriptRunStateError
+    if it cannot be saved; memory keeps the id either way.
+    """
     with _state_lock:
         record.action_id = action_id
-        _persist()
+        _persist(keep=record.run_id)
 
 
 def _discard_run(record: _RunRecord) -> None:
@@ -598,10 +615,13 @@ def _parse_state(
     return records, daily_runs, daily_endpoints
 
 
-def _persist() -> None:
-    """Write the ledger file when one is in use. Raises ScriptRunStateError; callers decide what that means."""
+def _persist(keep: str | None = None) -> None:
+    """Write the ledger file when one is in use. Raises ScriptRunStateError; callers decide what that means.
+
+    ``keep`` names a record that must not be left out to make the file fit.
+    """
     if _state_loaded_from is not None:
-        _write_state_file(_state_loaded_from)
+        _write_state_file(_state_loaded_from, keep)
 
 
 def _record_document(record: _RunRecord) -> dict[str, Any]:
@@ -619,12 +639,14 @@ def _record_document(record: _RunRecord) -> dict[str, Any]:
     }
 
 
-def _serialise_state() -> tuple[str, list[str]]:
+def _serialise_state(keep: str | None = None) -> tuple[str, list[str]]:
     """Build the ledger text within the write budget. Returns it and the run ids left out to make it fit.
 
     The daily counts are always kept. Records are left out oldest first, and only ones that
-    already have an action id: a run still waiting for XSIAM's answer is never dropped.
-    Raises ScriptRunStateError when the text cannot be brought under the budget.
+    already have an action id: a run still waiting for XSIAM's answer is never dropped, and
+    neither is ``keep``, the record that has just received its id. Each waiting record is
+    counted with the room its action id will need. Raises ScriptRunStateError when the text
+    cannot be brought under the budget.
     """
     day = _utc_day()
     daily = [
@@ -637,15 +659,22 @@ def _serialise_state() -> tuple[str, list[str]]:
     # json.dumps escapes non-ASCII by default, so the text is ASCII and its length is its size in bytes.
     head = f'{{"daily":{_compact(daily)},"saved_at":{_compact(_now().isoformat())},"version":{STATE_VERSION},"runs":['
     entries = [(record, _compact(_record_document(record))) for record in _runs.values()]
-    size = len(head) + len("]}") + sum(len(text) + 1 for _, text in entries)
+    # Size of the finished text: the records, the commas between them, and room for each missing action id.
+    body = sum(len(text) + (ACTION_ID_HEADROOM_BYTES if record.action_id is None else 0) for record, text in entries)
+    kept_count = len(entries)
+
+    def size() -> int:
+        return len(head) + len("]}") + body + max(kept_count - 1, 0)
+
     left_out: set[str] = set()
     for record, text in entries:
-        if size <= STATE_WRITE_BUDGET_BYTES:
+        if size() <= STATE_WRITE_BUDGET_BYTES:
             break
-        if record.action_id is not None:
+        if record.action_id is not None and record.run_id != keep:
             left_out.add(record.run_id)
-            size -= len(text) + 1
-    if size > STATE_WRITE_BUDGET_BYTES:
+            body -= len(text)
+            kept_count -= 1
+    if size() > STATE_WRITE_BUDGET_BYTES:
         raise ScriptRunStateError("the ledger would exceed its size budget even without its completed records")
     kept = ",".join(text for record, text in entries if record.run_id not in left_out)
     return f"{head}{kept}]}}", sorted(left_out)
@@ -655,7 +684,7 @@ def _compact(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-def _write_state_file(path: Path) -> None:
+def _write_state_file(path: Path, keep: str | None = None) -> None:
     """Replace the ledger atomically: owner-only temp file in the same directory, fsync, rename.
 
     The text is kept under the write budget, which is below the size the reader accepts.
@@ -663,7 +692,7 @@ def _write_state_file(path: Path) -> None:
     """
     temp_name = None
     try:
-        text, left_out = _serialise_state()
+        text, left_out = _serialise_state(keep)
         _ensure_private_dir(path.parent, "SCRIPT_RUN_STATE_DIR")
         if path.is_symlink():
             raise ScriptRunStateError("the ledger file is a symbolic link")
@@ -1077,11 +1106,6 @@ async def run_script(
     except ValueError as e:
         await attempt.refuse("reason_required", str(e))
     attempt.details["reason_sha256"] = hashlib.sha256(stated_reason.encode()).hexdigest()
-    # Identifies this exact request: what a typed approval is bound to.
-    request_sha256 = stable_hash(
-        {"script_uid": script_uid, "endpoint_ids": sorted(endpoints), "parameters": values, "timeout": timeout_seconds}
-    )
-    attempt.details["request_sha256"] = request_sha256
 
     owner = owner_key(principal)
     # Check the ledger and the caps before asking anyone to approve a run that could not be submitted anyway.
@@ -1093,33 +1117,21 @@ async def run_script(
         await attempt.refuse("daily_cap", capped, daily=_daily_usage(owner))
 
     # The first request to XSIAM: a read of the one allow-listed library entry.
-    try:
-        fetcher = await _bounded_fetcher(ctx)
-        script = (await _fetch_scripts(fetcher, [script_uid])).get(script_uid)
-    except Exception as e:
-        logger.info("Script lookup failed: %s", type(e).__name__)
-        attempt.details["error_type"] = type(e).__name__
-        await attempt.refuse(
-            "script_lookup_failed",
-            f"the script could not be read from XSIAM ({_failure(e)}), so its risk is unknown",
-        )
-    if script is None:
-        await attempt.refuse(
-            "script_lookup_failed",
-            "XSIAM did not return this script; it must be in the script library and visible to the API key",
-        )
-    view = _script_view(script, allowed[script_uid])
-    attempt.details.update({"script_name": view["name"], "script_modification_date": view["modification_date"]})
-    if view["pin_matches"] is False:
-        await attempt.refuse(
-            "script_changed",
-            "the script's modification_date in XSIAM differs from the one pinned in SCRIPT_RUN_ALLOWED_SCRIPTS; "
-            "an operator must review the script and update the pin",
-            pinned_modification_date=view["pinned_modification_date"],
-            modification_date=view["modification_date"],
-        )
-    if view["is_high_risk"] is not False:
-        await attempt.refuse("high_risk_script", "XSIAM does not report this script as low risk; high-risk scripts never run")
+    fetcher, view = await _load_script(attempt, ctx, script_uid)
+
+    # Identifies exactly what the analyst is shown and what a typed approval is bound to: the script and
+    # the version XSIAM reported, the endpoints, the parameters, the timeout and the reason.
+    request_sha256 = stable_hash(
+        {
+            "script_uid": script_uid,
+            "script_modification_date": view["modification_date"],
+            "endpoint_ids": sorted(endpoints),
+            "parameters": values,
+            "timeout": timeout_seconds,
+            "reason": stated_reason,
+        }
+    )
+    attempt.details["request_sha256"] = request_sha256
 
     # Resolve every id before anyone is asked to approve, so the analyst sees names and a mistyped id stops here.
     try:
@@ -1152,6 +1164,17 @@ async def run_script(
     await _require_approval(attempt, request, approval_text)
     await attempt.record("approved", "approved")
 
+    # An approval prompt can stay open for minutes. Read the script again and refuse if it is no longer
+    # the version the analyst was shown, is now high risk, or cannot be read. Nothing is counted or sent.
+    _, current = await _load_script(attempt, ctx, script_uid, fetcher=fetcher)
+    if current["modification_date"] != view["modification_date"]:
+        await attempt.refuse(
+            "script_changed",
+            "the script was modified in XSIAM after it was shown for approval; review it and ask again",
+            approved_modification_date=view["modification_date"],
+            modification_date=current["modification_date"],
+        )
+
     # Recheck the caps, count the run and save its record in one step with no await, so concurrent runs
     # cannot share one allowance and nothing is sent that the ledger does not already hold.
     record = _RunRecord(
@@ -1179,8 +1202,76 @@ async def run_script(
             "timeout": timeout_seconds,
         }
     }
-    # From here the request may have reached XSIAM. Only what the response itself establishes counts as
-    # a rejection; anything else leaves the outcome unknown, and the record and the count stay.
+    # From here the request may have reached XSIAM, so this function no longer raises: an exception
+    # here would reach the tool wrapper, which can only report a failure as not executed.
+    try:
+        return await _submit(attempt, record, request, fetcher, payload)
+    except Exception as e:
+        logger.error("Script run failed after its request was sent: %s", type(e).__name__)
+        return _unknown_result(record, type(e).__name__)
+
+
+async def _load_script(
+    attempt: _Attempt,
+    ctx: Any,
+    script_uid: str,
+    *,
+    fetcher: Any = None,
+) -> tuple[Any, dict[str, Any]]:
+    """Read one allow-listed script from XSIAM and refuse unless it may run as it is now.
+
+    Used when a request is first shown and again just before it is submitted. The allow-list
+    and its pin are read each time, so a change to either takes effect at once.
+    """
+    try:
+        allowed = allowed_scripts()
+    except ScriptRunSettingsError:
+        await attempt.refuse("script_not_allowed", "SCRIPT_RUN_ALLOWED_SCRIPTS is invalid, so no script can run")
+    if script_uid not in allowed:
+        await attempt.refuse("script_not_allowed", "script_uid is not on SCRIPT_RUN_ALLOWED_SCRIPTS")
+    try:
+        if fetcher is None:
+            fetcher = await _bounded_fetcher(ctx)
+        script = (await _fetch_scripts(fetcher, [script_uid])).get(script_uid)
+    except Exception as e:
+        logger.info("Script lookup failed: %s", type(e).__name__)
+        attempt.details["error_type"] = type(e).__name__
+        await attempt.refuse(
+            "script_lookup_failed",
+            f"the script could not be read from XSIAM ({_failure(e)}), so its risk is unknown",
+        )
+    if script is None:
+        await attempt.refuse(
+            "script_lookup_failed",
+            "XSIAM did not return this script; it must be in the script library and visible to the API key",
+        )
+    view = _script_view(script, allowed[script_uid])
+    attempt.details.update({"script_name": view["name"], "script_modification_date": view["modification_date"]})
+    if view["pin_matches"] is False:
+        await attempt.refuse(
+            "script_changed",
+            "the script's modification_date in XSIAM differs from the one pinned in SCRIPT_RUN_ALLOWED_SCRIPTS; "
+            "an operator must review the script and update the pin",
+            pinned_modification_date=view["pinned_modification_date"],
+            modification_date=view["modification_date"],
+        )
+    if view["is_high_risk"] is not False:
+        await attempt.refuse("high_risk_script", "XSIAM does not report this script as low risk; high-risk scripts never run")
+    return fetcher, view
+
+
+async def _submit(
+    attempt: _Attempt,
+    record: _RunRecord,
+    request: "_RunRequest",
+    fetcher: Any,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Send a reserved run and sort the outcome.
+
+    Only what the response itself establishes counts as a rejection; anything else leaves the
+    outcome unknown, and the record and the count stay.
+    """
     try:
         response = await _xsiam(fetcher, "scripts/run_script/", payload)
     except (PAPIAuthenticationError, PAPIClientRequestError) as e:
@@ -1193,17 +1284,18 @@ async def run_script(
     reply = response.get("reply") if isinstance(response, dict) else None
     if not isinstance(reply, dict):
         return await _submission_unknown(attempt, record, "UnusableReply", "the reply could not be read")
-    try:
-        action_id: int | None = _validate_action_id(reply.get("action_id"))
-    except ValueError:
-        action_id = None
     status = reply.get("status")
     reported_failed = status == 0 and not isinstance(status, bool)
-    if action_id is None:
+    if reply.get("action_id") is None:
         if reported_failed:
-            # A well-formed reply that says no action started.
+            # A well-formed reply that names no action and says none started.
             return await _submission_rejected(attempt, record, "NoActionStarted", "XSIAM reported that no action started")
         return await _submission_unknown(attempt, record, "UnusableReply", "the reply named no action")
+    try:
+        action_id = _validate_action_id(reply["action_id"])
+    except ValueError:
+        # An action id is present but unreadable, so nothing in this reply can be relied on.
+        return await _submission_unknown(attempt, record, "UnusableReply", "the reply's action id could not be read")
 
     saved = True
     try:
@@ -1212,9 +1304,9 @@ async def run_script(
         # The action is running; losing the id would be worse than an unsaved record.
         logger.warning("Script run action id not saved to the ledger: %s", e)
         saved = False
+    attempt.details["action_id"] = action_id
     if reported_failed:
         # An action exists but XSIAM calls it failed. Keep the id and let the analyst look.
-        attempt.details["action_id"] = action_id
         return await _submission_unknown(
             attempt,
             record,
@@ -1222,20 +1314,19 @@ async def run_script(
             "XSIAM returned an action id and reported the action as failed",
             record_saved=saved,
         )
-    attempt.details["action_id"] = action_id
     started = reply.get("endpoints_count")
     started_count = started if isinstance(started, int) and not isinstance(started, bool) else None
-    await attempt.record("submitted", "success", endpoints_started=started_count, record_saved=saved)
+    audited = await _record_after_send(attempt, "success", endpoints_started=started_count, record_saved=saved)
     result: dict[str, Any] = {
         "success": True,
         "executed": True,
         "action_id": action_id,
         "endpoints_count": started_count,
-        "endpoints_requested": len(endpoints),
+        "endpoints_requested": len(record.endpoint_ids),
         "endpoints": request.endpoints,
-        "script": {"script_uid": script_uid, "name": view["name"]},
+        "script": {"script_uid": record.script_uid, "name": request.script["name"]},
         "approval_method": attempt.details.get("approval_method"),
-        "daily": _daily_usage(owner),
+        "daily": _daily_usage(record.owner),
         "record": {"saved": saved, "durable": _ledger_is_durable()},
         "next": f"Call {RESULT_TOOL} with this action_id for status. {UNTRUSTED_OUTPUT_NOTE}",
     }
@@ -1244,39 +1335,26 @@ async def run_script(
             "The run started but its record could not be saved to SCRIPT_RUN_STATE_DIR. Keep this action_id: "
             "after a gateway restart the run can only be found in the XSIAM Action Center."
         )
+    return _with_audit_warning(result, audited)
+
+
+async def _record_after_send(attempt: _Attempt, outcome: str, **extra: Any) -> bool:
+    """Emit the ``submitted`` event. A failure is logged and reported, never raised: the request has gone out."""
+    try:
+        await attempt.record("submitted", outcome, **extra)
+    except Exception as e:
+        logger.error("Script run audit event not emitted after submission: %s", type(e).__name__)
+        return False
+    return True
+
+
+def _with_audit_warning(result: dict[str, Any], audited: bool) -> dict[str, Any]:
+    if not audited:
+        result["audit_warning"] = "The audit event for this submission could not be emitted. Tell the operator."
     return result
 
 
-async def _submission_rejected(attempt: _Attempt, record: _RunRecord, error_type: str, detail: str) -> dict[str, Any]:
-    """XSIAM itself refused the submission. The record goes; the attempt stays counted."""
-    _discard_run(record)
-    await attempt.record("submitted", "rejected", error_type=error_type)
-    return {
-        "success": False,
-        "executed": False,
-        "error": f"XSIAM rejected the run ({detail}). Nothing was started. This attempt counts against the daily caps.",
-        "daily": _daily_usage(record.owner),
-    }
-
-
-async def _submission_unknown(
-    attempt: _Attempt,
-    record: _RunRecord,
-    error_type: str,
-    detail: str,
-    *,
-    record_saved: bool | None = None,
-) -> dict[str, Any]:
-    """The request went out and nothing proves it was refused. The record and the count stay.
-
-    Reporting this as not executed would invite a retry that runs the script twice.
-    """
-    await attempt.record(
-        "submitted",
-        "timeout" if error_type == "TimeoutError" else "unknown",
-        error_type=error_type,
-        record_saved=record_saved,
-    )
+def _unknown_result(record: _RunRecord, detail: str) -> dict[str, Any]:
     result: dict[str, Any] = {
         "success": False,
         "executed": "unknown",
@@ -1291,6 +1369,40 @@ async def _submission_unknown(
         result["action_id"] = record.action_id
         result["next"] = f"Call {RESULT_TOOL} with this action_id for status. {UNTRUSTED_OUTPUT_NOTE}"
     return result
+
+
+async def _submission_rejected(attempt: _Attempt, record: _RunRecord, error_type: str, detail: str) -> dict[str, Any]:
+    """XSIAM itself refused the submission. The record goes; the attempt stays counted."""
+    _discard_run(record)
+    audited = await _record_after_send(attempt, "rejected", error_type=error_type)
+    result = {
+        "success": False,
+        "executed": False,
+        "error": f"XSIAM rejected the run ({detail}). Nothing was started. This attempt counts against the daily caps.",
+        "daily": _daily_usage(record.owner),
+    }
+    return _with_audit_warning(result, audited)
+
+
+async def _submission_unknown(
+    attempt: _Attempt,
+    record: _RunRecord,
+    error_type: str,
+    detail: str,
+    *,
+    record_saved: bool | None = None,
+) -> dict[str, Any]:
+    """The request went out and nothing proves it was refused. The record and the count stay.
+
+    Reporting this as not executed would invite a retry that runs the script twice.
+    """
+    audited = await _record_after_send(
+        attempt,
+        "timeout" if error_type == "TimeoutError" else "unknown",
+        error_type=error_type,
+        record_saved=record_saved,
+    )
+    return _with_audit_warning(_unknown_result(record, detail), audited)
 
 
 async def _list_runs(attempt: _Attempt) -> dict[str, Any]:
@@ -1497,7 +1609,8 @@ def _refusal_details(attempt: _Attempt, request: _RunRequest, approvable: bool) 
     details: dict[str, Any] = {
         "script": {"script_uid": request.script["script_uid"], "name": request.script["name"]},
         "endpoint_count": len(request.endpoints),
-        "endpoints": request.endpoints,
+        # ``display`` is the line the analyst should be shown: the same text the approval prompt uses.
+        "endpoints": [{**endpoint, "display": _display_endpoint(endpoint)} for endpoint in request.endpoints],
         "parameters": _display_parameters(request.parameters),
         "timeout_seconds": request.timeout_seconds,
         "stated_reason": request.reason,
@@ -1508,10 +1621,11 @@ def _refusal_details(attempt: _Attempt, request: _RunRequest, approvable: bool) 
             "elicitation": _client_supports_elicitation(attempt.ctx),
             "expires_in_seconds": PENDING_APPROVAL_TTL_SECONDS,
             "instruction": (
-                "Show the analyst the script and its uid, every endpoint by name and id, every parameter value, and "
-                "the reason. Only if the analyst types an approval, call the same tool again with exactly the same "
-                "arguments and the approval argument set to the analyst's own words. Changing any argument needs a "
-                "new approval. Never write an approval yourself."
+                "Show the analyst the script and its uid, every endpoint (its display line), every parameter line "
+                "in full, and the reason. Do not shorten or summarise them. Only if the analyst types an approval, "
+                "call the same tool again with exactly the same arguments, the reason included, and the approval "
+                "argument set to the analyst's own words. Changing any argument needs a new approval. Never write "
+                "an approval yourself."
             ),
         }
     else:
@@ -1548,54 +1662,69 @@ async def _elicit(ctx: Any, message: str) -> str:
 
 
 def _elicitation_message(request: _RunRequest) -> str:
-    shown = request.endpoints[:ELICITATION_ENDPOINT_IDS]
-    more = len(request.endpoints) - len(shown)
+    """Everything the analyst approves, in full: every endpoint and every parameter value. Nothing is shortened."""
     parameters = _display_parameters(request.parameters)
     lines = [
         "The agent asks to run a script from the XSIAM agent script library on endpoints.",
-        f"Script: {request.script['name'] or 'unnamed'} (uid {request.script['script_uid']})",
+        f"Script: {_visible(request.script['name'] or 'unnamed')} (uid {request.script['script_uid']})",
         f"Endpoints ({len(request.endpoints)}):",
-        *(f"- {_display_endpoint(endpoint)}" for endpoint in shown),
-        *([f"- and {more} more"] if more else []),
+        *(f"- {_display_endpoint(endpoint)}" for endpoint in request.endpoints),
         "Parameters:" if parameters else "Parameters: none",
         *(f"- {parameter}" for parameter in parameters),
         f"Timeout: {request.timeout_seconds} seconds",
-        f"Reason given: {request.reason}",
+        f'Reason given: "{_visible(request.reason)}"',
         "Approve this run?",
     ]
     return "\n".join(lines)
 
 
 def _display_endpoint(endpoint: dict[str, Any]) -> str:
-    name = _display_text(endpoint.get("endpoint_name") or "unnamed")
-    status = _display_text(endpoint.get("endpoint_status") or "status unknown")
+    name = _visible(endpoint.get("endpoint_name") or "unnamed")
+    status = _visible(endpoint.get("endpoint_status") or "status unknown")
     return f"{name} ({endpoint['endpoint_id']}), {status}"
 
 
 def _display_parameters(parameters: dict[str, str | int | float | bool]) -> list[str]:
-    """One ``name = value`` line per parameter for the analyst. Never used for audit."""
+    """One ``name = value`` line per parameter for the analyst, with the whole value. Never used for audit.
+
+    Strings are quoted, so the text ``5`` and the number 5 differ, and written with
+    :func:`_visible`, so two different values never look the same.
+    """
     lines = []
     for name in sorted(parameters):
         value = parameters[name]
         if isinstance(value, bool):
             lines.append(f"{name} = {'true' if value else 'false'}")
         elif isinstance(value, str):
-            shown = _display_text(value)
-            notes = []
-            if len(shown) > PARAMETER_DISPLAY_CHARS:
-                shown = shown[:PARAMETER_DISPLAY_CHARS]
-                notes.append(f"truncated, {len(value)} characters in full")
-            if _DISPLAY_UNSAFE.search(value):
-                notes.append("control characters removed")
-            lines.append(f"{name} = {shown}" + (f" ... ({'; '.join(notes)})" if notes else ""))
+            lines.append(f'{name} = "{_visible(value)}"')
         else:
             lines.append(f"{name} = {value!r}")
     return lines
 
 
-def _display_text(value: str) -> str:
-    # One line, no control or direction-override characters: a value cannot imitate another field of the prompt.
-    return _DISPLAY_UNSAFE.sub("", value)
+def _visible(value: str) -> str:
+    """Write text on one line with nothing hidden and nothing removed.
+
+    A backslash and a double quote are escaped, and every control, format (direction
+    override, zero-width), separator, surrogate, private-use or unassigned character, and
+    every space other than U+0020, becomes ``\\n``, ``\\r``, ``\\t`` or a ``\\uXXXX`` escape. The mapping is one to
+    one, so different text always displays differently and no value can start a new line
+    or imitate another field of the prompt.
+    """
+    shown = []
+    for char in value:
+        if char == "\\":
+            shown.append("\\\\")
+        elif char == '"':
+            shown.append('\\"')
+        elif char in _SHORT_ESCAPES:
+            shown.append(_SHORT_ESCAPES[char])
+        elif char != " " and unicodedata.category(char) in _ESCAPED_CATEGORIES:
+            code = ord(char)
+            shown.append(f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}")
+        else:
+            shown.append(char)
+    return "".join(shown)
 
 
 # --- Results ---
@@ -1653,13 +1782,18 @@ def bound_results(
         }
         returned: dict[str, Any] = {}
         extra_keys = [key for key in item if key not in _RESULT_FIELDS]
+        omitted = max(len(extra_keys) - MAX_RETURNED_VALUES, 0)
         for key in extra_keys[:MAX_RETURNED_VALUES]:
             name = _short_text(key, 64)
-            if name:
-                returned[name] = budget.take_value(item[key])
-        if len(extra_keys) > MAX_RETURNED_VALUES:
+            taken = budget.take_entry(name, item[key]) if name and name not in returned else _OMITTED
+            if taken is _OMITTED:
+                omitted += 1
+            else:
+                returned[name] = taken
+        if omitted:
             budget.truncated = True
         entry["returned_values"] = returned
+        entry["returned_values_omitted"] = omitted
         entry["output_bytes"] = budget.used
         entry["output_truncated"] = budget.truncated
         truncated_endpoints += 1 if budget.truncated else 0
@@ -1697,23 +1831,34 @@ class _Budget:
         self.used += len(text.encode("utf-8"))
         return text
 
-    def take_value(self, value: Any) -> Any:
-        if value is None or isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            cost = len(json.dumps(value))
-            if self.used + cost > self.limit:
+    def take_entry(self, name: str, value: Any) -> Any:
+        """Charge one returned value and its key name. Returns ``_OMITTED`` when it does not fit.
+
+        Every value costs its serialised size, booleans, numbers and nulls included, so
+        ``used`` is what is actually returned. A string is cut to the room left; anything
+        else is returned whole or not at all.
+        """
+        key_cost = len(name.encode("utf-8"))
+        room = self.limit - self.used - key_cost
+        if room < 0:
+            self.truncated = True
+            return _OMITTED
+        if not isinstance(value, str):
+            encoded = json.dumps(value, default=str)
+            structured = isinstance(value, (dict, list))
+            if len(encoded.encode()) <= room and not (structured and _CONTROL_CHARS.search(encoded)):
+                self.used += key_cost + len(encoded.encode())
+                return value
+            if not structured:
                 self.truncated = True
-                return None
-            self.used += cost
-            return value
-        if isinstance(value, str):
-            return self.take_text(value)
-        encoded = json.dumps(value, default=str)
-        if self.used + len(encoded.encode()) <= self.limit and not _CONTROL_CHARS.search(encoded):
-            self.used += len(encoded.encode())
-            return value
-        return self.take_text(encoded)
+                return _OMITTED
+            # A structure that does not fit is returned as the start of its JSON text.
+            value = encoded
+        if value and room == 0:
+            self.truncated = True
+            return _OMITTED
+        self.used += key_cost
+        return self.take_text(value)
 
 
 # --- Retrieved files ---

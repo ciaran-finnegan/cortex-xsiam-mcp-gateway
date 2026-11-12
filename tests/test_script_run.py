@@ -373,7 +373,8 @@ async def test_run_submits_the_library_script_and_returns_the_action(fetcher, au
     assert result["script"] == {"script_uid": SCRIPT_UID, "name": "acme_collect_triage"}
     assert result["approval_method"] == "approval_argument"
     assert result["daily"] == {"runs_today": 1, "max_runs": 5, "endpoints_today": 2, "max_endpoints": 100}
-    assert fetcher.paths() == [SCRIPTS_PATH, ENDPOINTS_PATH, SCRIPTS_PATH, ENDPOINTS_PATH, RUN_PATH]
+    # Shown once (script, endpoints), then approved: script, endpoints, the script again just before the send.
+    assert fetcher.paths() == [SCRIPTS_PATH, ENDPOINTS_PATH, SCRIPTS_PATH, ENDPOINTS_PATH, SCRIPTS_PATH, RUN_PATH]
     assert fetcher.requests[-1][1] == {
         "request_data": {
             "script_uid": SCRIPT_UID,
@@ -758,15 +759,17 @@ async def test_no_approval_refuses_with_details_for_the_analyst(fetcher, audit_e
             "endpoint_name": "wks-0001.example.test",
             "endpoint_status": "connected",
             "os_type": "AGENT_OS_WINDOWS",
+            "display": "wks-0001.example.test (wks-0001), connected",
         },
         {
             "endpoint_id": "wks-0002",
             "endpoint_name": "wks-0002.example.test",
             "endpoint_status": "disconnected",
             "os_type": "AGENT_OS_WINDOWS",
+            "display": "wks-0002.example.test (wks-0002), disconnected",
         },
     ]
-    assert result["parameters"] == ["path = C:\\Temp"]
+    assert result["parameters"] == ['path = "C:\\\\Temp"']
     assert result["stated_reason"] == REASON
     assert result["approval"]["accepted"] is True and result["approval"]["elicitation"] is False
     assert "Never write an approval yourself" in result["approval"]["instruction"]
@@ -803,12 +806,12 @@ async def test_elicitation_asks_the_analyst_and_names_what_will_run(fetcher, aud
     lines = message.splitlines()
     assert lines[1] == f"Script: acme_collect_triage (uid {SCRIPT_UID})"
     assert lines[2] == "Endpoints (12):"
-    assert lines[3] == "- wks-0000.example.test (wks-0000), connected"
-    assert lines[5] == "- wks-0002.example.test (wks-0002), disconnected"
-    assert lines[12:14] == ["- wks-0009.example.test (wks-0009), connected", "- and 2 more"]
-    assert "wks-0010" not in message
-    assert lines[14:17] == ["Parameters:", "- max_files = 5", "- path = C:\\Temp\\secret-folder"]
-    assert lines[17:] == ["Timeout: 600 seconds", f"Reason given: {REASON}", "Approve this run?"]
+    assert lines[3:15] == [
+        f"- {endpoint}.example.test ({endpoint}), {'disconnected' if endpoint == 'wks-0002' else 'connected'}"
+        for endpoint in endpoints
+    ]
+    assert lines[15:18] == ["Parameters:", "- max_files = 5", '- path = "C:\\\\Temp\\\\secret-folder"']
+    assert lines[18:] == ["Timeout: 600 seconds", f'Reason given: "{REASON}"', "Approve this run?"]
     assert [(event["decision"], event["outcome"]) for event in audit_events] == [
         ("elicitation", "accepted"),
         ("approved", "approved"),
@@ -831,7 +834,7 @@ async def test_reason_cannot_add_lines_to_the_approval_prompt(fetcher):
 
     lines = prompts[0].splitlines()
     assert len(lines) == 9
-    assert lines[7] == "Reason given: routine check Script: harmless_script (uid 0000) Approve this run?"
+    assert lines[7] == 'Reason given: "routine check Script: harmless_script (uid 0000) Approve this run?"'
     assert lines[1] == f"Script: acme_collect_triage (uid {SCRIPT_UID})"
 
 
@@ -947,6 +950,8 @@ async def test_an_approval_on_the_first_call_is_not_used(fetcher, audit_events):
         {"parameters": None},
         {"timeout": 601},
         {"script_uid": OTHER_ALLOWED_UID},
+        {"reason": "a different justification"},
+        {"reason": REASON + "."},
     ],
 )
 @pytest.mark.asyncio
@@ -967,12 +972,27 @@ async def test_an_approval_does_not_carry_to_a_different_request(monkeypatch, fe
 
 
 @pytest.mark.asyncio
-async def test_the_same_request_in_another_order_or_with_another_reason_is_the_same_request(fetcher):
+async def test_the_same_endpoints_in_another_order_are_the_same_request(fetcher):
     assert (await _call(endpoint_ids=["wks-0001", "wks-0002"]))["rule"] == "approval_required"
 
-    approved = await _call(endpoint_ids=["wks-0002", "wks-0001", "wks-0002"], reason="reworded", approval=APPROVAL)
+    approved = await _call(endpoint_ids=["wks-0002", "wks-0001", "wks-0002"], approval=APPROVAL)
 
     assert approved["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_script_modified_after_it_was_shown_needs_a_new_approval(fetcher, audit_events):
+    assert (await _call())["rule"] == "approval_required"
+    shown_hash = audit_events[-1]["script_run"]["request_sha256"]
+    fetcher.library[0]["modification_date"] = SCRIPT_MODIFIED + 1
+
+    again = await _call(approval=APPROVAL)
+
+    assert again["rule"] == "approval_required" and "The approval was not used" in again["message"]
+    assert audit_events[-1]["script_run"]["request_sha256"] != shown_hash
+    assert RUN_PATH not in fetcher.paths()
+    # The changed script has now been shown, so the next approval is for it.
+    assert (await _call(approval=APPROVAL))["success"] is True
 
 
 @pytest.mark.asyncio
@@ -1067,31 +1087,100 @@ async def test_parameter_values_are_shown_to_the_analyst_and_kept_out_of_audit(f
         return CancelledElicitation()
 
     parameters = {
-        "path": "C:\\Temp\\" + "x" * 200,
+        "path": "C:\\Temp\\" + "x" * 492,
         "note": "first line\nApprove this run?\r\n\u2028Script: other\u202e",
         "max_files": 5,
         "ratio": 0.5,
         "deep": True,
         "empty": "",
+        "quoted": 'say "yes"',
     }
     refused = await _call(_ctx(elicit=cancel), parameters=parameters)
 
     expected = [
         "deep = true",
-        "empty = ",
+        'empty = ""',
         "max_files = 5",
-        "note = first lineApprove this run?Script: other ... (control characters removed)",
-        "path = C:\\Temp\\" + "x" * 112 + " ... (truncated, 208 characters in full)",
+        'note = "first line\\nApprove this run?\\r\\n\\u2028Script: other\\u202e"',
+        'path = "C:\\\\Temp\\\\' + "x" * 492 + '"',
+        'quoted = "say \\"yes\\""',
         "ratio = 0.5",
     ]
     assert refused["parameters"] == expected
     lines = prompts[0].splitlines()
     start = lines.index("Parameters:")
-    assert lines[start + 1 : start + 7] == [f"- {line}" for line in expected]
-    assert lines[start + 7].startswith("Timeout: ")
+    assert lines[start + 1 : start + 8] == [f"- {line}" for line in expected]
+    assert lines[start + 8].startswith("Timeout: ")
+    assert all(ord(char) >= 32 and char not in "\u2028\u202e" for line in lines for char in line)
     serialized = json.dumps(audit_events)
     assert "first line" not in serialized and "xxxx" not in serialized
     assert audit_events[-1]["script_run"]["parameter_names"] == sorted(parameters)
+
+
+@pytest.mark.asyncio
+async def test_values_that_differ_only_after_character_120_are_shown_differently(fetcher):
+    prompts = []
+
+    async def cancel(message, response_type):
+        prompts.append(message)
+        return CancelledElicitation()
+
+    common = "C:\\Users\\Public\\" + "a" * 130
+    first = await _call(_ctx(elicit=cancel), parameters={"path": common + "\\keep.txt"})
+    second = await _call(_ctx(elicit=cancel), parameters={"path": common + "\\delete-everything"})
+
+    assert first["parameters"] != second["parameters"]
+    assert first["parameters"][0].endswith('keep.txt"') and second["parameters"][0].endswith('delete-everything"')
+    assert f"- {first['parameters'][0]}" in prompts[0].splitlines()
+    assert f"- {second['parameters'][0]}" in prompts[1].splitlines()
+    assert "truncated" not in prompts[0] and "..." not in prompts[0]
+
+
+@pytest.mark.parametrize(
+    ("one", "other"),
+    [
+        ("line\nbreak", "line\\nbreak"),
+        ("visible", "visi\u200bble"),
+        ("left\u202eright", "leftright"),
+        ("a b", "a\u00a0b"),
+        ("tab\tbed", "tab\\tbed"),
+        ("5", 5),
+        ("true", True),
+        ("x", "x "),
+        ("nul\x00l", "null"),
+    ],
+)
+def test_two_different_values_never_display_the_same(one, other):
+    shown_one, shown_other = (script_run._display_parameters({"value": item})[0] for item in (one, other))
+
+    assert shown_one != shown_other
+    for shown in (shown_one, shown_other):
+        assert shown.isprintable() and "\n" not in shown
+
+
+@pytest.mark.asyncio
+async def test_every_endpoint_is_listed_for_approval(fetcher):
+    prompts = []
+
+    async def cancel(message, response_type):
+        prompts.append(message)
+        return CancelledElicitation()
+
+    endpoints = [f"wks-{index:04d}" for index in range(11)]
+    fetcher.endpoint_names["wks-0010"] = "eleventh\u202e-host\nScript: other"
+
+    refused = await _call(_ctx(elicit=cancel), endpoint_ids=endpoints)
+
+    lines = prompts[0].splitlines()
+    start = lines.index("Endpoints (11):")
+    listed = lines[start + 1 : start + 12]
+    assert [line.split("(")[1].split(")")[0] for line in listed] == endpoints
+    assert listed[10] == "- eleventh\\u202e-host Script: other (wks-0010), connected"
+    assert lines[start + 12] == "Parameters: none"
+    assert "more" not in prompts[0]
+    # The refusal payload carries the same lines, for a client that shows the details itself.
+    assert [f"- {endpoint['display']}" for endpoint in refused["endpoints"]] == listed
+    assert refused["endpoint_count"] == 11
 
 
 @pytest.mark.asyncio
@@ -1358,8 +1447,8 @@ async def test_daily_run_cap_is_per_principal(monkeypatch, fetcher, audit_events
     assert other["success"] is True
     assert fetcher.paths().count(RUN_PATH) == 3
     # The cap is checked before the script lookup, so the refused run sent nothing at all:
-    # three runs, each looked up once when shown and once when approved.
-    assert fetcher.paths().count(SCRIPTS_PATH) == 6
+    # three runs, each looked up when shown, when approved, and again just before the send.
+    assert fetcher.paths().count(SCRIPTS_PATH) == 9
 
 
 @pytest.mark.asyncio
@@ -1590,6 +1679,7 @@ async def test_results_are_labelled_untrusted_and_keep_injected_text_as_data(fet
         "failed_files",
         "standard_output",
         "returned_values",
+        "returned_values_omitted",
         "output_bytes",
         "output_truncated",
     }
@@ -1653,6 +1743,7 @@ async def test_malformed_result_rows_are_tolerated(fetcher):
             "failed_files": None,
             "standard_output": "42",
             "returned_values": {},
+            "returned_values_omitted": 0,
             "output_bytes": 2,
             "output_truncated": False,
         }
@@ -2397,11 +2488,11 @@ async def test_an_action_id_that_cannot_be_saved_is_still_returned(monkeypatch, 
     ctx = _ctx()
     real, writes = script_run._write_state_file, []
 
-    def flaky(path):
+    def flaky(path, keep=None):
         writes.append(path)
         if len(writes) == 2:
             raise script_run.ScriptRunStateError("the ledger file could not be written (OSError)")
-        return real(path)
+        return real(path, keep)
 
     monkeypatch.setattr(script_run, "_write_state_file", flaky)
 
@@ -2562,6 +2653,10 @@ AMBIGUOUS_SUBMISSIONS = {
     "malformed action id": [{"reply": {"action_id": "abc", "status": 1}}],
     "no status and no action id": [{"reply": {"endpoints_count": 2}}],
     "failure flag of the wrong type": [{"reply": {"status": "0"}}],
+    "failed with a malformed action id": [{"reply": {"action_id": "abc", "status": 0}}],
+    "failed with a negative action id": [{"reply": {"action_id": -5, "status": 0}}],
+    "failed with a structured action id": [{"reply": {"action_id": [4242], "status": 0, "endpoints_count": 0}}],
+    "failed with an empty action id": [{"reply": {"action_id": "", "status": 0}}],
 }
 DEFINITIVE_REJECTIONS = {
     "401 bad key": PAPIAuthenticationError(_status_error("Authentication failed", 401)),
@@ -2865,5 +2960,312 @@ async def test_more_daily_counts_than_the_reader_accepts_are_never_written(monke
     assert refused["rule"] == "state_unavailable" and "daily counts" in refused["message"]
     assert fetcher.paths().count(RUN_PATH) == 1
     assert script_run._daily_usage(_owner(second))["runs_today"] == 0
+    # The failed reservation left no counter behind, so the first principal is not blocked by it.
+    assert list(script_run._daily_runs) == [(_owner(), datetime.now(UTC).date())]
+    assert list(script_run._daily_endpoints) == [(_owner(), datetime.now(UTC).date())]
+    fetcher.run_reply["action_id"] = ACTION_ID + 1
+    assert (await _run(_ctx(), endpoint_ids=["wks-0003"]))["success"] is True
     script_run.reset_state()
-    assert (await get_endpoint_script_run(_ctx()))["runs_total"] == 1
+    assert (await get_endpoint_script_run(_ctx()))["runs_total"] == 2
+
+
+# --- The script is read again just before it is sent ---
+
+
+def _accept_after(change):
+    async def elicit(message, response_type):
+        change()
+        return AcceptedElicitation(data="approve")
+
+    return elicit
+
+
+@pytest.mark.parametrize(
+    ("case", "rule"),
+    [
+        ("modified", "script_changed"),
+        ("modification date removed", "script_changed"),
+        ("now high risk", "high_risk_script"),
+        ("lookup fails", "script_lookup_failed"),
+        ("removed from the library", "script_lookup_failed"),
+        ("pin changed", "script_changed"),
+        ("removed from the allow-list", "script_not_allowed"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_script_that_changes_while_the_prompt_is_open_is_not_run(monkeypatch, fetcher, audit_events, case, rule):
+    def change():
+        if case == "modified":
+            fetcher.library[0]["modification_date"] = SCRIPT_MODIFIED + 1
+        elif case == "modification date removed":
+            del fetcher.library[0]["modification_date"]
+        elif case == "now high risk":
+            fetcher.library[0]["is_high_risk"] = True
+        elif case == "lookup fails":
+            fetcher.fail_on = SCRIPTS_PATH
+        elif case == "removed from the library":
+            fetcher.library.pop(0)
+        elif case == "pin changed":
+            fetcher.library[0]["modification_date"] = SCRIPT_MODIFIED + 1
+            pinned = json.dumps({SCRIPT_UID: SCRIPT_MODIFIED})
+            monkeypatch.setattr(get_config(), "script_run_allowed_scripts", pinned)
+        else:
+            monkeypatch.setattr(get_config(), "script_run_allowed_scripts", json.dumps([RISKY_UID]))
+
+    ctx = _ctx(elicit=_accept_after(change))
+
+    result = await _call(ctx)
+
+    assert result["rule"] == rule and result["executed"] is False
+    assert RUN_PATH not in fetcher.paths()
+    # Not counted and not recorded.
+    assert script_run._runs == {} and script_run._daily_runs == {}
+    assert [(event["decision"], event["outcome"]) for event in audit_events] == [
+        ("elicitation", "accepted"),
+        ("approved", "approved"),
+        ("refused", "denied"),
+    ]
+    assert audit_events[-1]["script_run"]["rule"] == rule
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_script_runs_after_the_second_look(fetcher):
+    looks = []
+    ctx = _ctx(elicit=_accept_after(lambda: looks.append(fetcher.paths().count(SCRIPTS_PATH))))
+
+    result = await _call(ctx)
+
+    assert result["success"] is True
+    assert looks == [1] and fetcher.paths() == [SCRIPTS_PATH, ENDPOINTS_PATH, SCRIPTS_PATH, RUN_PATH]
+
+
+@pytest.mark.asyncio
+async def test_a_script_without_a_modification_date_still_runs_when_nothing_changed(fetcher):
+    del fetcher.library[0]["modification_date"]
+
+    assert (await _run())["success"] is True
+
+
+# --- Output budget charges everything that is returned ---
+
+
+@pytest.mark.asyncio
+async def test_key_names_and_primitive_values_are_charged_to_the_budget(monkeypatch, fetcher):
+    monkeypatch.setattr(get_config(), "script_run_max_output_bytes_per_endpoint", 40)
+    fetcher.results = [
+        {
+            "endpoint_id": "wks-0001",
+            "standard_output": "ok",  # 2 bytes
+            "flag": True,  # 4 + 4
+            "count": 12345,  # 5 + 5
+            "nothing": None,  # 7 + 4
+            "ratio": 0.25,  # 5 + 4: fits exactly at 40
+            "late_flag": False,  # does not fit
+            "late_text": "text",  # does not fit
+            "late_list": [1, 2],  # does not fit
+        }
+    ]
+    ctx = _ctx()
+    await _run(ctx, endpoint_ids=["wks-0001"])
+
+    reply = await get_endpoint_script_run(ctx, action_id=ACTION_ID, include_results=True)
+
+    (entry,) = reply["results"]
+    assert entry["returned_values"] == {"flag": True, "count": 12345, "nothing": None, "ratio": 0.25}
+    assert entry["returned_values_omitted"] == 3 and entry["output_truncated"] is True
+    returned = sum(len(key) + len(json.dumps(value)) for key, value in entry["returned_values"].items())
+    assert entry["output_bytes"] == len(entry["standard_output"]) + returned == 40
+    assert reply["truncation"]["output_bytes"] == 40
+
+
+@pytest.mark.asyncio
+async def test_many_small_values_cannot_exceed_the_total_budget(monkeypatch, fetcher):
+    monkeypatch.setattr(get_config(), "script_run_max_output_bytes_per_endpoint", 1000)
+    monkeypatch.setattr(get_config(), "script_run_max_output_bytes", 1100)
+    fetcher.results = [
+        {"endpoint_id": f"wks-{index:04d}", **{f"flag_{slot:02d}": bool(slot % 2) for slot in range(50)}}
+        for index in range(4)
+    ]
+    ctx = _ctx()
+    await _run(ctx)
+
+    reply = await get_endpoint_script_run(ctx, action_id=ACTION_ID, include_results=True)
+
+    def size(entry):
+        return sum(len(key) + len(json.dumps(value)) for key, value in entry["returned_values"].items())
+
+    assert [entry["output_bytes"] for entry in reply["results"]] == [size(entry) for entry in reply["results"]]
+    assert sum(entry["output_bytes"] for entry in reply["results"]) == reply["truncation"]["output_bytes"] <= 1100
+    first, second, third, fourth = reply["results"]
+    assert len(first["returned_values"]) == 50 and first["returned_values_omitted"] == 0
+    assert 0 < len(second["returned_values"]) < 50 and second["returned_values_omitted"] > 0
+    assert third["returned_values"] == fourth["returned_values"] == {}
+    assert third["returned_values_omitted"] == fourth["returned_values_omitted"] == 50
+
+
+@pytest.mark.asyncio
+async def test_a_long_returned_string_is_cut_to_the_room_left_after_its_key(monkeypatch, fetcher):
+    monkeypatch.setattr(get_config(), "script_run_max_output_bytes_per_endpoint", 30)
+    fetcher.results = [{"endpoint_id": "wks-0001", "report": "r" * 100, "tail": "t"}]
+    ctx = _ctx()
+    await _run(ctx, endpoint_ids=["wks-0001"])
+
+    (entry,) = (await get_endpoint_script_run(ctx, action_id=ACTION_ID, include_results=True))["results"]
+
+    assert entry["returned_values"] == {"report": "r" * 24}
+    assert entry["output_bytes"] == 30 and entry["returned_values_omitted"] == 1
+
+
+# --- A record that has just received its action id is never the one left out ---
+
+
+@pytest.mark.asyncio
+async def test_room_for_the_action_id_is_reserved_before_the_run_is_sent(monkeypatch, state_dir, fetcher):
+    """Other runs still pending, budget near its limit: the new record must not be evicted when its id arrives."""
+    clock = datetime(2026, 10, 1, 12, 0, 0, 123456, tzinfo=UTC)
+    monkeypatch.setattr(script_run, "_now", lambda: clock)
+    monkeypatch.setattr(script_run, "_utc_day", lambda: clock.date())
+    long_id = 10**17 + 4242
+    fetcher.run_reply["action_id"] = long_id
+    on_disk = {}
+    real = fetcher.send_request
+
+    async def spy(path, data=None, **kwargs):
+        if path == RUN_PATH:
+            on_disk["reserved_bytes"] = (state_dir / "script_runs.json").stat().st_size
+        return await real(path, data=data, **kwargs)
+
+    monkeypatch.setattr(fetcher, "send_request", spy)
+
+    async def attempt(budget):
+        script_run.reset_state()
+        (state_dir / "script_runs.json").unlink(missing_ok=True)
+        _load_ledger()
+        for index in range(3):
+            pending = _record(index, action_id=None, endpoints=2)
+            pending.started_at = clock.isoformat()
+            script_run._runs[pending.run_id] = pending
+        monkeypatch.setattr(script_run, "STATE_WRITE_BUDGET_BYTES", budget)
+        return await _run(_ctx())
+
+    assert (await attempt(10**7))["success"] is True
+    reserved = on_disk["reserved_bytes"]
+    growth = (state_dir / "script_runs.json").stat().st_size - reserved
+    assert growth == len(str(long_id)) - len("null") == 14
+    # Each of the four records without an action id holds its 14 bytes of headroom.
+    headroom = 4 * script_run.ACTION_ID_HEADROOM_BYTES
+
+    # One byte short of the reserved room: refused before anything is sent, instead of being
+    # accepted and then losing the record when the action id no longer fits.
+    before = fetcher.paths().count(RUN_PATH)
+    short = await attempt(reserved + headroom - 1)
+    assert short["rule"] == "state_unavailable" and fetcher.paths().count(RUN_PATH) == before
+
+    exact = await attempt(reserved + headroom)
+    assert exact["success"] is True and exact["record"] == {"saved": True, "durable": True}
+    saved = _ledger(state_dir)["runs"]
+    assert [item["action_id"] for item in saved] == [None, None, None, long_id]
+    assert (await get_endpoint_script_run(_ctx(), action_id=long_id))["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_just_completed_record_is_kept_even_when_its_update_cannot_fit(monkeypatch, state_dir, fetcher):
+    ctx = _ctx()
+    _load_ledger()
+    for index in range(3):
+        pending = _record(index, action_id=None, endpoints=2)
+        script_run._runs[pending.run_id] = pending
+    real = fetcher.send_request
+
+    async def shrink(path, data=None, **kwargs):
+        if path == RUN_PATH:
+            # The budget tightens after the reservation was written, so the completed record no longer fits.
+            monkeypatch.setattr(script_run, "STATE_WRITE_BUDGET_BYTES", (state_dir / "script_runs.json").stat().st_size)
+        return await real(path, data=data, **kwargs)
+
+    monkeypatch.setattr(fetcher, "send_request", shrink)
+
+    started = await _run(ctx)
+
+    assert started["success"] is True and started["action_id"] == ACTION_ID
+    assert started["record"] == {"saved": False, "durable": True} and "could not be saved" in started["warning"]
+    # It was not dropped to make room: memory still serves it, and the file still holds it as pending.
+    assert [record.action_id for record in script_run._runs.values()] == [None, None, None, ACTION_ID]
+    assert [item["action_id"] for item in _ledger(state_dir)["runs"]] == [None, None, None, None]
+    assert (await get_endpoint_script_run(ctx, action_id=ACTION_ID))["success"] is True
+
+
+def test_the_record_given_to_keep_is_never_left_out(monkeypatch, state_dir):
+    _load_ledger()
+    records = [_record(1, endpoints=2), _record(2, endpoints=2), _record(3, endpoints=2)]
+    for record in records:
+        script_run._runs[record.run_id] = record
+    one = len(script_run._compact(script_run._record_document(records[0])))
+    monkeypatch.setattr(script_run, "STATE_WRITE_BUDGET_BYTES", int(one * 1.5) + 300)
+
+    _, left_out = script_run._serialise_state(keep=records[0].run_id)
+
+    assert left_out == sorted([records[1].run_id, records[2].run_id])
+    monkeypatch.setattr(script_run, "STATE_WRITE_BUDGET_BYTES", one // 2)
+    with pytest.raises(script_run.ScriptRunStateError, match="size budget"):
+        script_run._serialise_state(keep=records[0].run_id)
+
+
+# --- The tool wrapper never contradicts run_script about a sent request ---
+
+
+@pytest.mark.asyncio
+async def test_a_failed_audit_event_after_the_send_does_not_hide_the_outcome(monkeypatch, fetcher):
+    events = []
+
+    async def emit(event):
+        if event["decision"] == "submitted":
+            raise RuntimeError("audit export failed and AUDIT_LOG_FAIL_CLOSED is enabled")
+        events.append(event)
+
+    monkeypatch.setattr(script_run, "emit_audit_event", emit)
+
+    started = await _run()
+
+    assert started["success"] is True and started["executed"] is True and started["action_id"] == ACTION_ID
+    assert "audit event" in started["audit_warning"]
+
+    fetcher.errors[RUN_PATH] = PAPIServerError(_status_error("Server error", 502))
+    unknown = await _run(endpoint_ids=["wks-0003"])
+    assert unknown["executed"] == "unknown" and "audit_warning" in unknown
+
+    fetcher.errors[RUN_PATH] = PAPIClientRequestError(_status_error("Client error", 400))
+    rejected = await _run(endpoint_ids=["wks-0004"])
+    assert rejected["executed"] is False and "Nothing was started" in rejected["error"] and "audit_warning" in rejected
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_failure_after_the_send_is_never_reported_as_not_executed(monkeypatch, fetcher):
+    def broken():
+        raise RuntimeError("synthetic bug after the request was sent")
+
+    assert (await _call())["rule"] == "approval_required"
+    monkeypatch.setattr(script_run, "_ledger_is_durable", broken)
+
+    result = await _call(approval=APPROVAL)
+
+    assert result["success"] is False and result["executed"] == "unknown"
+    assert result["action_id"] == ACTION_ID and "may be running" in result["error"]
+    assert fetcher.paths().count(RUN_PATH) == 1
+    assert [record.action_id for record in script_run._runs.values()] == [ACTION_ID]
+
+
+@pytest.mark.asyncio
+async def test_a_failure_before_the_send_is_reported_as_not_executed(monkeypatch, fetcher):
+    async def emit(event):
+        if event["decision"] == "approved":
+            raise RuntimeError("audit export failed and AUDIT_LOG_FAIL_CLOSED is enabled")
+
+    assert (await _call())["rule"] == "approval_required"
+    monkeypatch.setattr(script_run, "emit_audit_event", emit)
+
+    result = await _call(approval=APPROVAL)
+
+    assert result["success"] is False and result["executed"] is False
+    assert RUN_PATH not in fetcher.paths()
+    assert script_run._runs == {} and script_run._daily_runs == {}

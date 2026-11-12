@@ -105,6 +105,8 @@ async def run_endpoint_script(
         logger.info("Endpoint script run refused: %s", e.payload["rule"])
         return e.payload
     except Exception as e:
+        # run_script never raises once its request has been sent: from then on it returns the outcome
+        # itself, as executed, rejected or unknown. So anything caught here failed before the send.
         logger.info("Endpoint script run failed: %s", type(e).__name__)
         return {"success": False, "executed": False, "error": f"Endpoint script run failed: {_error_text(e)}"}
 
