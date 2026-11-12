@@ -229,8 +229,12 @@ field compared with itself, with another field or with a function result earns
 nothing, and a host list may name at most 20 values. Every pipeline that reads a
 heavy dataset needs its own filter, so a filter on one side of a join does not
 narrow the other, and a heavy dataset added by `union <name>` is never narrowed.
-The narrowing credits take points off the window only, so a narrowed query never
-scores below its tier.
+The filter must also come before any stage that aggregates, joins, sorts, limits
+or otherwise reshapes the rows, and before an `alter` or `fields` stage that
+assigns the field, so it is the dataset's own field being filtered. A `not`
+that encloses the comparison at any depth cancels the credit. The narrowing
+credits take points off the window only, so a narrowed query never scores below
+its tier.
 
 The dataset tier is the first of: an exact dataset name in
 `COST_GUARD_DATASET_TIERS`; the authored catalogue `volume` when the catalogue

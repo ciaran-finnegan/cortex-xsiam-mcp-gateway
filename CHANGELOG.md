@@ -154,7 +154,10 @@ This project follows a lightweight changelog format until stable releases begin.
   compared with itself, another field or a function result earns nothing; a
   host list is capped at 20 values and a partition list at two), and every
   pipeline that reads a heavy dataset must carry its own filter, so a filter on
-  one side of a join no longer narrows the other side.
+  one side of a join no longer narrows the other side. The filter must run on
+  the dataset's own rows and fields: one that follows an aggregation, a join, a
+  sort, a limit or a reassignment of the field earns nothing, and neither does
+  a comparison under an enclosing `not`.
 - Cost guard: an exact dataset name in `COST_GUARD_DATASET_TIERS` now pins the
   tier ahead of the catalogue volume, as the catalogue comment always said it
   would; globs stay a fallback. The default map pins the firewall traffic, URL
