@@ -3,10 +3,12 @@ from dataclasses import dataclass
 
 from config.config import get_config
 from entities.MCPContext import MCPContext
-from usecase.engagement import hidden_tools_for_mode
+from usecase.engagement import SCRIPT_RUN_TOOL_NAMES, hidden_tools_for_mode
 from usecase.log_policy import ToolAuthorizationError
 
 ALL_TOOLS = "*"
+# Tools that also need membership of SCRIPT_RUN_GROUPS. A "*" grant is not enough for these.
+SCRIPT_RUN_GRANT_TOOLS: tuple[str, ...] = ("run_endpoint_script", "get_endpoint_script_run")
 
 
 @dataclass(frozen=True)
@@ -17,6 +19,7 @@ class ToolPolicyDecision:
     matched_group: str | None = None
     allowed_tools: tuple[str, ...] = ()
     reason: str = ""
+    rule: str = ""
 
 
 def get_tool_policy() -> dict[str, tuple[str, ...]]:
@@ -49,15 +52,50 @@ def authorize_tool(context: MCPContext, tool_name: str) -> ToolPolicyDecision:
     from what the groups grant but can never add one.
     """
     decision = _authorize_tool_by_groups(context, tool_name)
-    if decision.allowed and tool_name in hidden_tools_for_mode(context.mode):
+    if not decision.allowed:
+        return decision
+    # The feature gate comes before the mode, so a caller is never told to change mode for a
+    # tool that is switched off or that its groups cannot run in any mode.
+    refusal = script_run_refusal(context, tool_name)
+    if refusal is not None:
+        return ToolPolicyDecision(
+            allowed=False,
+            principal_id=context.principal_id,
+            tool_name=tool_name,
+            reason=refusal[1],
+            rule=refusal[0],
+        )
+    if tool_name in hidden_tools_for_mode(context.mode):
         return ToolPolicyDecision(
             allowed=False,
             principal_id=context.principal_id,
             tool_name=tool_name,
             matched_group=decision.matched_group,
             reason=f"tool is hidden in engagement mode {context.mode}",
+            rule="mode",
         )
     return decision
+
+
+def get_script_run_groups() -> tuple[str, ...]:
+    return tuple(group.strip() for group in get_config().script_run_groups.split(",") if group.strip())
+
+
+def script_run_refusal(context: MCPContext, tool_name: str) -> tuple[str, str] | None:
+    """Return (rule, reason) when the endpoint script feature gate refuses a tool, else None.
+
+    The gate only narrows: it runs after group policy has allowed the tool. Run and result
+    tools need an explicit SCRIPT_RUN_GROUPS membership as well as the tool policy grant.
+    """
+    if tool_name not in SCRIPT_RUN_TOOL_NAMES:
+        return None
+    if not get_config().script_run_enabled:
+        return "disabled", "endpoint script execution is disabled (SCRIPT_RUN_ENABLED=false)"
+    if tool_name in SCRIPT_RUN_GRANT_TOOLS:
+        granted = get_script_run_groups()
+        if not any(group in granted for group in context.groups):
+            return "group_required", "principal is not in a group listed in SCRIPT_RUN_GROUPS"
+    return None
 
 
 def _authorize_tool_by_groups(context: MCPContext, tool_name: str) -> ToolPolicyDecision:
@@ -94,6 +132,10 @@ def ensure_tool_authorized(context: MCPContext, tool_name: str) -> ToolPolicyDec
             raise ToolAuthorizationError(
                 f"Tool {tool_name} is not allowed in engagement mode {context.mode}; "
                 "call set_engagement with a mode whose policy exposes it"
+            )
+        if decision.rule in ("disabled", "group_required"):
+            raise ToolAuthorizationError(
+                f"Principal {decision.principal_id} is not allowed to invoke tool {tool_name}: {decision.reason}"
             )
         raise ToolAuthorizationError(
             f"Principal {decision.principal_id} is not allowed to invoke tool {tool_name}"

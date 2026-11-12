@@ -141,6 +141,39 @@ Tool invocation end events also carry `result.quota` (numeric
 sets; `cached` and `approved` booleans) and `result.cost_guard_rule` for a
 refusal. A refusal's end event has `outcome=denied`.
 
+## Endpoint script events
+
+The endpoint script tools emit `event_type=cortex_xsiam_mcp.script_run` (schema
+version `1.0`) for every attempt, allowed or refused, in addition to the tool
+invocation events. See
+[Endpoint script execution](SECURITY_MODEL.md#endpoint-script-execution).
+
+| Field | Description |
+| --- | --- |
+| `decision` | `refused`, `elicitation`, `approved`, `submitted`, `read`, `list`, or `list_runs`. |
+| `outcome` | `denied`, `approved`, `success`, `error`, or, for a submit XSIAM never answered, `timeout`; for elicitation `accepted`, `declined`, `cancelled`, `timeout`, or `error`. |
+| `tool` | `list_endpoint_scripts`, `run_endpoint_script`, or `get_endpoint_script_run`. |
+| `principal.id`, `principal.groups` | As in tool invocation events. |
+| `engagement.mode`, `engagement.case_id`, `engagement.source` | Engagement at the decision. |
+| `script_run.rule` | Refusal rule, for example `disabled`, `group_required`, `mode`, `script_not_allowed`, `script_changed`, `high_risk_script`, `endpoint_cap`, `endpoint_unknown`, `endpoint_lookup_failed`, `approval_required`, `approval_declined`, `daily_cap`, `state_unavailable`, or `not_owner`. |
+| `script_run.request_sha256` | SHA-256 of the script uid, sorted endpoint ids, parameters, and timeout. The same value on a refusal and on the approved retry shows the approval was for that request. |
+| `script_run.script_uid`, `script_run.script_name`, `script_run.script_modification_date` | Script requested and the modification date XSIAM reported. A malformed uid is logged as `invalid`. |
+| `script_run.endpoint_count`, `script_run.endpoint_ids` | Endpoints requested. Only well-formed ids are logged, at most 200. Endpoint names are never logged. |
+| `script_run.unknown_endpoint_ids` | Ids XSIAM did not know, on an `endpoint_unknown` refusal. |
+| `script_run.error_type` | Exception type for a failed lookup, read, or submit, for example `TimeoutError`. |
+| `script_run.record_saved` | False when the action id could not be written to the run ledger. |
+| `script_run.parameter_names`, `script_run.parameters_sha256` | Parameter names and a SHA-256 of the canonical JSON of the parameters. Values are never logged. |
+| `script_run.reason_sha256` | SHA-256 of the stated reason. |
+| `script_run.approval_method` | `elicitation` or `approval_argument`. |
+| `script_run.approval_sha256` | SHA-256 of the analyst's approval text. The text itself is never logged. |
+| `script_run.action_id`, `script_run.endpoints_started` | XSIAM action id and the endpoint count XSIAM reported. |
+| `script_run.foreign_action` | True when a read was served for an action this process did not start. |
+| `script_run.file_endpoint_ids`, `files_retrieved`, `file_bytes` | File retrieval requested and saved. |
+
+Script output, returned values, and signed download links are never logged.
+Tool invocation end events carry `result.script_run_rule` for a refusal, with
+`outcome=denied`.
+
 ## Local Structured Logs
 
 Audit events are written through the `cortex_xsiam_mcp.audit` logger as compact

@@ -4,6 +4,35 @@ This project follows a lightweight changelog format until stable releases begin.
 
 ## Unreleased
 
+- Added endpoint script execution, off by default (`SCRIPT_RUN_ENABLED`):
+  `list_endpoint_scripts`, `run_endpoint_script`, and
+  `get_endpoint_script_run` run a script from the XSIAM agent script library on
+  named endpoints and read the result. A run needs an explicit
+  `SCRIPT_RUN_GROUPS` membership on top of the tool policy (a `*` grant is not
+  enough), a uid on `SCRIPT_RUN_ALLOWED_SCRIPTS` that XSIAM does not mark high
+  risk, an explicit capped list of endpoint ids, `incident_response` or
+  `threat_hunt` mode, a stated reason, and the analyst's approval by
+  elicitation or a hashed `approval` argument. Runs and endpoints are capped
+  per principal per UTC day. Results are served only for runs this process
+  started for the same principal, capped and labelled untrusted; retrieved
+  files are saved under `SCRIPT_RUN_RESULTS_DIR` and never returned. Every
+  attempt emits a `cortex_xsiam_mcp.script_run` audit event. No API that runs
+  code supplied in a request is called.
+- Endpoint script execution hardening. A typed approval is accepted only for
+  the exact request already refused with `approval_required` for the same
+  principal, once, within 15 minutes; the audit event carries
+  `request_sha256`. The approval prompt and refusal show parameter values and
+  each endpoint as name, id, and status. Endpoint ids are resolved in XSIAM
+  first (`endpoint_unknown`, `endpoint_lookup_failed`). Every XSIAM call has a
+  deadline (`SCRIPT_RUN_API_TIMEOUT_SECONDS`); a submit that never answers is
+  reported as outcome unknown and stays counted. `SCRIPT_RUN_ALLOWED_SCRIPTS`
+  can pin a script's `modification_date` (`script_changed`). Retrieved-file
+  links to an IP literal or `localhost` are refused.
+- Added a durable run ledger (`SCRIPT_RUN_STATE_DIR`,
+  `SCRIPT_RUN_RECORD_RETENTION_DAYS`): run records and per-principal daily
+  counts survive a restart, the run is counted and saved before it is sent, and
+  an unusable ledger refuses new runs (`state_unavailable`).
+  `get_endpoint_script_run` with no `action_id` lists the caller's own runs.
 - Added engagement modes (`incident_response`, `threat_hunt`, `operations`,
   `unset`) with `set_engagement`, `get_engagement`, `record_fact`, and
   `get_engagement_log`. Scope lists are validated and capped, state is bound to

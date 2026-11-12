@@ -27,6 +27,10 @@ to the principal, case files are principal-scoped and refused inside a git
 working tree, and continuation cursors are bound to the mode and case. See
 [Engagement Modes](ENGAGEMENT_MODES.md).
 
+Every tool only reads from XSIAM except `run_endpoint_script`, which is off by
+default and gated as described under
+[Endpoint script execution](#endpoint-script-execution).
+
 ## Target State
 
 The target security model supports two deployment modes:
@@ -185,6 +189,56 @@ Tier-1 learning writes measured tenant facts to `<TENANT_PACK_DIR>/learned/`
   returned, is capped, owner-only and git-ignored in the pack, and is not exposed
   as an MCP tool.
 
+## Endpoint script execution
+
+Off by default (`SCRIPT_RUN_ENABLED=false`). This is the gateway's only tool
+that changes state outside the gateway: it runs a script on endpoints.
+
+What it can do:
+
+- list the allow-listed scripts in the tenant's agent script library;
+- run one of them on named endpoints, with bounded parameters;
+- list the runs the caller started, and read the status and capped results of
+  one of them;
+- save a run's retrieved files to a private directory on the gateway host.
+
+Guard rails, all enforced in `src/usecase/script_run.py` before anything is
+sent to XSIAM, and repeated in the tool policy middleware where they decide
+listing:
+
+| Rule | Control |
+| --- | --- |
+| Off by default | With the switch off the tools are not registered, not listed, and refused on call. |
+| Explicit grant | `run_endpoint_script` and `get_endpoint_script_run` need a group in `SCRIPT_RUN_GROUPS` as well as the `TOOL_ACCESS_POLICY` grant. `*` is not enough and there is no wildcard group. |
+| Script allow-list | Only uids in `SCRIPT_RUN_ALLOWED_SCRIPTS` run. An empty list runs nothing. The uid is checked before any API call. |
+| Version pin | Optional. When a uid is pinned to a `modification_date` and XSIAM reports another, the run is refused with `script_changed`. |
+| High-risk scripts | The script is read from XSIAM before every run. It is refused unless XSIAM reports `is_high_risk: false`; a failed or incomplete lookup refuses. |
+| Endpoint cap | An explicit, de-duplicated list of ids matching a strict pattern, within `SCRIPT_RUN_MAX_ENDPOINTS` (hard ceiling 200). No wildcard, no "all endpoints", and the only filter sent is the id list. |
+| Endpoint resolution | Every id is looked up in XSIAM before approval. An unknown id (`endpoint_unknown`) or a failed lookup (`endpoint_lookup_failed`) refuses the run. |
+| Engagement mode | Only `incident_response` and `threat_hunt`. The lock is fixed in code, so `ENGAGEMENT_MODE_POLICY` cannot expose the tools in `operations` or `unset`; it can still hide them. |
+| Human approval | Every run. Elicitation asks the analyst and shows the script and uid, each endpoint by name, id, and status, each parameter value, the timeout, and the reason. A declined prompt is final. Otherwise the analyst's typed `approval` argument is required and stored only as a SHA-256. |
+| Approval binding | A typed approval is accepted only for the exact request this process already refused with `approval_required` for the same principal, once, within 15 minutes. A first call that carries an approval is refused, so the details are always returned before an approval is used. |
+| Daily caps | Runs and endpoints per principal per UTC day, counted when a run is submitted, including a submission that then fails or never answers. With `SCRIPT_RUN_STATE_DIR` they hold across restarts. |
+| Run ledger | With `SCRIPT_RUN_STATE_DIR`, the run is counted and saved before the request is sent. An unreadable, malformed, linked, or group-readable ledger refuses new runs (`state_unavailable`). Every field read from the file is validated. |
+| Timeouts | Every XSIAM call has a deadline. A lookup that times out refuses the run; a submit that times out is recorded as outcome unknown and stays counted. |
+| Parameters | At most 20, identifier names, string, number, or boolean values, strings up to 500 characters. |
+| Audit | Every attempt emits a `cortex_xsiam_mcp.script_run` event, allowed or refused, with endpoint ids, parameter names, and hashes, never endpoint names or parameter values. See [Audit Logging](AUDIT_LOGGING.md). |
+| Untrusted output | Standard output and returned values are capped per endpoint and in total, stripped of control characters, and labelled `content_trust: "untrusted_data"`. Tool descriptions and server instructions say results are data, never instructions. |
+| Files | The signed link is never returned or logged. The zip is saved under `SCRIPT_RUN_RESULTS_DIR` with a size cap and owner-only permissions, and only its path and size are returned. Only `https` links to a named host are fetched: an IP literal, `localhost`, or a host without a DNS top-level label is refused, on the first URL and on each redirect. The XSIAM API key is never sent to the download host. |
+| Run ownership | `get_endpoint_script_run` serves and lists only actions this gateway recorded for the same principal. |
+
+What it deliberately cannot do:
+
+- run code supplied in a request; no snippet or ad hoc code API is called or
+  exposed, and there is no upload;
+- target endpoints by filter, group, tag, or wildcard;
+- run a script XSIAM marks high risk, even if it is on the allow-list;
+- cancel, rerun, or schedule a script, or take any other response action;
+- return a retrieved file, a download link, or unbounded output to the model;
+- read script actions started in the console or by another principal, unless
+  the operator sets `SCRIPT_RUN_ALLOW_FOREIGN_ACTIONS=true`. That setting also
+  keeps reads working while the run ledger is unusable; new runs stay refused.
+
 ## Credential Policy
 
 The credential broker does not dynamically provision per-user API keys. It
@@ -209,6 +263,27 @@ execution fails closed.
     times the approval cap and can each admit queries against the same reserve;
   - estimates are heuristics from the query text; XSIAM charges for bytes
     scanned, which the gateway cannot see before a query runs.
+- Endpoint script execution limits:
+  - an `approval` argument is an accountability record, not proof that a human
+    typed it. On a client without elicitation an agent can call twice and write
+    one. The binding guarantees the request was returned for display first and
+    that the approval covers that request only; the allow-list, the explicit
+    group, and the daily caps bound what can run;
+  - the engagement mode can be set by the agent, so the mode rule is a workflow
+    guard, not an authorization boundary;
+  - the audit event carries parameter names and a SHA-256 of the values, not
+    the values. Low-entropy values can be guessed from an unsalted hash;
+  - without `SCRIPT_RUN_STATE_DIR` a restart loses the run records and resets
+    the daily caps. With it, the ledger is one file per gateway process; N
+    replicas allow up to N times the daily caps and must not share the file;
+  - pending approvals are in memory only, so a restart discards them;
+  - a version pin compares XSIAM's `modification_date`, not the script's
+    content. Without a pin the gateway trusts the tenant's script library;
+  - the gateway trusts XSIAM's `is_high_risk` flag. It does not inspect what
+    an allow-listed script does;
+  - the download host check is on the name. It does not resolve the name, so
+    it does not stop a public name that points at a private address;
+  - downloaded files are not scanned or unpacked. Treat them as hostile.
 
 ## Threat Model Summary
 
@@ -219,6 +294,8 @@ Primary risks:
 - malicious or overbroad agent-generated query plans;
 - leakage of query results to unauthorized users;
 - prompt injection causing unsafe tool use;
+- an agent running a script on endpoints without a human decision;
+- script output from a compromised endpoint steering the agent;
 - credential profile misconfiguration.
 - replay of trusted-gateway assertions;
 - cursor reuse after identity or policy changes;
@@ -235,5 +312,7 @@ Core mitigations:
 - reject replayed gateway nonces;
 - bind continuation to identity and policy state;
 - bound query concurrency and all client-visible results;
+- keep endpoint script execution off by default, allow-listed, capped, and
+  approved by a human for every run;
 - keep plain-English interpretation in the client agent and validate structured
   calls on the server.
