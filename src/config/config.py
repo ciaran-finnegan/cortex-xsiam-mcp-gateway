@@ -186,13 +186,14 @@ class Settings(BaseSettings):
     # --- XQL Cost Guard Settings ---
     cost_guard_enabled: bool = Field(True, validation_alias="COST_GUARD_ENABLED")
     cost_guard_unit_bands: str = Field(
-        '{"light":[0.001,0.4],"medium":[0.5,3.6],"heavy":[5,9],"extreme":[10,31]}',
+        '{"light":[0.001,0.5],"medium":[0.05,2.5],"heavy":[2,9],"extreme":[5,32]}',
         validation_alias="COST_GUARD_UNIT_BANDS",
     )
     cost_guard_dataset_tiers: str = Field(
         (
             '{"xdr_data":"heavy","xdr_*":"heavy","*_story":"heavy",'
             '"amazon_aws_raw":"heavy","msft_azure_raw":"heavy","google_gcp_*":"heavy",'
+            '"panw_ngfw_traffic_raw":"medium","panw_ngfw_url_raw":"medium","msft_azure_flowlogs_raw":"medium",'
             '"xql_query_center_history":"light"}'
         ),
         validation_alias="COST_GUARD_DATASET_TIERS",
@@ -202,6 +203,7 @@ class Settings(BaseSettings):
         "agent_hostname,agent_id,endpoint_id,endpoint_name,host_name,hostname",
         validation_alias="COST_GUARD_SELECTIVE_FIELDS",
     )
+    cost_guard_partition_fields: str = Field("event_type", validation_alias="COST_GUARD_PARTITION_FIELDS")
     cost_guard_host_fields: str = Field(
         '{"xdr_data":"agent_hostname"}',
         validation_alias="COST_GUARD_HOST_FIELDS",
