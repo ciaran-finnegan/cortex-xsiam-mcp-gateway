@@ -52,7 +52,11 @@ import httpx
 from mcp.types import ClientCapabilities, ElicitationCapability
 
 from config.config import get_config
-from entities.exceptions import PAPIConnectionError
+from entities.exceptions import (
+    PAPIAuthenticationError,
+    PAPIClientRequestError,
+    PAPIServerError,
+)
 from entities.MCPContext import MCPContext
 from pkg.util import MAIN_DIR
 from usecase.audit import create_script_run_audit_event, emit_audit_event, stable_hash
@@ -114,7 +118,15 @@ PENDING_APPROVAL_TTL_SECONDS = 900
 MAX_PENDING_APPROVALS = 256
 STATE_FILE_NAME = "script_runs.json"
 STATE_VERSION = 1
+# The reader refuses a larger file; the writer stays under its own, smaller budget, so it can never
+# produce a file the reader rejects.
 MAX_STATE_FILE_BYTES = 8 * 1024 * 1024
+STATE_WRITE_BUDGET_BYTES = 6 * 1024 * 1024
+MAX_DAILY_ENTRIES = 10_000
+MAX_STORED_NAME_CHARS = 128
+# Upper bound on one serialised record: 200 endpoints, each a 64-character id held twice and a
+# 128-character name that JSON may escape to 12 bytes per character, plus the fixed fields.
+MAX_RECORD_BYTES = 350_000
 MAX_LISTED_RUNS = 50
 
 APPROVAL_ARGUMENT_DESCRIPTION = (
@@ -517,7 +529,7 @@ def _parse_state(
     runs, daily = document.get("runs"), document.get("daily")
     if not isinstance(runs, list) or not isinstance(daily, list):
         malformed("runs and daily must be lists")
-    if len(runs) > MAX_RUN_RECORDS or len(daily) > MAX_RUN_RECORDS:
+    if len(runs) > MAX_RUN_RECORDS or len(daily) > MAX_DAILY_ENTRIES:
         malformed("too many entries")
 
     records: list[_RunRecord] = []
@@ -532,13 +544,13 @@ def _parse_state(
             and item["run_id"] not in seen
             and _valid_token(item.get("owner"), _SHA256)
             and _valid_token(item.get("script_uid"), _SCRIPT_UID)
-            and (script_name is None or (isinstance(script_name, str) and len(script_name) <= 200))
+            and (script_name is None or isinstance(script_name, str))
             and isinstance(endpoint_ids, list)
             and 0 < len(endpoint_ids) <= HARD_MAX_ENDPOINTS
             and all(_valid_token(endpoint, _ENDPOINT_ID) for endpoint in endpoint_ids)
             and isinstance(names, dict)
             and all(
-                key in endpoint_ids and (value is None or (isinstance(value, str) and len(value) <= 255))
+                key in endpoint_ids and (value is None or isinstance(value, str))
                 for key, value in names.items()
             )
             and (action_id is None or (_count(action_id) is not None and 0 < action_id < 10**18))
@@ -554,10 +566,10 @@ def _parse_state(
                 run_id=item["run_id"],
                 owner=item["owner"],
                 script_uid=item["script_uid"],
-                script_name=_short_text(script_name, 200),
+                script_name=_stored_name(script_name),
                 endpoint_ids=tuple(endpoint_ids),
                 started_at=item["started_at"],
-                endpoint_names={key: _short_text(value, 255) for key, value in names.items()},
+                endpoint_names={key: _stored_name(value) for key, value in names.items()},
                 approval_method=item.get("approval_method"),
                 request_sha256=item.get("request_sha256"),
                 action_id=action_id,
@@ -592,58 +604,88 @@ def _persist() -> None:
         _write_state_file(_state_loaded_from)
 
 
-def _write_state_file(path: Path) -> None:
-    """Replace the ledger atomically: owner-only temp file in the same directory, fsync, rename."""
-    day = _utc_day()
-    document = {
-        "version": STATE_VERSION,
-        "saved_at": _now().isoformat(),
-        "runs": [
-            {
-                "run_id": record.run_id,
-                "action_id": record.action_id,
-                "owner": record.owner,
-                "script_uid": record.script_uid,
-                "script_name": record.script_name,
-                "endpoint_ids": list(record.endpoint_ids),
-                "endpoint_names": record.endpoint_names,
-                "started_at": record.started_at,
-                "approval_method": record.approval_method,
-                "request_sha256": record.request_sha256,
-            }
-            for record in _runs.values()
-        ],
-        "daily": [
-            {
-                "owner": owner,
-                "day": counted.isoformat(),
-                "runs": runs,
-                "endpoints": _daily_endpoints.get((owner, counted), 0),
-            }
-            for (owner, counted), runs in _daily_runs.items()
-            if counted == day
-        ],
+def _record_document(record: _RunRecord) -> dict[str, Any]:
+    return {
+        "run_id": record.run_id,
+        "action_id": record.action_id,
+        "owner": record.owner,
+        "script_uid": record.script_uid,
+        "script_name": record.script_name,
+        "endpoint_ids": list(record.endpoint_ids),
+        "endpoint_names": record.endpoint_names,
+        "started_at": record.started_at,
+        "approval_method": record.approval_method,
+        "request_sha256": record.request_sha256,
     }
+
+
+def _serialise_state() -> tuple[str, list[str]]:
+    """Build the ledger text within the write budget. Returns it and the run ids left out to make it fit.
+
+    The daily counts are always kept. Records are left out oldest first, and only ones that
+    already have an action id: a run still waiting for XSIAM's answer is never dropped.
+    Raises ScriptRunStateError when the text cannot be brought under the budget.
+    """
+    day = _utc_day()
+    daily = [
+        {"owner": owner, "day": counted.isoformat(), "runs": runs, "endpoints": _daily_endpoints.get((owner, counted), 0)}
+        for (owner, counted), runs in _daily_runs.items()
+        if counted == day
+    ]
+    if len(daily) > MAX_DAILY_ENTRIES:
+        raise ScriptRunStateError("the ledger would hold more daily counts than it can read back")
+    # json.dumps escapes non-ASCII by default, so the text is ASCII and its length is its size in bytes.
+    head = f'{{"daily":{_compact(daily)},"saved_at":{_compact(_now().isoformat())},"version":{STATE_VERSION},"runs":['
+    entries = [(record, _compact(_record_document(record))) for record in _runs.values()]
+    size = len(head) + len("]}") + sum(len(text) + 1 for _, text in entries)
+    left_out: set[str] = set()
+    for record, text in entries:
+        if size <= STATE_WRITE_BUDGET_BYTES:
+            break
+        if record.action_id is not None:
+            left_out.add(record.run_id)
+            size -= len(text) + 1
+    if size > STATE_WRITE_BUDGET_BYTES:
+        raise ScriptRunStateError("the ledger would exceed its size budget even without its completed records")
+    kept = ",".join(text for record, text in entries if record.run_id not in left_out)
+    return f"{head}{kept}]}}", sorted(left_out)
+
+
+def _compact(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _write_state_file(path: Path) -> None:
+    """Replace the ledger atomically: owner-only temp file in the same directory, fsync, rename.
+
+    The text is kept under the write budget, which is below the size the reader accepts.
+    Records left out to fit are forgotten in memory only once the file has been replaced.
+    """
     temp_name = None
     try:
+        text, left_out = _serialise_state()
         _ensure_private_dir(path.parent, "SCRIPT_RUN_STATE_DIR")
         if path.is_symlink():
             raise ScriptRunStateError("the ledger file is a symbolic link")
         descriptor, temp_name = tempfile.mkstemp(dir=path.parent, prefix=".ledger-", suffix=".tmp")
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             os.fchmod(handle.fileno(), 0o600)
-            json.dump(document, handle, sort_keys=True, separators=(",", ":"))
+            handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_name, path)
         temp_name = None
     except ScriptRunSettingsError as e:
         raise ScriptRunStateError(str(e)) from e
-    except OSError as e:
+    except (OSError, ValueError) as e:
         raise ScriptRunStateError(f"the ledger file could not be written ({type(e).__name__})") from e
     finally:
         if temp_name is not None:
             Path(temp_name).unlink(missing_ok=True)
+    for run_id in left_out:
+        _runs.pop(run_id, None)
+    if left_out:
+        logger.warning("Script run ledger dropped %d oldest completed records to stay within its size budget", len(left_out))
 
 
 def _parse_time(value: Any) -> datetime | None:
@@ -1116,10 +1158,10 @@ async def run_script(
         run_id=uuid.uuid4().hex,
         owner=owner,
         script_uid=script_uid,
-        script_name=view["name"],
+        script_name=_stored_name(view["name"]),
         endpoint_ids=tuple(endpoints),
         started_at=_now().isoformat(),
-        endpoint_names={item["endpoint_id"]: item["endpoint_name"] for item in request.endpoints},
+        endpoint_names={item["endpoint_id"]: _stored_name(item["endpoint_name"]) for item in request.endpoints},
         approval_method=attempt.details.get("approval_method"),
         request_sha256=request_sha256,
     )
@@ -1137,40 +1179,31 @@ async def run_script(
             "timeout": timeout_seconds,
         }
     }
+    # From here the request may have reached XSIAM. Only what the response itself establishes counts as
+    # a rejection; anything else leaves the outcome unknown, and the record and the count stay.
     try:
-        reply = _reply(await _xsiam(fetcher, "scripts/run_script/", payload))
-    except (TimeoutError, PAPIConnectionError) as e:
-        # No answer is not a refusal: XSIAM may have started the action, so the run stays counted
-        # and its record stays, without an action id.
-        timed_out = isinstance(e, TimeoutError)
-        await attempt.record("submitted", "timeout" if timed_out else "error", error_type=type(e).__name__)
-        return {
-            "success": False,
-            "executed": "unknown",
-            "error": (
-                f"The run was submitted but XSIAM did not answer ({_failure(e)}). It may be running. Check the XSIAM "
-                "Action Center before submitting it again. This attempt counts against the daily caps."
-            ),
-            "daily": _daily_usage(owner),
-        }
+        response = await _xsiam(fetcher, "scripts/run_script/", payload)
+    except (PAPIAuthenticationError, PAPIClientRequestError) as e:
+        # A 4xx is XSIAM refusing the request: nothing was started.
+        return await _submission_rejected(attempt, record, type(e).__name__, _failure(e))
     except Exception as e:
-        # XSIAM answered with an error, so nothing is running. The attempt stays counted.
-        _discard_run(record)
-        await attempt.record("submitted", "error", error_type=type(e).__name__)
-        raise
+        # A timeout, a lost connection, a 5xx from XSIAM or a proxy in front of it, an undecodable
+        # reply, or anything unexpected: the action may be running.
+        return await _submission_unknown(attempt, record, type(e).__name__, _failure(e))
+    reply = response.get("reply") if isinstance(response, dict) else None
+    if not isinstance(reply, dict):
+        return await _submission_unknown(attempt, record, "UnusableReply", "the reply could not be read")
     try:
         action_id: int | None = _validate_action_id(reply.get("action_id"))
     except ValueError:
         action_id = None
-    if action_id is None or reply.get("status") == 0:
-        _discard_run(record)
-        await attempt.record("submitted", "error", action_id=action_id, error_type="NoActionStarted")
-        return {
-            "success": False,
-            "executed": False,
-            "error": "XSIAM did not start the script action",
-            "daily": _daily_usage(owner),
-        }
+    status = reply.get("status")
+    reported_failed = status == 0 and not isinstance(status, bool)
+    if action_id is None:
+        if reported_failed:
+            # A well-formed reply that says no action started.
+            return await _submission_rejected(attempt, record, "NoActionStarted", "XSIAM reported that no action started")
+        return await _submission_unknown(attempt, record, "UnusableReply", "the reply named no action")
 
     saved = True
     try:
@@ -1179,6 +1212,16 @@ async def run_script(
         # The action is running; losing the id would be worse than an unsaved record.
         logger.warning("Script run action id not saved to the ledger: %s", e)
         saved = False
+    if reported_failed:
+        # An action exists but XSIAM calls it failed. Keep the id and let the analyst look.
+        attempt.details["action_id"] = action_id
+        return await _submission_unknown(
+            attempt,
+            record,
+            "ActionReportedFailed",
+            "XSIAM returned an action id and reported the action as failed",
+            record_saved=saved,
+        )
     attempt.details["action_id"] = action_id
     started = reply.get("endpoints_count")
     started_count = started if isinstance(started, int) and not isinstance(started, bool) else None
@@ -1204,6 +1247,52 @@ async def run_script(
     return result
 
 
+async def _submission_rejected(attempt: _Attempt, record: _RunRecord, error_type: str, detail: str) -> dict[str, Any]:
+    """XSIAM itself refused the submission. The record goes; the attempt stays counted."""
+    _discard_run(record)
+    await attempt.record("submitted", "rejected", error_type=error_type)
+    return {
+        "success": False,
+        "executed": False,
+        "error": f"XSIAM rejected the run ({detail}). Nothing was started. This attempt counts against the daily caps.",
+        "daily": _daily_usage(record.owner),
+    }
+
+
+async def _submission_unknown(
+    attempt: _Attempt,
+    record: _RunRecord,
+    error_type: str,
+    detail: str,
+    *,
+    record_saved: bool | None = None,
+) -> dict[str, Any]:
+    """The request went out and nothing proves it was refused. The record and the count stay.
+
+    Reporting this as not executed would invite a retry that runs the script twice.
+    """
+    await attempt.record(
+        "submitted",
+        "timeout" if error_type == "TimeoutError" else "unknown",
+        error_type=error_type,
+        record_saved=record_saved,
+    )
+    result: dict[str, Any] = {
+        "success": False,
+        "executed": "unknown",
+        "error": (
+            f"The run was submitted but its outcome is unknown ({detail}). It may be running. Check the XSIAM "
+            "Action Center before submitting it again. This attempt counts against the daily caps and stays in "
+            "your run list."
+        ),
+        "daily": _daily_usage(record.owner),
+    }
+    if record.action_id is not None:
+        result["action_id"] = record.action_id
+        result["next"] = f"Call {RESULT_TOOL} with this action_id for status. {UNTRUSTED_OUTPUT_NOTE}"
+    return result
+
+
 async def _list_runs(attempt: _Attempt) -> dict[str, Any]:
     """List the runs this principal started, newest first. Never shows another principal's runs."""
     try:
@@ -1226,7 +1315,7 @@ async def _list_runs(attempt: _Attempt) -> dict[str, Any]:
                 **(
                     {}
                     if record.action_id is not None
-                    else {"note": "Submitted, but XSIAM did not answer. Check the XSIAM Action Center."}
+                    else {"note": "Submitted, outcome unknown: it may be running. Check the XSIAM Action Center."}
                 ),
             }
             for record in listed
@@ -1767,6 +1856,11 @@ def _short_text(value: Any, limit: int) -> str | None:
     return cleaned[:limit] or None
 
 
+def _stored_name(value: Any) -> str | None:
+    """A script or endpoint name as the ledger keeps it: one line, bounded."""
+    return _short_text(value, MAX_STORED_NAME_CHARS)
+
+
 def _flag(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
 
@@ -1786,6 +1880,9 @@ def _failure(error: Exception) -> str:
     """Short, link-free description of a failed XSIAM call for a refusal message."""
     if isinstance(error, TimeoutError):
         return f"no answer within {_api_timeout():g} seconds"
+    if isinstance(error, (PAPIAuthenticationError, PAPIClientRequestError, PAPIServerError)):
+        # These carry only the request path and the HTTP status.
+        return str(error)
     return type(error).__name__
 
 

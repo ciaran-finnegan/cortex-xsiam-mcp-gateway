@@ -24,9 +24,17 @@ from fastmcp.server.elicitation import (
 from pydantic import ValidationError
 
 from config.config import Settings, get_config
-from entities.exceptions import PAPIConnectionError, PAPIServerError
+from entities.exceptions import (
+    PAPIAuthenticationError,
+    PAPIClientError,
+    PAPIClientRequestError,
+    PAPIConnectionError,
+    PAPIResponseError,
+    PAPIServerError,
+)
 from entities.MCPContext import MCPContext
 from main import initialize_mcp_server
+from pkg.client import PAPIClient
 from pkg.util import MAIN_DIR
 from service.cortex_mcp import audit_middleware
 from service.cortex_mcp.server import (
@@ -112,6 +120,9 @@ class ScriptFetcher:
         ]
         self.fail_on = None
         self.hang_on = None
+        self.errors = {}
+        self.raw_run_response = None
+        self.endpoint_names = {}
         self.unknown_endpoints = set()
         self.endpoint_status = {"wks-0002": "disconnected"}
         self.link = SIGNED_LINK
@@ -126,6 +137,8 @@ class ScriptFetcher:
             raise PAPIServerError(f"Server error for request to {path} [status=500]")
         if self.hang_on == path:
             await asyncio.sleep(3600)
+        if path in self.errors:
+            raise self.errors[path]
         request = (data or {}).get("request_data", {})
         if path == ENDPOINTS_PATH:
             (id_filter,) = request["filters"]
@@ -136,7 +149,7 @@ class ScriptFetcher:
             endpoints = [
                 {
                     "endpoint_id": item,
-                    "endpoint_name": f"{item}.example.test",
+                    "endpoint_name": self.endpoint_names.get(item, f"{item}.example.test"),
                     "endpoint_status": self.endpoint_status.get(item, "connected"),
                     "os_type": "AGENT_OS_WINDOWS",
                     "ip": ["192.0.2.10"],
@@ -161,6 +174,8 @@ class ScriptFetcher:
                 }
             }
         if path == RUN_PATH:
+            if self.raw_run_response is not None:
+                return self.raw_run_response[0]
             return {"reply": dict(self.run_reply)}
         if path == STATUS_PATH:
             return {
@@ -393,30 +408,6 @@ async def test_status_and_results_for_a_run_this_principal_started(fetcher, audi
     assert detailed["results"][0]["returned_values"] == {"artefact_count": 3}
     assert detailed["script_name"] == "acme_collect_triage"
     assert audit_events[-1]["decision"] == "read" and audit_events[-1]["script_run"]["action_id"] == ACTION_ID
-
-
-@pytest.mark.asyncio
-async def test_a_failed_submission_is_reported_and_stays_counted(fetcher, audit_events):
-    fetcher.fail_on = RUN_PATH
-
-    result = await _run()
-
-    assert result["success"] is False and result["executed"] is False
-    assert "[status=500]" in result["error"]
-    assert script_run._runs == {}
-    assert audit_events[-1]["decision"] == "submitted" and audit_events[-1]["outcome"] == "error"
-    # XSIAM may have started the action, so the attempt uses one of the day's runs.
-    assert script_run._daily_usage(script_run.owner_key(_ctx().request_context.lifespan_context))["runs_today"] == 1
-
-
-@pytest.mark.asyncio
-async def test_a_reply_without_a_started_action_is_an_error(fetcher):
-    fetcher.run_reply = {"action_id": None, "endpoints_count": 0, "status": 0}
-
-    result = await _run()
-
-    assert result["success"] is False and "did not start" in result["error"]
-    assert script_run._runs == {}
 
 
 def test_only_library_script_apis_are_ever_called():
@@ -1222,25 +1213,6 @@ async def test_a_run_that_hangs_is_submitted_with_outcome_unknown(short_timeout,
     assert result["daily"]["runs_today"] == 1 and result["daily"]["endpoints_today"] == 2
     assert (audit_events[-1]["decision"], audit_events[-1]["outcome"]) == ("submitted", "timeout")
     assert "action_id" not in audit_events[-1]["script_run"]
-
-
-@pytest.mark.asyncio
-async def test_a_lost_connection_on_submit_is_also_outcome_unknown(fetcher, audit_events, monkeypatch):
-    await _call()
-    real = fetcher.send_request
-
-    async def drop(path, data=None, **kwargs):
-        if path == RUN_PATH:
-            fetcher.requests.append((path, data))
-            raise PAPIConnectionError(f"Request timeout for {path}")
-        return await real(path, data=data, **kwargs)
-
-    monkeypatch.setattr(fetcher, "send_request", drop)
-
-    result = await _call(approval=APPROVAL)
-
-    assert result["executed"] == "unknown" and result["daily"]["runs_today"] == 1
-    assert (audit_events[-1]["decision"], audit_events[-1]["outcome"]) == ("submitted", "error")
 
 
 @pytest.mark.parametrize("path", [STATUS_PATH, RESULTS_PATH])
@@ -2446,9 +2418,9 @@ async def test_an_action_id_that_cannot_be_saved_is_still_returned(monkeypatch, 
 
 @pytest.mark.asyncio
 async def test_a_refused_submission_leaves_a_count_but_no_record(state_dir, fetcher):
-    fetcher.fail_on = RUN_PATH
+    fetcher.errors[RUN_PATH] = PAPIClientRequestError(_status_error("Client error", 400))
 
-    assert (await _run())["success"] is False
+    assert (await _run())["executed"] is False
 
     document = _ledger(state_dir)
     assert document["runs"] == [] and document["daily"][0]["runs"] == 1
@@ -2512,7 +2484,7 @@ async def test_listing_shows_only_the_callers_runs_newest_first(monkeypatch, tmp
 
     assert mine["success"] is True and mine["durable"] is durable and mine["runs_total"] == 3
     assert [run["action_id"] for run in mine["runs"]] == [None, 5002, 5001]
-    assert "did not answer" in mine["runs"][0]["note"]
+    assert "outcome unknown" in mine["runs"][0]["note"]
     assert mine["runs"][1] == {
         "action_id": 5002,
         "script_uid": SCRIPT_UID,
@@ -2564,3 +2536,334 @@ async def test_result_tool_schema_lets_the_action_id_be_omitted():
     assert set(schema["properties"]) == {"action_id", "include_results", "retrieve_files_for"}
     assert "required" not in schema or schema["required"] == []
     assert "list your own recorded runs" in (await server.get_tool("get_endpoint_script_run")).description
+
+
+# --- A submission is "not executed" only when XSIAM's own response says so ---
+
+
+def _status_error(category, status):
+    return f"{category} for request to /public_api/v1/{RUN_PATH} [status={status}]"
+
+
+AMBIGUOUS_SUBMISSIONS = {
+    "gateway deadline": "hang",
+    "connection lost or client timeout": PAPIConnectionError(f"Request timeout for /public_api/v1/{RUN_PATH}"),
+    "500 from xsiam": PAPIServerError(_status_error("Server error", 500)),
+    "502 from a proxy": PAPIServerError(_status_error("Server error", 502)),
+    "504 from a proxy": PAPIServerError(_status_error("Server error", 504)),
+    "undecodable reply": PAPIResponseError("Invalid JSON response from server"),
+    "unexpected status code": PAPIResponseError(_status_error("Unexpected response code", 302)),
+    "unexpected client failure": PAPIClientError("Unexpected error for request"),
+    "unexpected exception": RuntimeError("synthetic failure after the request was written"),
+    "reply is a list": [[]],
+    "reply is text": [{"reply": "ok"}],
+    "no reply key": [{}],
+    "success without an action id": [{"reply": {"status": 1, "endpoints_count": 2}}],
+    "malformed action id": [{"reply": {"action_id": "abc", "status": 1}}],
+    "no status and no action id": [{"reply": {"endpoints_count": 2}}],
+    "failure flag of the wrong type": [{"reply": {"status": "0"}}],
+}
+DEFINITIVE_REJECTIONS = {
+    "401 bad key": PAPIAuthenticationError(_status_error("Authentication failed", 401)),
+    "403 no permission": PAPIAuthenticationError(_status_error("Authorization failed", 403)),
+    "400 bad request": PAPIClientRequestError(_status_error("Client error", 400)),
+    "404 not found": PAPIClientRequestError(_status_error("Client error", 404)),
+    "reply says no action started": [{"reply": {"action_id": None, "endpoints_count": 0, "status": 0}}],
+    "reply says failed": [{"reply": {"status": 0}}],
+}
+
+
+async def _submit_with(monkeypatch, fetcher, behaviour, ctx):
+    assert (await _call(ctx))["rule"] == "approval_required"
+    if behaviour == "hang":
+        monkeypatch.setattr(script_run, "_api_timeout", lambda: 0.05)
+        fetcher.hang_on = RUN_PATH
+    elif isinstance(behaviour, Exception):
+        fetcher.errors[RUN_PATH] = behaviour
+    else:
+        fetcher.raw_run_response = behaviour
+    result = await asyncio.wait_for(_call(ctx, approval=APPROVAL), timeout=5)
+    fetcher.hang_on = None
+    return result
+
+
+@pytest.mark.parametrize("case", sorted(AMBIGUOUS_SUBMISSIONS))
+@pytest.mark.asyncio
+async def test_an_ambiguous_submission_is_outcome_unknown_and_stays_on_record(
+    monkeypatch, state_dir, fetcher, audit_events, case
+):
+    ctx = _ctx()
+
+    result = await _submit_with(monkeypatch, fetcher, AMBIGUOUS_SUBMISSIONS[case], ctx)
+
+    assert result["success"] is False and result["executed"] == "unknown"
+    assert "may be running" in result["error"] and "Action Center before submitting it again" in result["error"]
+    assert "action_id" not in result
+    # The reserved record stays, without an action id, in memory and on disk.
+    (record,) = script_run._runs.values()
+    assert record.action_id is None and record.endpoint_ids == tuple(ENDPOINTS)
+    assert [item["action_id"] for item in _ledger(state_dir)["runs"]] == [None]
+    # It still counts against the day.
+    assert result["daily"]["runs_today"] == 1 and result["daily"]["endpoints_today"] == 2
+    assert _ledger(state_dir)["daily"][0]["runs"] == 1
+    submitted = audit_events[-1]
+    assert submitted["decision"] == "submitted"
+    assert submitted["outcome"] == ("timeout" if case == "gateway deadline" else "unknown")
+    assert "action_id" not in submitted["script_run"]
+    # After a restart the caller still finds the attempt in the run list.
+    script_run.reset_state()
+    listing = await get_endpoint_script_run(ctx)
+    assert [run["action_id"] for run in listing["runs"]] == [None]
+    assert "outcome unknown" in listing["runs"][0]["note"] and listing["runs"][0]["endpoint_count"] == 2
+    assert fetcher.paths().count(RUN_PATH) == 1
+
+
+@pytest.mark.parametrize("case", sorted(DEFINITIVE_REJECTIONS))
+@pytest.mark.asyncio
+async def test_a_definitive_rejection_is_not_executed_and_leaves_no_record(
+    monkeypatch, state_dir, fetcher, audit_events, case
+):
+    ctx = _ctx()
+
+    result = await _submit_with(monkeypatch, fetcher, DEFINITIVE_REJECTIONS[case], ctx)
+
+    assert result["success"] is False and result["executed"] is False
+    assert "Nothing was started" in result["error"]
+    assert script_run._runs == {} and _ledger(state_dir)["runs"] == []
+    # The attempt was sent, so it still counts against the day.
+    assert result["daily"]["runs_today"] == 1 and result["daily"]["endpoints_today"] == 2
+    assert _ledger(state_dir)["daily"][0]["runs"] == 1
+    assert (audit_events[-1]["decision"], audit_events[-1]["outcome"]) == ("submitted", "rejected")
+    script_run.reset_state()
+    assert (await get_endpoint_script_run(ctx))["runs"] == []
+
+
+@pytest.mark.asyncio
+async def test_an_action_id_with_a_failure_flag_keeps_the_id_and_is_outcome_unknown(state_dir, fetcher, audit_events):
+    ctx = _ctx()
+    fetcher.run_reply = {"action_id": ACTION_ID, "endpoints_count": 0, "status": 0}
+
+    result = await _run(ctx)
+
+    assert result["success"] is False and result["executed"] == "unknown" and result["action_id"] == ACTION_ID
+    assert [item["action_id"] for item in _ledger(state_dir)["runs"]] == [ACTION_ID]
+    assert result["daily"]["runs_today"] == 1
+    assert (audit_events[-1]["outcome"], audit_events[-1]["script_run"]["action_id"]) == ("unknown", ACTION_ID)
+    assert audit_events[-1]["script_run"]["error_type"] == "ActionReportedFailed"
+    script_run.reset_state()
+    assert [run["action_id"] for run in (await get_endpoint_script_run(ctx))["runs"]] == [ACTION_ID]
+    assert (await get_endpoint_script_run(ctx, action_id=ACTION_ID))["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_outcome_without_a_state_dir_is_still_listed(monkeypatch, fetcher):
+    ctx = _ctx()
+
+    result = await _submit_with(monkeypatch, fetcher, PAPIServerError(_status_error("Server error", 502)), ctx)
+
+    assert result["executed"] == "unknown" and "[status=502]" in result["error"]
+    assert [run["action_id"] for run in (await get_endpoint_script_run(ctx))["runs"]] == [None]
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "expected"),
+    [
+        (400, "{}", PAPIClientRequestError),
+        (401, "{}", PAPIAuthenticationError),
+        (403, "{}", PAPIAuthenticationError),
+        (404, "{}", PAPIClientRequestError),
+        (500, "{}", PAPIServerError),
+        (502, "<html>bad gateway</html>", PAPIServerError),
+        (504, "", PAPIServerError),
+        (200, "<html>not json</html>", PAPIResponseError),
+        (302, "", PAPIResponseError),
+    ],
+)
+@pytest.mark.asyncio
+async def test_the_client_raises_the_classes_the_submission_outcome_is_sorted_on(status, body, expected):
+    """The ambiguous/definitive split in run_script depends on these classes; pin them here."""
+    transport = httpx.MockTransport(lambda request: httpx.Response(status, text=body))
+
+    async with PAPIClient("https://api-tenant.example.test", {}, transport=transport) as client:
+        with pytest.raises(expected) as raised:
+            await client.request("POST", f"/public_api/v1/{RUN_PATH}", json={})
+
+    assert type(raised.value) is expected
+    definitive = isinstance(raised.value, (PAPIAuthenticationError, PAPIClientRequestError))
+    assert definitive is (400 <= status < 500)
+
+
+# --- The ledger writer never produces a file its reader rejects ---
+
+
+def _record(index, *, owner=None, action_id="auto", endpoints=30, name="h" * 255):
+    ids = tuple(f"wks-{index:05d}-{slot:03d}-{'x' * 50}" for slot in range(endpoints))
+    return script_run._RunRecord(
+        run_id=f"{index:032x}",
+        owner=owner or _owner(),
+        script_uid=SCRIPT_UID,
+        script_name=script_run._stored_name("s" * 255),
+        endpoint_ids=ids,
+        started_at=(datetime.now(UTC) - timedelta(minutes=5000 - index)).isoformat(),
+        endpoint_names={endpoint: script_run._stored_name(name) for endpoint in ids},
+        approval_method="approval_argument",
+        request_sha256="cd" * 32,
+        action_id=(100_000 + index) if action_id == "auto" else action_id,
+    )
+
+
+def _load_ledger():
+    with script_run._state_lock:
+        script_run._load_state_if_needed()
+
+
+def test_a_worst_case_record_stays_within_its_bound():
+    worst = script_run._RunRecord(
+        run_id="f" * 32,
+        owner="f" * 64,
+        script_uid="u" * 64,
+        script_name=script_run._stored_name("\U0001f600" * 400),
+        endpoint_ids=tuple(f"{slot:03d}{'e' * 61}" for slot in range(script_run.HARD_MAX_ENDPOINTS)),
+        started_at=datetime.now(UTC).isoformat(),
+        endpoint_names={
+            f"{slot:03d}{'e' * 61}": script_run._stored_name("\U0001f600" * 400)
+            for slot in range(script_run.HARD_MAX_ENDPOINTS)
+        },
+        approval_method="approval_argument",
+        request_sha256="f" * 64,
+        action_id=10**18 - 1,
+    )
+    assert len(worst.script_name) == 128 and all(len(name) == 128 for name in worst.endpoint_names.values())
+
+    size = len(script_run._compact(script_run._record_document(worst)).encode())
+
+    assert 300_000 < size <= script_run.MAX_RECORD_BYTES
+    # The writer's budget is under the reader's limit and holds many worst-case records.
+    assert script_run.STATE_WRITE_BUDGET_BYTES < script_run.MAX_STATE_FILE_BYTES
+    assert script_run.STATE_WRITE_BUDGET_BYTES >= 10 * script_run.MAX_RECORD_BYTES
+
+
+@pytest.mark.asyncio
+async def test_names_are_bounded_when_a_record_is_created(state_dir, fetcher):
+    fetcher.endpoint_names["wks-0001"] = "h" * 255
+    fetcher.library[0]["name"] = "n" * 200
+    ctx = _ctx()
+
+    started = await _run(ctx)
+
+    # The analyst is shown what XSIAM returned; the ledger keeps a bounded copy.
+    assert started["endpoints"][0]["endpoint_name"] == "h" * 255
+    (record,) = _ledger(state_dir)["runs"]
+    assert record["endpoint_names"]["wks-0001"] == "h" * 128 and record["script_name"] == "n" * 128
+    script_run.reset_state()
+    assert (await get_endpoint_script_run(ctx, action_id=ACTION_ID))["endpoints"][0]["endpoint_name"] == "h" * 128
+
+
+@pytest.mark.asyncio
+async def test_names_from_an_older_ledger_are_bounded_when_parsed(state_dir, fetcher):
+    _write_ledger(
+        state_dir,
+        _valid_ledger(run__script_name="n" * 200, run__endpoint_names={"wks-0001": "h" * 255, "wks-0002": "ok"}),
+    )
+
+    reply = await get_endpoint_script_run(_ctx(), action_id=ACTION_ID)
+
+    assert reply["script"]["name"] == "n" * 128
+    assert [item["endpoint_name"] for item in reply["endpoints"]] == ["h" * 128, "ok"]
+
+
+@pytest.mark.asyncio
+async def test_a_ledger_at_the_record_cap_with_full_size_fields_round_trips(state_dir, fetcher):
+    ctx = _ctx()
+    _load_ledger()
+    for index in range(script_run.MAX_RUN_RECORDS):
+        record = _record(index)
+        script_run._runs[record.run_id] = record
+    unbounded = sum(len(script_run._compact(script_run._record_document(r))) for r in script_run._runs.values())
+    assert unbounded > script_run.MAX_STATE_FILE_BYTES
+
+    assert (await _run(ctx))["record"] == {"saved": True, "durable": True}
+
+    path = state_dir / "script_runs.json"
+    assert path.stat().st_size <= script_run.STATE_WRITE_BUDGET_BYTES < script_run.MAX_STATE_FILE_BYTES
+    kept_in_memory = [record.run_id for record in script_run._runs.values()]
+    assert 500 < len(kept_in_memory) < script_run.MAX_RUN_RECORDS
+    # What was written reads back, and memory matches the file.
+    script_run.reset_state()
+    listing = await get_endpoint_script_run(ctx)
+    assert listing["success"] is True and listing["runs_total"] == len(kept_in_memory)
+    assert [record.run_id for record in script_run._runs.values()] == kept_in_memory
+    assert listing["runs"][0]["action_id"] == ACTION_ID
+    # The oldest records made room; the newest of the old ones are still there.
+    assert (await get_endpoint_script_run(ctx, action_id=100_000))["rule"] == "not_owner"
+    assert (await get_endpoint_script_run(ctx, action_id=100_999))["success"] is True
+    assert script_run._daily_usage(_owner(ctx))["runs_today"] == 1
+    # And the next run is still accepted.
+    fetcher.run_reply["action_id"] = ACTION_ID + 1
+    assert (await _run(ctx, endpoint_ids=["wks-0003"]))["success"] is True
+
+
+def test_the_write_budget_drops_oldest_completed_records_and_keeps_counts_and_pending_runs(monkeypatch, state_dir):
+    _load_ledger()
+    records = [
+        _record(1, action_id=None, endpoints=2),
+        _record(2, endpoints=2),
+        _record(3, endpoints=2),
+        _record(4, action_id=None, endpoints=2),
+        _record(5, endpoints=2),
+    ]
+    for record in records:
+        script_run._runs[record.run_id] = record
+    script_run._count_run(_owner(), 7)
+    one = len(script_run._compact(script_run._record_document(records[1])))
+    # Room for the counts and about three and a half records.
+    monkeypatch.setattr(script_run, "STATE_WRITE_BUDGET_BYTES", int(one * 3.5) + 300)
+
+    with script_run._state_lock:
+        script_run._persist()
+
+    document = _ledger(state_dir)
+    assert [item["run_id"] for item in document["runs"]] == [records[index].run_id for index in (0, 3, 4)]
+    assert [item["action_id"] for item in document["runs"]] == [None, None, 100_005]
+    assert document["daily"] == [
+        {"owner": _owner(), "day": datetime.now(UTC).date().isoformat(), "runs": 1, "endpoints": 7}
+    ]
+    assert list(script_run._runs) == [records[index].run_id for index in (0, 3, 4)]
+    assert (state_dir / "script_runs.json").stat().st_size <= script_run.STATE_WRITE_BUDGET_BYTES
+    script_run.reset_state()
+    _load_ledger()
+    assert list(script_run._runs) == [records[index].run_id for index in (0, 3, 4)]
+
+
+@pytest.mark.asyncio
+async def test_a_ledger_that_cannot_fit_refuses_the_run_before_sending(monkeypatch, state_dir, fetcher):
+    ctx = _ctx()
+    assert (await _call(ctx))["rule"] == "approval_required"
+    _load_ledger()
+    for index in range(3):
+        record = _record(index, action_id=None, endpoints=2)
+        script_run._runs[record.run_id] = record
+    monkeypatch.setattr(script_run, "STATE_WRITE_BUDGET_BYTES", 1500)
+
+    refused = await _call(ctx, approval=APPROVAL)
+
+    assert refused["rule"] == "state_unavailable" and "size budget" in refused["message"]
+    assert RUN_PATH not in fetcher.paths()
+    assert len(script_run._runs) == 3 and all(record.action_id is None for record in script_run._runs.values())
+    assert script_run._daily_usage(_owner(ctx))["runs_today"] == 0
+    assert not (state_dir / "script_runs.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_more_daily_counts_than_the_reader_accepts_are_never_written(monkeypatch, state_dir, fetcher):
+    monkeypatch.setattr(script_run, "MAX_DAILY_ENTRIES", 1)
+    assert (await _run(_ctx()))["success"] is True
+    second = _ctx(principal_id="second-analyst@example.test")
+
+    refused = await _run(second)
+
+    assert refused["rule"] == "state_unavailable" and "daily counts" in refused["message"]
+    assert fetcher.paths().count(RUN_PATH) == 1
+    assert script_run._daily_usage(_owner(second))["runs_today"] == 0
+    script_run.reset_state()
+    assert (await get_endpoint_script_run(_ctx()))["runs_total"] == 1

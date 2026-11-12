@@ -151,7 +151,7 @@ invocation events. See
 | Field | Description |
 | --- | --- |
 | `decision` | `refused`, `elicitation`, `approved`, `submitted`, `read`, `list`, or `list_runs`. |
-| `outcome` | `denied`, `approved`, `success`, `error`, or, for a submit XSIAM never answered, `timeout`; for elicitation `accepted`, `declined`, `cancelled`, `timeout`, or `error`. |
+| `outcome` | `denied`, `approved`, `success`, or `error`. For `submitted`: `success`, `rejected` (XSIAM refused it, nothing started), `timeout` (no answer before the gateway's deadline), or `unknown` (any other case where the action may be running; `script_run.error_type` says which). For elicitation: `accepted`, `declined`, `cancelled`, `timeout`, or `error`. |
 | `tool` | `list_endpoint_scripts`, `run_endpoint_script`, or `get_endpoint_script_run`. |
 | `principal.id`, `principal.groups` | As in tool invocation events. |
 | `engagement.mode`, `engagement.case_id`, `engagement.source` | Engagement at the decision. |

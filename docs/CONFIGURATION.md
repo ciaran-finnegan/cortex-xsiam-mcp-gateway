@@ -419,7 +419,7 @@ SCRIPT_RUN_RESULTS_DIR=/var/lib/cortex-mcp/script-results
 | `SCRIPT_RUN_MAX_OUTPUT_BYTES` | `65536` | Bytes of script output returned per call, over all endpoints. |
 | `SCRIPT_RUN_API_TIMEOUT_SECONDS` | `30` | Deadline for each XSIAM call this feature makes; valid range 1-300. |
 | `SCRIPT_RUN_STATE_DIR` | empty | Absolute directory for the durable run ledger, `script_runs.json`. Same rules as `SCRIPT_RUN_RESULTS_DIR`. Empty keeps run records and daily counts in memory only. |
-| `SCRIPT_RUN_RECORD_RETENTION_DAYS` | `30` | Age after which a run record is dropped; valid range 1-3650. At most 1000 records are kept. |
+| `SCRIPT_RUN_RECORD_RETENTION_DAYS` | `30` | Age after which a run record is dropped; valid range 1-3650. At most 1000 records are kept, fewer when the ledger file reaches its size budget. |
 | `SCRIPT_RUN_RESULTS_DIR` | empty | Absolute directory for retrieved files on the gateway host. Must not be a symbolic link, inside the repository, or inside a git working tree. Created owner-only; an existing directory open to group or others is refused. Empty disables file retrieval. |
 | `SCRIPT_RUN_MAX_FILE_BYTES` | `52428800` | Largest retrieved-files zip the gateway will save. |
 | `SCRIPT_RUN_ALLOW_FOREIGN_ACTIONS` | `false` | Let `get_endpoint_script_run` read any script action in the tenant, including runs started in the console. |
@@ -476,6 +476,14 @@ the request goes to XSIAM, and the action id is added after the reply. The file
 is replaced atomically, owner-only, and never holds parameter values, the
 approval text, or the reason.
 
+The file stays under a 6 MiB write budget, below the 8 MiB the gateway will
+read back, so the gateway never writes a ledger it would then refuse. Stored
+script and endpoint names are cut at 128 characters. When the budget is
+reached, the oldest records that already have an action id are dropped first.
+Daily counts are always kept, and a run still waiting for XSIAM's answer is
+never dropped. If the ledger still cannot fit, the write fails and the run is
+refused before anything is sent.
+
 The gateway fails closed. If the directory is invalid, or the file is
 unreadable, malformed, a symbolic link, or open to group or others, new runs
 are refused with rule `state_unavailable`, and so are listing and reads of
@@ -488,21 +496,39 @@ loses the records and resets the daily caps, so the caps can be bypassed by
 restarting the gateway. Earlier runs stay visible in the XSIAM Action Center.
 
 `get_endpoint_script_run` with no `action_id` lists the caller's own recorded
-runs, newest first, at most 50. A run that was submitted but never answered is
-listed without an action id.
+runs, newest first, at most 50. A run whose outcome is unknown is listed
+without an action id.
 
 The ledger file belongs to one gateway process. Do not point two replicas at
 the same directory: give each its own, or use a shared store. Each replica
 keeps its own counts, so N replicas allow up to N times the daily caps.
 
-### Timeouts
+### Timeouts and submission outcome
 
 Every XSIAM call the feature makes has its own deadline,
 `SCRIPT_RUN_API_TIMEOUT_SECONDS`. A script or endpoint lookup that does not
-answer refuses the run. A `run_script` call that does not answer is reported as
-submitted with outcome unknown: it stays counted, its record is kept without an
-action id, and the analyst should check the Action Center before submitting
-again.
+answer refuses the run.
+
+Once `run_script` has been sent, the run is reported as not executed
+(`executed: false`) only when XSIAM's own response says so:
+
+- a 4xx reply, including authentication and permission errors;
+- a well-formed reply that reports failure and names no action.
+
+The record is then removed. Everything else is reported as submitted with
+outcome unknown (`executed: "unknown"`), because the action may be running:
+
+- no answer before the deadline, or a lost connection;
+- any 5xx, which a proxy can return after XSIAM started the action;
+- a reply that cannot be decoded, or that names no action without reporting
+  failure;
+- a reply that names an action and also reports failure. The action id is
+  kept and returned.
+
+An unknown outcome keeps its record, without an action id unless XSIAM gave
+one, so it stays in the caller's run list. The analyst should check the Action
+Center before submitting again. Either way the attempt counts against the
+daily caps.
 
 ## XSIAM Credential Broker
 
