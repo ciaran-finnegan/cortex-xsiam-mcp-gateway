@@ -117,6 +117,9 @@ _DURATION_MS = {
 }
 _OR_RE = re.compile(r"\bor\b", re.IGNORECASE)
 _NEGATED_TAIL_RE = re.compile(r"\bnot\b[\s(]*$", re.IGNORECASE)
+_NOT_BEFORE_GROUP_RE = re.compile(r"\bnot\s*$", re.IGNORECASE)
+# Stages a narrowing filter may follow and still be filtering the dataset's own rows and fields.
+_PASSTHROUGH_STAGES = frozenset({"config", "dataset", "preset", "datamodel", "filter", "fields", "alter"})
 # What a narrowing filter may compare a field with. Strings are already masked to their quotes.
 # An enum member is upper case, so a field compared with itself or with another field earns nothing.
 _LITERAL_VALUE = r'"[^"]*"|-?\d+(?:\.\d+)?'
@@ -571,7 +574,7 @@ def _narrowing(masked: str) -> tuple[bool, bool]:
     """
     scopes: list[tuple[bool, bool, bool]] = []
     for pipeline in _pipelines(masked):
-        filters = [piece for piece in pipeline.split("|") if _first_word(piece) == "filter"]
+        filters = _source_filters(pipeline)
         host = any(_has_selective_key(piece) for piece in filters)
         partition = any(_has_partition_key(piece) for piece in filters)
         named = [match.group(1) for match in _DATASET_EQ_RE.finditer(pipeline)]
@@ -590,6 +593,50 @@ def _narrowing(masked: str) -> tuple[bool, bool]:
     return all(host for host, _ in heavy), all(partition for _, partition in heavy)
 
 
+def _narrowing_fields() -> tuple[str, ...]:
+    config = get_config()
+    return _parse_selective_fields(config.cost_guard_selective_fields) + _parse_selective_fields(
+        config.cost_guard_partition_fields, "COST_GUARD_PARTITION_FIELDS"
+    )
+
+
+def _source_filters(pipeline: str) -> list[str]:
+    """Return the filter stages of a pipeline that still filter the dataset's own rows and fields.
+
+    A filter narrows the scan only while nothing has reshaped the rows or redefined the field it
+    names. Reading stops at the first stage that aggregates, joins, sorts, limits or otherwise
+    reshapes, and at an ``alter`` or ``fields`` stage that assigns a host or partition field, so
+    ``comp count() as event_type | filter event_type = 1`` earns nothing.
+    """
+    names = "|".join(re.escape(name) for name in _narrowing_fields())
+    assigns = re.compile(rf"(?<![\w.])`?(?:{names})`?\s*=(?!=)|\bas\s+`?(?:{names})`?(?![\w.])", re.IGNORECASE) if names else None
+    filters: list[str] = []
+    for piece in pipeline.split("|"):
+        word = _first_word(piece)
+        if not word:
+            continue
+        if word not in _PASSTHROUGH_STAGES:
+            break
+        if word == "filter":
+            filters.append(piece)
+        elif word in ("alter", "fields") and assigns is not None and assigns.search(piece):
+            break
+    return filters
+
+
+def _under_negation(prefix: str) -> bool:
+    """True when what follows ``prefix`` sits under a ``not``: directly, or inside any open group one precedes."""
+    if _NEGATED_TAIL_RE.search(prefix):
+        return True
+    open_groups: list[int] = []
+    for position, char in enumerate(prefix):
+        if char == "(":
+            open_groups.append(position)
+        elif char == ")" and open_groups:
+            open_groups.pop()
+    return any(_NOT_BEFORE_GROUP_RE.search(prefix[:start]) for start in open_groups)
+
+
 def _has_selective_key(filter_piece: str) -> bool:
     fields = _parse_selective_fields(get_config().cost_guard_selective_fields)
     return _has_positive_equality(filter_piece, fields, max_values=MAX_HOST_FILTER_VALUES, enum_values=False)
@@ -601,7 +648,7 @@ def _has_partition_key(filter_piece: str) -> bool:
 
 
 def _has_positive_equality(filter_piece: str, fields: tuple[str, ...], *, max_values: int, enum_values: bool) -> bool:
-    """True when a filter stage without ``or`` holds a non-negated ``=`` or ``in (...)`` between a field and literals.
+    """True when a filter stage without ``or`` holds an ``=`` or ``in (...)`` between a field and literals, under no ``not``.
 
     The right-hand side must be a string or number literal, or an upper-case enum member when
     ``enum_values`` is set, and an in-list may name at most ``max_values`` of them. A comparison
@@ -616,7 +663,7 @@ def _has_positive_equality(filter_piece: str, fields: tuple[str, ...], *, max_va
     value = re.compile(rf"(?:{_LITERAL_VALUE}|{_ENUM_VALUE})" if enum_values else rf"(?:{_LITERAL_VALUE})")
     single = re.compile(rf"\s*{value.pattern}{_VALUE_END}")
     for match in pattern.finditer(filter_piece):
-        if _NEGATED_TAIL_RE.search(filter_piece[: match.start()]):
+        if _under_negation(filter_piece[: match.start()]):
             continue
         rest = filter_piece[match.end() :]
         if match.group(1) == "=":

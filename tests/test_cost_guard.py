@@ -267,6 +267,11 @@ def test_host_scope_requires_a_positive_equality_without_or():
         'event_type = ENUM.PROCESS or action_remote_ip = "192.0.2.10"',
         "not (event_type = ENUM.PROCESS)",
         "event_type != ENUM.PROCESS",
+        # A not that encloses the comparison at any depth excludes the rows instead of keeping them.
+        'not (action_process_image_name = "x" and event_type = ENUM.PROCESS)',
+        'not ((action_process_image_name = "x") and (event_type = ENUM.PROCESS))',
+        'not (action_process_image_name = "x" and agent_hostname = "wks-0001")',
+        'action_remote_port = 443 and not (action_local_port = 1 and (agent_hostname in ("wks-0001")))',
     ],
 )
 def test_narrowing_needs_a_positive_comparison_with_a_bounded_set_of_literals(condition):
@@ -298,6 +303,45 @@ def test_host_and_partition_filters_take_window_points_off_a_heavy_dataset(condi
     # A narrowed query never scores below its tier, and the credit runs out as the window grows.
     assert cost_guard.estimate_query(shape, DAY_MS).score == 4
     assert cost_guard.estimate_query(shape, 365 * DAY_MS).score == (5 if host_scoped else 6)
+
+
+def test_a_not_that_has_closed_does_not_cost_a_later_comparison_its_credit():
+    shape = cost_guard.parse_query(
+        'dataset = xdr_data | filter not (action_process_image_name = "x") and event_type = ENUM.PROCESS | limit 5'
+    )
+
+    assert shape.partition_scoped is True
+
+
+@pytest.mark.parametrize(
+    "stages",
+    [
+        # The filter reads a value the query made up, not the dataset's field.
+        "comp count() as event_type | filter event_type = 1",
+        'alter agent_hostname = "wks-0001" | filter agent_hostname = "wks-0001"',
+        'alter `event_type` = "PROCESS" | filter event_type = "PROCESS"',
+        'fields action_file_name as agent_hostname | filter agent_hostname = "wks-0001"',
+        # The rows were already read and reshaped before the filter ran.
+        'comp count() as total by agent_hostname | filter agent_hostname = "wks-0001"',
+        'dedup action_remote_ip | filter agent_hostname = "wks-0001"',
+        'sort desc _time | limit 1000 | filter event_type = ENUM.PROCESS',
+        'join (dataset = acme_alerts) as a a.host_name = agent_hostname | filter agent_hostname = "wks-0001"',
+    ],
+)
+def test_narrowing_filter_must_run_on_the_datasets_own_rows_and_fields(stages):
+    shape = cost_guard.parse_query(f"dataset = xdr_data | {stages} | limit 25")
+
+    assert (shape.host_scoped, shape.partition_scoped) == (False, False)
+    assert cost_guard.estimate_query(shape, 30 * DAY_MS).cost_class == "extreme"
+
+
+def test_an_alter_that_leaves_the_narrowing_field_alone_keeps_the_credit():
+    shape = cost_guard.parse_query(
+        "dataset = xdr_data | alter image = lowercase(action_process_image_name) "
+        '| filter event_type = ENUM.PROCESS and image = "agent.exe" | comp count() as total | limit 5'
+    )
+
+    assert shape.partition_scoped is True
 
 
 def test_partition_credit_can_be_disabled(monkeypatch):
