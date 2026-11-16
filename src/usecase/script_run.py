@@ -59,7 +59,7 @@ from entities.exceptions import (
     PAPIServerError,
 )
 from entities.MCPContext import MCPContext
-from pkg.util import MAIN_DIR
+from pkg.util import MAIN_DIR, get_papi_auth_headers, get_papi_url
 from usecase.audit import create_script_run_audit_event, emit_audit_event, stable_hash
 from usecase.cost_guard import MAX_APPROVAL_CHARS
 from usecase.engagement import SCRIPT_RUN_MODES, hidden_tools_for_mode, owner_key
@@ -1884,6 +1884,7 @@ async def _retrieve_files(
         return {"retrieved": [], "message": f"File retrieval is unavailable: {message}"}
 
     max_bytes = int(get_config().script_run_max_file_bytes)
+    credentials = _download_credentials(fetcher)
     retrieved: list[dict[str, Any]] = []
     for endpoint_id in endpoint_ids:
         if file_counts.get(endpoint_id) == 0:
@@ -1901,13 +1902,15 @@ async def _retrieve_files(
             link = reply.get("data", reply.get("DATA"))
             if not isinstance(link, str) or not link:
                 raise ScriptFileError("XSIAM returned no download link")
-            size = await asyncio.wait_for(download_zip(link, destination, max_bytes), timeout=DOWNLOAD_DEADLINE_SECONDS)
+            size = await asyncio.wait_for(
+                download_zip(link, destination, max_bytes, credentials), timeout=DOWNLOAD_DEADLINE_SECONDS
+            )
         except ScriptFileError as e:
             retrieved.append({"endpoint_id": endpoint_id, "error": str(e)})
         except TimeoutError:
             retrieved.append({"endpoint_id": endpoint_id, "error": "the request or download timed out"})
         except Exception as e:
-            # Upstream and transport errors can carry the signed link; report the type only.
+            # Upstream and transport errors can carry the download link and its token; report the type only.
             logger.info("Retrieved-files download failed: %s", type(e).__name__)
             retrieved.append({"endpoint_id": endpoint_id, "error": f"download failed ({type(e).__name__})"})
         else:
@@ -1945,19 +1948,74 @@ def _download_url(link: str) -> str:
     return link
 
 
+@dataclass(frozen=True)
+class DownloadCredentials:
+    """The XSIAM API key headers and the one host they may be sent to."""
+
+    api_host: tuple[str, int]
+    headers: dict[str, str] = field(repr=False)
+
+
+def _host_and_port(url: str) -> tuple[str, int] | None:
+    try:
+        parts = urlsplit(url)
+        hostname = parts.hostname
+        port = parts.port or (443 if parts.scheme.lower() == "https" else None)
+    except ValueError:
+        return None
+    if parts.scheme.lower() != "https" or not hostname or port is None:
+        return None
+    return hostname.rstrip(".").lower(), port
+
+
+def _download_credentials(fetcher: Any) -> DownloadCredentials | None:
+    """The fetcher's API key, bound to the configured public API host.
+
+    XSIAM's retrieved-files link is not signed: it is a download URL with a token on the
+    public API host and answers 401 without the API key headers. The key is the one the fetcher
+    selected for this principal. The host comes from ``CORTEX_MCP_PAPI_URL``, never from the link.
+    """
+    api_key = getattr(fetcher, "api_key", None)
+    api_key_id = getattr(fetcher, "api_key_id", None)
+    if not (isinstance(api_key, str) and api_key and isinstance(api_key_id, str) and api_key_id):
+        return None
+    try:
+        api_host = _host_and_port(get_papi_url(get_config().papi_url_env_key))
+    except ValueError:
+        return None
+    if api_host is None:
+        return None
+    return DownloadCredentials(api_host=api_host, headers=get_papi_auth_headers(api_key, api_key_id))
+
+
+def _headers_for(url: str, credentials: DownloadCredentials | None) -> dict[str, str]:
+    """The API key headers when ``url`` is on the configured API host (same name and port), else none."""
+    if credentials is None or _host_and_port(url) != credentials.api_host:
+        return {}
+    return dict(credentials.headers)
+
+
 def _download_client() -> httpx.AsyncClient:
-    # No XSIAM credentials are attached: the link is signed, and the API key never leaves the API host.
+    # No default headers: the API key is added per request, and only for the configured API host.
     return httpx.AsyncClient(follow_redirects=False, timeout=DOWNLOAD_TIMEOUT_SECONDS, trust_env=False)
 
 
-async def download_zip(link: str, destination: Path, max_bytes: int) -> int:
-    """Stream a signed link to ``destination`` under a size cap. Redirects are followed only to https."""
+async def download_zip(
+    link: str, destination: Path, max_bytes: int, credentials: DownloadCredentials | None = None
+) -> int:
+    """Stream a download link to ``destination`` under a size cap. Redirects are followed only to https.
+
+    The API key headers go only to the configured API host, checked again on every redirect, so a
+    redirect to any other host is fetched without them.
+    """
     url = _download_url(link)
     if destination.is_symlink():
         raise ScriptFileError("refusing to write through a symbolic link")
     async with _download_client() as client:
         for _ in range(MAX_DOWNLOAD_REDIRECTS + 1):
-            async with client.stream("GET", url) as response:
+            # Nothing one host sets (a cookie) is carried to the next hop.
+            client.cookies.clear()
+            async with client.stream("GET", url, headers=_headers_for(url, credentials)) as response:
                 if response.status_code in (301, 302, 303, 307, 308):
                     location = response.headers.get("location")
                     if not location:

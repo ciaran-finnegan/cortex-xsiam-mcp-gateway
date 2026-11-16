@@ -420,7 +420,7 @@ SCRIPT_RUN_RESULTS_DIR=/var/lib/cortex-mcp/script-results
 | `SCRIPT_RUN_API_TIMEOUT_SECONDS` | `30` | Deadline for each XSIAM call this feature makes; valid range 1-300. |
 | `SCRIPT_RUN_STATE_DIR` | empty | Absolute directory for the durable run ledger, `script_runs.json`. Same rules as `SCRIPT_RUN_RESULTS_DIR`. Empty keeps run records and daily counts in memory only. |
 | `SCRIPT_RUN_RECORD_RETENTION_DAYS` | `30` | Age after which a run record is dropped; valid range 1-3650. At most 1000 records are kept, fewer when the ledger file reaches its size budget. |
-| `SCRIPT_RUN_RESULTS_DIR` | empty | Absolute directory for retrieved files on the gateway host. Must not be a symbolic link, inside the repository, or inside a git working tree. Created owner-only; an existing directory open to group or others is refused. Empty disables file retrieval. |
+| `SCRIPT_RUN_RESULTS_DIR` | empty | Absolute directory for retrieved files on the gateway host. Must not be a symbolic link, inside the repository, or inside a git working tree. Created owner-only; an existing directory open to group or others is refused. Empty disables file retrieval. XSIAM's download link is on the public API host and needs the API key, so retrieval uses the same key as the run, sent only to the host in `CORTEX_MCP_PAPI_URL`. |
 | `SCRIPT_RUN_MAX_FILE_BYTES` | `52428800` | Largest retrieved-files zip the gateway will save. |
 | `SCRIPT_RUN_ALLOW_FOREIGN_ACTIONS` | `false` | Let `get_endpoint_script_run` read any script action in the tenant, including runs started in the console. |
 

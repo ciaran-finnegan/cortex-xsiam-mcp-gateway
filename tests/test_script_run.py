@@ -1,7 +1,8 @@
 """Endpoint script execution: every guard rail, the happy path, and that a refusal sends nothing to XSIAM.
 
 All names are synthetic. The fake fetcher stands in for the XSIAM public API and a mock
-transport stands in for the signed download host.
+transport stands in for the download host: the API host itself, or another host the link or a
+redirect points at.
 """
 
 import asyncio
@@ -62,6 +63,11 @@ ENDPOINTS = ["wks-0001", "wks-0002"]
 REASON = "Collect triage artefacts for the synthetic case"
 ACTION_ID = 4242
 SIGNED_LINK = "https://downloads.example.test/signed/acme-results.zip?sig=synthetic-signature"
+# XSIAM's real link: an unsigned download path on the public API host that needs the API key.
+API_URL = "https://api-acme.xdr.example.test"
+API_LINK = f"{API_URL}/public_api/v1/download/synthetic-download-token"
+API_KEY = "synthetic-api-key-value"
+API_KEY_ID = "17"
 TOOLS = set(SCRIPT_RUN_TOOL_NAMES)
 
 RUN_PATH = "scripts/run_script/"
@@ -126,6 +132,9 @@ class ScriptFetcher:
         self.unknown_endpoints = set()
         self.endpoint_status = {"wks-0002": "disconnected"}
         self.link = SIGNED_LINK
+        self.url = API_URL
+        self.api_key = API_KEY
+        self.api_key_id = API_KEY_ID
         self.run_reply = {"action_id": ACTION_ID, "endpoints_count": 2, "status": 1}
 
     def paths(self):
@@ -283,6 +292,7 @@ def audit_events(monkeypatch):
 @pytest.fixture
 def fetcher(monkeypatch):
     fake = ScriptFetcher()
+    monkeypatch.setattr(get_config(), "papi_url_env_key", API_URL)
 
     async def fake_get_fetcher(ctx):
         return fake
@@ -1824,7 +1834,7 @@ async def test_files_are_saved_privately_and_only_the_path_and_size_return(monke
     )
     serialized = json.dumps(reply)
     assert "synthetic-signature" not in serialized and "downloads.example.test" not in serialized
-    # The signed link is fetched without the XSIAM API key.
+    # A link on any host other than the API host is fetched without the XSIAM API key.
     assert len(seen) == 1 and str(seen[0].url) == SIGNED_LINK
     assert "authorization" not in seen[0].headers and "x-xdr-auth-id" not in seen[0].headers
 
@@ -1981,6 +1991,137 @@ async def test_failed_download_reports_no_link(monkeypatch, tmp_path, fetcher):
         reply = await get_endpoint_script_run(ctx, action_id=ACTION_ID, retrieve_files_for=["wks-0001"])
         assert expected in reply["files"]["retrieved"][0]["error"]
         assert "example.test" not in json.dumps(reply["files"])
+
+
+def _tenant_download(request):
+    """Answers like XSIAM's download path: 401 without both API key headers, the zip with them."""
+    if request.headers.get("authorization") != API_KEY or request.headers.get("x-xdr-auth-id") != API_KEY_ID:
+        return httpx.Response(401, json={"reply": {"err_msg": "unauthorized"}})
+    return httpx.Response(200, content=b"PK api zip", headers={"content-type": "application/octet-stream"})
+
+
+def _no_api_key(request):
+    return "authorization" not in request.headers and "x-xdr-auth-id" not in request.headers
+
+
+@pytest.mark.asyncio
+async def test_link_on_the_api_host_is_fetched_with_the_api_key(monkeypatch, tmp_path, fetcher, audit_events):
+    results_dir = tmp_path / "script-results"
+    monkeypatch.setattr(get_config(), "script_run_results_dir", str(results_dir))
+    fetcher.link = API_LINK
+    seen = _serve_download(monkeypatch, _tenant_download)
+    ctx = await _started()
+
+    reply = await get_endpoint_script_run(ctx, action_id=ACTION_ID, retrieve_files_for=["wks-0001"])
+
+    saved = results_dir / f"script-run-{ACTION_ID}-wks-0001.zip"
+    assert reply["files"]["retrieved"] == [{"endpoint_id": "wks-0001", "path": str(saved), "bytes": 10}]
+    assert saved.read_bytes() == b"PK api zip"
+    assert len(seen) == 1 and str(seen[0].url) == API_LINK
+    assert seen[0].headers["authorization"] == API_KEY and seen[0].headers["x-xdr-auth-id"] == API_KEY_ID
+    serialized = json.dumps([reply, audit_events])
+    for secret in (API_KEY, "synthetic-download-token", "api-acme.xdr.example.test"):
+        assert secret not in serialized
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://downloads.example.test/public_api/v1/download/synthetic-download-token",
+        "https://api-acme.xdr.example.test.attacker.example/public_api/v1/download/t",
+        "https://files.api-acme.xdr.example.test/public_api/v1/download/t",
+        "https://api-acme.xdr.example.test:8443/public_api/v1/download/t",
+        "https://api-other.xdr.example.test/public_api/v1/download/t",
+    ],
+)
+@pytest.mark.asyncio
+async def test_api_key_is_not_sent_to_any_other_host(monkeypatch, tmp_path, fetcher, link):
+    monkeypatch.setattr(get_config(), "script_run_results_dir", str(tmp_path / "script-results"))
+    fetcher.link = link
+    seen = _serve_download(monkeypatch, _tenant_download)
+    ctx = await _started()
+
+    reply = await get_endpoint_script_run(ctx, action_id=ACTION_ID, retrieve_files_for=["wks-0001"])
+
+    assert len(seen) == 1 and _no_api_key(seen[0])
+    assert reply["files"]["retrieved"][0]["error"] == "the download failed with status 401"
+
+
+@pytest.mark.parametrize("location", ["https://storage.example.test/final.zip", "https://api-acme.xdr.example.test.attacker.example/x"])
+@pytest.mark.asyncio
+async def test_api_key_is_not_sent_after_a_redirect_off_the_api_host(monkeypatch, tmp_path, fetcher, location):
+    monkeypatch.setattr(get_config(), "script_run_results_dir", str(tmp_path / "script-results"))
+    fetcher.link = API_LINK
+
+    def redirect(request):
+        if request.url.host == "api-acme.xdr.example.test":
+            return httpx.Response(
+                302, headers={"location": location, "set-cookie": "session=synthetic-session; Domain=example.test; Path=/"}
+            )
+        return httpx.Response(200, content=b"moved zip")
+
+    seen = _serve_download(monkeypatch, redirect)
+    ctx = await _started()
+
+    reply = await get_endpoint_script_run(ctx, action_id=ACTION_ID, retrieve_files_for=["wks-0001"])
+
+    assert reply["files"]["retrieved"][0]["bytes"] == 9
+    assert len(seen) == 2
+    assert seen[0].headers["authorization"] == API_KEY
+    assert _no_api_key(seen[1]) and "cookie" not in seen[1].headers
+
+
+@pytest.mark.asyncio
+async def test_api_key_follows_a_redirect_that_stays_on_the_api_host(monkeypatch, tmp_path, fetcher):
+    monkeypatch.setattr(get_config(), "script_run_results_dir", str(tmp_path / "script-results"))
+    fetcher.link = API_LINK
+
+    def moved(request):
+        if request.url.path.endswith("synthetic-download-token"):
+            return httpx.Response(307, headers={"location": "/public_api/v1/download/moved-token"})
+        return _tenant_download(request)
+
+    seen = _serve_download(monkeypatch, moved)
+    ctx = await _started()
+
+    reply = await get_endpoint_script_run(ctx, action_id=ACTION_ID, retrieve_files_for=["wks-0001"])
+
+    assert reply["files"]["retrieved"][0]["bytes"] == 10
+    assert [request.headers.get("authorization") for request in seen] == [API_KEY, API_KEY]
+
+
+@pytest.mark.asyncio
+async def test_unauthorised_download_is_reported_as_a_failure(monkeypatch, tmp_path, fetcher, audit_events):
+    results_dir = tmp_path / "script-results"
+    monkeypatch.setattr(get_config(), "script_run_results_dir", str(results_dir))
+    fetcher.link = API_LINK
+    fetcher.api_key = "synthetic-revoked-key"
+    seen = _serve_download(monkeypatch, _tenant_download)
+    ctx = await _started()
+
+    reply = await get_endpoint_script_run(ctx, action_id=ACTION_ID, retrieve_files_for=["wks-0001"])
+
+    assert reply["files"]["retrieved"] == [
+        {"endpoint_id": "wks-0001", "error": "the download failed with status 401"}
+    ]
+    assert len(seen) == 1 and list(results_dir.iterdir()) == []
+    serialized = json.dumps([reply, audit_events])
+    assert "synthetic-download-token" not in serialized and "synthetic-revoked-key" not in serialized
+
+
+@pytest.mark.parametrize("papi_url", ["", "http://"])
+@pytest.mark.asyncio
+async def test_no_api_key_is_sent_without_a_configured_api_host(monkeypatch, tmp_path, fetcher, papi_url):
+    monkeypatch.setattr(get_config(), "script_run_results_dir", str(tmp_path / "script-results"))
+    monkeypatch.setattr(get_config(), "papi_url_env_key", papi_url)
+    fetcher.link = API_LINK
+    seen = _serve_download(monkeypatch, _tenant_download)
+    ctx = await _started()
+
+    reply = await get_endpoint_script_run(ctx, action_id=ACTION_ID, retrieve_files_for=["wks-0001"])
+
+    assert len(seen) == 1 and _no_api_key(seen[0])
+    assert "status 401" in reply["files"]["retrieved"][0]["error"]
 
 
 @pytest.mark.asyncio
