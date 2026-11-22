@@ -14,10 +14,12 @@ replace Dependabot or be scoped to a Renovate-only use case.
 | Control | Status |
 | --- | --- |
 | Dependabot version updates | Enabled for Python and GitHub Actions, with patch/minor grouping. |
-| Dependabot security alerts | Repository setting required; alerts are already visible. |
+| Dependabot security alerts | Enabled, with Dependabot security updates. |
 | Dependency Review | Blocks pull requests introducing high-severity dependencies. |
 | Dependabot auto-merge | Added for passing patch/minor Dependabot PRs. |
-| CodeQL | Enabled. |
+| CodeQL | Enabled for `src/` and `scripts/`. `tests/` is not analysed, see `.github/codeql/codeql-config.yml`. |
+| Secret scanning | Enabled, with push protection. |
+| Private vulnerability reporting | Enabled. |
 | OpenSSF Scorecard | Enabled. |
 | Release workflow | Tags create prerelease/stable GitHub releases. |
 

@@ -12,6 +12,7 @@ import os
 import re
 import stat
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -424,10 +425,10 @@ async def test_status_and_results_for_a_run_this_principal_started(fetcher, audi
 def test_only_library_script_apis_are_ever_called():
     """The gateway never runs code supplied in a request: no snippet API and no code argument."""
     for module in (script_run, endpoint_scripts):
-        source = open(module.__file__, encoding="utf-8").read()
+        source = Path(module.__file__).read_text(encoding="utf-8")
         assert "snippet" not in source.lower()
     paths = {SCRIPTS_PATH, METADATA_PATH, RUN_PATH, STATUS_PATH, RESULTS_PATH, FILES_PATH, ENDPOINTS_PATH}
-    source = open(script_run.__file__, encoding="utf-8").read()
+    source = Path(script_run.__file__).read_text(encoding="utf-8")
     assert set(re.findall(r'"((?:scripts|endpoints)/[^"]*)"', source)) == paths
     assert "omit_papi_prefix" not in source and "public_api" not in source
     # Every request goes through the one bounded sender.
@@ -946,8 +947,8 @@ async def test_an_approval_on_the_first_call_is_not_used(fetcher, audit_events):
 
     second = await _call(approval=APPROVAL)
     assert second["success"] is True and second["approval_method"] == "approval_argument"
-    hashes = {event["script_run"]["request_sha256"] for event in audit_events}
-    assert len(hashes) == 1 and len(hashes.pop()) == 64
+    (request_hash,) = {event["script_run"]["request_sha256"] for event in audit_events}
+    assert len(request_hash) == 64
 
 
 @pytest.mark.parametrize(
