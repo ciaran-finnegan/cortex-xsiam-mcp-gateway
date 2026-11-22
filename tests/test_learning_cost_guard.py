@@ -153,8 +153,8 @@ def test_learned_cost_is_ignored_for_multi_dataset_queries_and_without_an_entry(
 @pytest.mark.parametrize(
     "learned_high, expected_high",
     [
-        (0.01, 3.6),  # history below the seed band cannot lower the estimate
-        (1.2, 3.6),  # nor can history inside it
+        (0.01, 0.5),  # history below the seed band cannot lower the estimate
+        (0.2, 0.5),  # nor can history inside it
         (6.0, 6.0),  # history above it raises the estimate
     ],
 )
