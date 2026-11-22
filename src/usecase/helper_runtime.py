@@ -69,6 +69,9 @@ DEFAULT_WINDOW_HOURS = 24
 FIELD_CACHE_TTL_SECONDS = 3600
 FIELD_CACHE_MAX_ENTRIES = 256
 FIELD_DISCOVERY_SAMPLE = 5
+# A day first: that sample is light on every dataset tier. An empty day widens once to a week.
+FIELD_DISCOVERY_WINDOW_HOURS = 24
+FIELD_DISCOVERY_WIDE_WINDOW_HOURS = 24 * 7
 MAX_HELPER_QUERIES = 30
 
 _field_cache: dict[str, tuple[float, frozenset[str]]] = {}
@@ -202,14 +205,20 @@ async def discovered_field_names(run: HelperRun, dataset: str) -> frozenset[str]
     if cached and now - cached[0] < FIELD_CACHE_TTL_SECONDS:
         return cached[1]
 
-    run._spend()
     xql = build_field_discovery_xql(dataset, FIELD_DISCOVERY_SAMPLE)
-    record: dict[str, Any] = {"dataset": dataset, "purpose": "field_discovery", "query_sha256": query_hash(xql)}
-    response = await execute_query(run, xql, FIELD_DISCOVERY_SAMPLE, window_timeframe(24 * 7), record)
-    run.queries.append(record)
-    if response.get("error"):
-        return frozenset()
-    names = frozenset(name for row in extract_xql_rows(response) for name in row)
+    names: frozenset[str] = frozenset()
+    for hours in (FIELD_DISCOVERY_WINDOW_HOURS, FIELD_DISCOVERY_WIDE_WINDOW_HOURS):
+        run._spend()
+        record: dict[str, Any] = {"dataset": dataset, "purpose": "field_discovery", "query_sha256": query_hash(xql)}
+        # A refused sample propagates on either window, so the caller returns the approvable
+        # refusal instead of treating an unverified dataset as one with no fields.
+        response = await execute_query(run, xql, FIELD_DISCOVERY_SAMPLE, window_timeframe(hours), record)
+        run.queries.append(record)
+        if response.get("error"):
+            return frozenset()
+        names = frozenset(name for row in extract_xql_rows(response) for name in row)
+        if names:
+            break
     if names:
         if len(_field_cache) >= FIELD_CACHE_MAX_ENTRIES:
             _field_cache.pop(next(iter(_field_cache)))
