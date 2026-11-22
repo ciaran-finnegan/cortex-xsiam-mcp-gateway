@@ -170,7 +170,7 @@ invocation events. See
 | `script_run.foreign_action` | True when a read was served for an action this process did not start. |
 | `script_run.file_endpoint_ids`, `files_retrieved`, `file_bytes` | File retrieval requested and saved. |
 
-Script output, returned values, and signed download links are never logged.
+Script output, returned values, and download links (which carry a download token) are never logged.
 Tool invocation end events carry `result.script_run_rule` for a refusal, with
 `outcome=denied`.
 
