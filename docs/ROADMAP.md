@@ -54,6 +54,12 @@
       ([Investigation Helpers](INVESTIGATION_HELPERS.md)).
 - [x] Add secrets guidance for workstations and servers, so the XSIAM API key
       stays out of `.env` ([Secrets And API Keys](SECRETS.md)).
+- [x] Add gated endpoint script execution (`list_endpoint_scripts`,
+      `run_endpoint_script`, `get_endpoint_script_run`): off unless
+      `SCRIPT_RUN_ENABLED` is set, limited to listed scripts and groups, with
+      an approval step before every run
+      ([Configuration](CONFIGURATION.md#endpoint-script-execution),
+      [Security Model](SECURITY_MODEL.md#endpoint-script-execution)).
 - [ ] Validate Entra, gateway, dataset policy, tool policy, credential broker,
       and audit export against a non-production XSIAM tenant.
 - [x] Complete FastMCP 3 compatibility work to remove the unpatched transitive
