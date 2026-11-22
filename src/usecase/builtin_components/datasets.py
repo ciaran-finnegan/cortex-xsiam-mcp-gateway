@@ -494,6 +494,11 @@ _XQL_HELP: dict[str, dict[str, Any]] = {
     "raw_xql": {
         "use": "Only privileged roles may call execute_xql_query. Raw XQL must end with a numeric limit stage, which the server clamps. Comments are removed before the check and before submission, so a limit written inside a comment does not count. For other users, map supported intent to query_dataset.",
         "xql_pattern": "dataset = <allowed_dataset> | filter <field> = \"literal\" | fields <field1>, <field2> | limit 25",
+        "rules": [
+            "A field named like an XQL stage or operator, such as target, limit, tag, top, view or table, must be "
+            "written in backticks (`target`) or XSIAM rejects the whole query as a syntax error. query_dataset "
+            "and search_logs add the backticks themselves; pass them the bare field name.",
+        ],
     },
 }
 

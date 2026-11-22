@@ -53,3 +53,31 @@ def test_dataset_policy_denies_unassigned_dataset(monkeypatch):
 
     with pytest.raises(DatasetAuthorizationError):
         ensure_dataset_authorized(context, "custom_cloud_dataset")
+
+
+def test_build_structured_xql_backtick_quotes_reserved_word_fields():
+    query = build_structured_xql(
+        dataset="identity_audit_raw",
+        filters=[{"field": "target", "operator": "not_contains", "value": "svc"}],
+        fields=["action", "target", "Limit"],
+        limit=5,
+    )
+
+    assert query == (
+        'dataset = identity_audit_raw | filter not (`target` contains "svc") | fields action, `target`, `Limit` | limit 5'
+    )
+
+
+@pytest.mark.parametrize("name", ["target`", "`target`", "target` | fields `x"])
+def test_build_structured_xql_rejects_a_backtick_in_a_field_name(name):
+    with pytest.raises(ValueError, match="Invalid"):
+        build_structured_xql("identity_audit_raw", fields=[name])
+    with pytest.raises(ValueError, match="Invalid"):
+        build_structured_xql("identity_audit_raw", filters=[{"field": name, "operator": "eq", "value": "x"}], fields=["action"])
+
+
+def test_reserved_word_list_holds_only_lowercase_identifiers():
+    from usecase.xql_builder import SAFE_IDENTIFIER_RE, XQL_RESERVED_WORDS
+
+    assert {"target", "limit", "sort", "filter", "fields", "tag", "top", "view", "table", "null"} <= XQL_RESERVED_WORDS
+    assert all(word == word.lower() and SAFE_IDENTIFIER_RE.match(word) for word in XQL_RESERVED_WORDS)

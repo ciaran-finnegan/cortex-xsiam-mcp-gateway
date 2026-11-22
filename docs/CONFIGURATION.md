@@ -85,11 +85,12 @@ allowlisted query operations.
 
 ## Incoming Identity
 
-HTTP transport supports three identity modes:
+HTTP transport supports four identity modes: Entra bearer tokens, a trusted
+gateway's signed headers, either of those, or static client API keys.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `MCP_IDENTITY_AUTH_MODE` | `none` | `none`, `entra`, `gateway`, or `entra_or_gateway`. Use `none` only for local development or isolated stdio use. |
+| `MCP_IDENTITY_AUTH_MODE` | `none` | `none`, `entra`, `gateway`, `entra_or_gateway`, or `api_key`. Use `none` only for local development or isolated stdio use. |
 | `ENTRA_TENANT_ID` | empty | Tenant ID used to derive Entra issuer and JWKS URL. |
 | `ENTRA_AUDIENCE` | empty | Expected `aud` claim for this MCP API. Required for Entra mode. |
 | `ENTRA_ISSUER` | derived | Optional explicit expected issuer. |
@@ -111,6 +112,57 @@ headers:
 The gateway signature covers issuer, principal, groups, roles, timestamp, and
 nonce. Do not deploy gateway mode unless the MCP service is reachable only from
 the trusted gateway or a network segment with equivalent controls.
+
+### Static client API keys
+
+`api_key` mode is for a small test group before an identity provider is wired
+in. Each person gets their own key, so the audit trail still names who made
+each call. It accepts nothing else: Entra tokens and gateway headers are
+rejected while it is on.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `MCP_API_KEYS` | empty | JSON object of key id to entry. Holds SHA-256 hashes only. Empty rejects every caller. |
+
+A client sends `Authorization: Bearer xgw_<key_id>.<secret>`. The key id is
+3-64 characters of `a-z`, `0-9` and hyphen. The secret is at least 32
+URL-safe characters; generate it with a CSPRNG, for example
+`python -c "import secrets; print(secrets.token_urlsafe(32))"`. The registry
+entry stores the SHA-256 of the whole token:
+
+```json
+{
+  "analyst-one": {
+    "sha256": "<64 lowercase hex chars>",
+    "principal": "analyst.one",
+    "groups": ["Tier1"],
+    "expires": "2027-01-31"
+  }
+}
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `sha256` | yes | SHA-256 of the full token, lowercase hex. Two entries cannot share one. |
+| `principal` | yes | The identity written to audit events and used for per-principal caps. |
+| `groups` | no | Groups for `TOOL_ACCESS_POLICY`, the dataset policy and raw XQL privilege. None means no tool access. |
+| `expires` | no | `YYYY-MM-DD`. The key stops working at 00:00 UTC on that date. |
+| `disabled` | no | `true` revokes the key without removing the entry. |
+| `created`, `note` | no | Free text for the operator. Ignored. |
+
+The server refuses to start on a malformed registry, and an unknown field is
+malformed, so a misspelt `groups` cannot silently drop a restriction. A key id
+or field name that appears twice is malformed too, so an old entry left beside
+a disabled one cannot stay active. A wrong
+key id and a wrong secret get the same `401`. Rejections are logged with the
+key id only.
+
+Keep these keys out of files and chat. Inject `MCP_API_KEYS` at start from the
+secret store, the same way as the XSIAM API key, and have each person keep
+their token in the OS credential store ([Secrets](SECRETS.md)). The keys do
+not expire unless you set `expires`, there is no rate limit on guesses beyond
+the 256-bit secret, and revocation takes a restart. Move to `entra` mode
+before widening access.
 
 ## Tool Policy
 
@@ -421,7 +473,7 @@ SCRIPT_RUN_RESULTS_DIR=/var/lib/cortex-mcp/script-results
 | `SCRIPT_RUN_API_TIMEOUT_SECONDS` | `30` | Deadline for each XSIAM call this feature makes; valid range 1-300. |
 | `SCRIPT_RUN_STATE_DIR` | empty | Absolute directory for the durable run ledger, `script_runs.json`. Same rules as `SCRIPT_RUN_RESULTS_DIR`. Empty keeps run records and daily counts in memory only. |
 | `SCRIPT_RUN_RECORD_RETENTION_DAYS` | `30` | Age after which a run record is dropped; valid range 1-3650. At most 1000 records are kept, fewer when the ledger file reaches its size budget. |
-| `SCRIPT_RUN_RESULTS_DIR` | empty | Absolute directory for retrieved files on the gateway host. Must not be a symbolic link, inside the repository, or inside a git working tree. Created owner-only; an existing directory open to group or others is refused. Empty disables file retrieval. |
+| `SCRIPT_RUN_RESULTS_DIR` | empty | Absolute directory for retrieved files on the gateway host. Must not be a symbolic link, inside the repository, or inside a git working tree. Created owner-only; an existing directory open to group or others is refused. Empty disables file retrieval. XSIAM's download link is on the public API host and needs the API key, so retrieval uses the same key as the run, sent only to the host in `CORTEX_MCP_PAPI_URL`. |
 | `SCRIPT_RUN_MAX_FILE_BYTES` | `52428800` | Largest retrieved-files zip the gateway will save. |
 | `SCRIPT_RUN_ALLOW_FOREIGN_ACTIONS` | `false` | Let `get_endpoint_script_run` read any script action in the tenant, including runs started in the console. |
 
