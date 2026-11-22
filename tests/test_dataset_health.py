@@ -149,6 +149,35 @@ async def test_dataset_health_returns_the_refusal_when_the_day_is_empty_and_the_
     assert len(refused) == 1 and refused[0]["cost_guard_rule"] == "approval_required"
 
 
+@pytest.mark.parametrize("failing_window", ["day", "week"])
+@pytest.mark.asyncio
+async def test_dataset_health_reports_unknown_when_a_schema_sample_fails(monkeypatch, failing_window):
+    """A failed sample checked nothing, so the dataset is unknown, not empty."""
+    windows = {
+        "day": {"relativeTime": health.SCHEMA_SAMPLE_WINDOW_HOURS * 3_600_000},
+        "week": {"relativeTime": health.STALE_LOOKBACK_HOURS * 3_600_000},
+    }
+
+    class FailingXsiam(FakeXsiam):
+        async def run(self, ctx, query, limit, timeframe=None, **kwargs):
+            if timeframe == windows[failing_window]:
+                self.calls.append({"dataset": TRAFFIC, "query": query, "limit": limit, "timeframe": timeframe})
+                return {"success": False, "error": "XQL query timed out", "query_id": "q"}
+            return await super().run(ctx, query, limit, timeframe=timeframe, **kwargs)
+
+    fake = FailingXsiam()
+    _install(monkeypatch, fake, [TRAFFIC], [TRAFFIC])
+
+    response = await health.dataset_health(_ctx(), dataset=TRAFFIC)
+
+    report = response["datasets"][0]
+    assert report["status"] == "unknown" and "events" not in report
+    assert "failed" in report["detail"]
+    expected_calls = 1 if failing_window == "day" else 2
+    assert len(fake.calls) == expected_calls
+    assert response["provenance"]["queries"][-1]["error"] is True
+
+
 @pytest.mark.asyncio
 async def test_dataset_health_by_topic_checks_only_allowed_matches(monkeypatch):
     fake = FakeXsiam()

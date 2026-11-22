@@ -99,10 +99,12 @@ The caller's query never runs unless `probe` is true.
   that day returns no rows, once more over the last seven days, at most once per
   tenant, credential profile and dataset per hour. Failures and empty samples are
   cached too, so a failing dataset is not retried within the hour. Discovery goes
-  through the cost guard like any other query. An early-exit sample over a day is
-  light on every dataset tier, so the first sample runs in every mode, `xdr_data`
-  included; the seven-day retry on an idle heavy-tier dataset can still be rated
-  above the mode's approval threshold. The guard then refuses it, `field_check` is
+  through the cost guard like any other query. An early-exit sample over a day
+  starts from a light estimate on every dataset tier, `xdr_data` included, so it is
+  normally below every mode's approval threshold. Both samples stay subject to every
+  cost guard check: a learned cost can raise the estimate, and the reserve can refuse
+  either one. The seven-day retry on an idle heavy-tier dataset can be rated above
+  the mode's approval threshold. When the guard refuses a sample, `field_check` is
   `{"status": "skipped", "source": "cost_guard"}`, and the refusal is not cached, so a
   mode with a higher threshold can still discover fields.
 - The probe runs the comment-stripped query with its terminal limit replaced by

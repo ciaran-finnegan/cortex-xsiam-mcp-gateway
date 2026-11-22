@@ -195,12 +195,14 @@ This project follows a lightweight changelog format until stable releases begin.
 - Field discovery samples one day first and widens to seven days only when the day
   returns no rows, in `validate_xql`, the investigation helpers and `dataset_health`.
   With the early-exit sample scoring change (#68), discovery on a heavy dataset such as
-  `xdr_data` is light and runs in every mode; before, the fixed seven-day sample
+  `xdr_data` starts from a light estimate and is normally below every mode's
+  approval threshold, though both samples stay subject to every cost guard check;
+  before, the fixed seven-day sample
   was rated medium and refused in operations mode, so `validate_xql` skipped its
   field check there. An idle dataset now costs two cheap samples instead of one.
   A sample the cost guard refuses, on either window, ends the helper or
-  `dataset_health` call with that refusal, so an unverified dataset is never
-  reported as empty.
+  `dataset_health` call with that refusal, and a sample that fails reports the
+  dataset as `unknown`, so an unverified dataset is never reported as empty.
 
 ## 0.2.0-alpha.1 - 2026-07-10
 

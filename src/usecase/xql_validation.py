@@ -60,9 +60,9 @@ APPENDED_LIMIT = 25
 CACHE_TTL_SECONDS = 3600
 CACHE_MAX_ENTRIES = 256
 FIELD_DISCOVERY_SAMPLE = 25
-# One day first: an early-exit sample over a day is light on every dataset tier, so it runs
-# below the approval threshold. An empty day widens once to a week before the dataset is
-# reported as possibly idle.
+# One day first: an early-exit sample over a day starts from a light estimate on every dataset
+# tier, so it is normally below the approval threshold. Both windows stay subject to every cost
+# guard check. An empty day widens once to a week before the dataset is reported as possibly idle.
 FIELD_DISCOVERY_WINDOW_MS = DAY_MS
 FIELD_DISCOVERY_WIDE_WINDOW_MS = 7 * DAY_MS
 PROBE_WINDOW_MS = HOUR_MS

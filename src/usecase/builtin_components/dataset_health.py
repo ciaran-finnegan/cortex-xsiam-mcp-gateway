@@ -66,8 +66,12 @@ def _bucket(window_hours: int) -> QueryTimeBucket:
     return QueryTimeBucket(field="_time", size=1, unit="d")
 
 
-async def _observed_fields(run: HelperRun, dataset: str) -> list[dict[str, Any]]:
-    """Observed field names and types from a small sample. Values are discarded."""
+async def _observed_fields(run: HelperRun, dataset: str) -> list[dict[str, Any]] | None:
+    """Observed field names and types from a small sample. Values are discarded.
+
+    An empty list means both windows ran and returned no rows. None means a sample failed,
+    so nothing is known about the dataset.
+    """
     ensure_dataset_authorized(run.principal, dataset)
     xql = build_field_discovery_xql(dataset, SCHEMA_SAMPLE_ROWS)
     for hours in (SCHEMA_SAMPLE_WINDOW_HOURS, STALE_LOOKBACK_HOURS):
@@ -79,7 +83,7 @@ async def _observed_fields(run: HelperRun, dataset: str) -> list[dict[str, Any]]
         if response.get("error"):
             record["error"] = True
             run.queries.append(record)
-            return []
+            return None
         run.queries.append(record)
         fields = infer_field_catalog(extract_xql_rows(response))
         if fields:
@@ -104,7 +108,8 @@ def _sample_fields(resolved: ResolvedDataset, fields: list[dict[str, Any]], time
 
 async def _check_dataset(run: HelperRun, resolved: ResolvedDataset, window_hours: int, include_samples: bool) -> dict[str, Any]:
     dataset = resolved.dataset_name
-    fields = await _observed_fields(run, dataset)
+    observed = await _observed_fields(run, dataset)
+    fields = observed or []
     names = {item["name"] for item in fields}
     time_field = resolved.entry.time_field if resolved.entry.time_field in names else ("_time" if "_time" in names else None)
     report: dict[str, Any] = {
@@ -116,6 +121,10 @@ async def _check_dataset(run: HelperRun, resolved: ResolvedDataset, window_hours
         "fields": [{"name": item["name"], "type": item["type"]} for item in fields[:MAX_HEALTH_FIELDS]],
         "fields_truncated": len(fields) > MAX_HEALTH_FIELDS,
     }
+    if observed is None:
+        # A failed sample checked nothing, so it is not evidence of an empty dataset.
+        report.update({"status": "unknown", "detail": "The schema sample query failed, so arrival could not be checked."})
+        return report
     if not fields:
         report.update({"status": "no_data", "events": 0, "detail": f"No records in the last {STALE_LOOKBACK_HOURS // 24} days."})
         return report
