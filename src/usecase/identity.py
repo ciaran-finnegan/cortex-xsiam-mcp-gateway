@@ -170,7 +170,9 @@ def verify_api_key(token: str) -> AccessToken:
     presented = sha256(token.encode("utf-8", "surrogatepass")).hexdigest()
     matches = hmac.compare_digest(presented, entry.sha256 if entry else _API_KEY_DUMMY_SHA256)
     if entry is None or not matches:
-        logger.warning("API key rejected: key_id=%s", key_id if entry else "unknown")
+        # The id comes from the registry entry, never from the presented token, so nothing the
+        # caller sent reaches the log.
+        logger.warning("API key rejected: key_id=%s", entry.key_id if entry else "unknown")
         raise IdentityAuthenticationError("Invalid API key")
     if entry.disabled:
         logger.warning("API key rejected: key_id=%s is disabled", entry.key_id)
