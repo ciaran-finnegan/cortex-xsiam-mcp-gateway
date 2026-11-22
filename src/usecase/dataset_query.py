@@ -12,6 +12,7 @@ from entities.MCPContext import MCPContext
 from usecase.xql_builder import (
     MAX_XQL_RESULT_LIMIT,
     build_filter_clause,
+    field_reference,
     format_xql_enum,
     format_xql_value,
     validate_identifier,
@@ -208,7 +209,7 @@ def build_dataset_xql(
         query_parts.append("| filter " + _build_seek_clause(plan.order_by, seek_values))
 
     if plan.time_bucket:
-        bucket_field = validate_identifier(plan.time_bucket.field, "time bucket field")
+        bucket_field = field_reference(plan.time_bucket.field, "time bucket field")
         query_parts.append(f"| bin {bucket_field} span = {plan.time_bucket.size}{plan.time_bucket.unit}")
 
     hidden_fields: list[str] = []
@@ -227,8 +228,8 @@ def build_dataset_xql(
                 selected_fields.append(sort_field)
                 hidden_fields.append(sort_field)
         if plan.order_by:
-            query_parts.append("| sort " + ", ".join(f"{item.direction} {item.field}" for item in plan.order_by))
-        query_parts.append("| fields " + ", ".join(selected_fields))
+            query_parts.append("| sort " + _sort_terms(plan.order_by))
+        query_parts.append("| fields " + ", ".join(field_reference(field, "field") for field in selected_fields))
     else:
         if plan.fields:
             raise ValueError("Aggregate queries use metrics and group_by instead of fields")
@@ -246,7 +247,7 @@ def build_dataset_xql(
         metric_clauses = [_metric_clause(metric) for metric in plan.metrics]
         comp = "| comp " + ", ".join(metric_clauses)
         if group_fields:
-            comp += " by " + ", ".join(group_fields)
+            comp += " by " + ", ".join(field_reference(field, "group field") for field in group_fields)
         query_parts.append(comp)
         _validate_order_by(plan.order_by)
         allowed_sort_fields = {*group_fields, *(metric.alias for metric in plan.metrics)}
@@ -254,7 +255,7 @@ def build_dataset_xql(
             if sort_item.field not in allowed_sort_fields:
                 raise ValueError(f"Aggregate sort field must be a group field or metric alias: {sort_item.field}")
         if plan.order_by:
-            query_parts.append("| sort " + ", ".join(f"{item.direction} {item.field}" for item in plan.order_by))
+            query_parts.append("| sort " + _sort_terms(plan.order_by))
 
     fetch_limit = safe_limit + 1 if plan.mode == "rows" and plan.enable_continuation else safe_limit
     query_parts.append(f"| limit {fetch_limit}")
@@ -323,17 +324,17 @@ def query_hash(xql: str) -> str:
 
 
 def _metric_clause(metric: QueryMetric) -> str:
-    alias = validate_identifier(metric.alias, "metric alias")
+    alias = field_reference(metric.alias, "metric alias")
     if metric.function == "count" and not metric.field:
         return f"count() as {alias}"
-    field = validate_identifier(metric.field or "", "metric field")
+    field = field_reference(metric.field or "", "metric field")
     return f"{metric.function}({field}) as {alias}"
 
 
 def _query_filter_clause(query_filter: QueryFilter) -> str:
     if query_filter.value_type == "literal":
         return build_filter_clause(query_filter.field, query_filter.operator, query_filter.value)
-    field = validate_identifier(query_filter.field, "filter field")
+    field = field_reference(query_filter.field, "filter field")
     if query_filter.value_type == "enum":
         if query_filter.operator in {"in", "not_in"}:
             clause = f"{field} in ({', '.join(format_xql_enum(member) for member in query_filter.value)})"
@@ -352,17 +353,22 @@ def _validate_order_by(order_by: list[QuerySort]) -> None:
         validate_identifier(item.field, "sort field")
 
 
+def _sort_terms(order_by: list[QuerySort]) -> str:
+    return ", ".join(f"{item.direction} {field_reference(item.field, 'sort field')}" for item in order_by)
+
+
 def _build_seek_clause(order_by: list[QuerySort], seek_values: list[Any]) -> str:
     if not order_by or len(order_by) != len(seek_values):
         raise ValueError("Continuation requires one value for every sort field")
+    names = [field_reference(item.field, "sort field") for item in order_by]
     branches = []
     for index, sort_item in enumerate(order_by):
         terms = [
-            f"{order_by[prefix].field} = {_format_seek_value(order_by[prefix], seek_values[prefix])}"
+            f"{names[prefix]} = {_format_seek_value(order_by[prefix], seek_values[prefix])}"
             for prefix in range(index)
         ]
         comparator = ">" if sort_item.direction == "asc" else "<"
-        terms.append(f"{sort_item.field} {comparator} {_format_seek_value(sort_item, seek_values[index])}")
+        terms.append(f"{names[index]} {comparator} {_format_seek_value(sort_item, seek_values[index])}")
         branches.append("(" + " and ".join(terms) + ")")
     return "(" + " or ".join(branches) + ")"
 

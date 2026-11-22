@@ -10,6 +10,7 @@ from entities.MCPContext import MCPContext
 from usecase import dataset_catalogue as dc
 from usecase import helper_runtime
 from usecase.builtin_components import dataset_health as health
+from usecase.cost_guard import CostGuardRefusal
 
 AUDIT = "management_auditing"
 TRAFFIC = "panw_ngfw_traffic_raw"
@@ -86,6 +87,7 @@ async def test_dataset_health_reports_arrival_schema_and_bounded_samples(monkeyp
 
     discovery, trend, sample = (call["query"] for call in fake.calls)
     assert discovery == f"dataset = {AUDIT} | limit {health.SCHEMA_SAMPLE_ROWS}"
+    assert fake.calls[0]["timeframe"] == {"relativeTime": health.SCHEMA_SAMPLE_WINDOW_HOURS * 3_600_000}
     assert "bin _time span = 1h" in trend and "comp count() as events" in trend
     assert re.search(rf"\| limit {health.SAMPLE_ROWS}$", sample) and "user_name" in sample and "_raw" not in sample
     assert [item["purpose"] for item in response["provenance"]["queries"]] == ["field_discovery", "arrival_trend", "recent_samples"]
@@ -103,7 +105,77 @@ async def test_dataset_health_distinguishes_stale_from_no_data_and_uses_daily_bu
     assert stale["datasets"][0]["status"] == "stale" and stale["datasets"][0]["trend_bucket"] == "1d"
     assert "samples" not in stale["datasets"][0]
     assert empty["datasets"][0]["status"] == "no_data" and empty["datasets"][0]["events"] == 0
-    assert len([call for call in fake.calls if call["dataset"] == TRAFFIC]) == 1
+    # An empty day widens the schema sample once to the stale lookback, then stops.
+    traffic_windows = [call["timeframe"] for call in fake.calls if call["dataset"] == TRAFFIC]
+    assert traffic_windows == [
+        {"relativeTime": health.SCHEMA_SAMPLE_WINDOW_HOURS * 3_600_000},
+        {"relativeTime": health.STALE_LOOKBACK_HOURS * 3_600_000},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dataset_health_returns_the_refusal_when_the_day_is_empty_and_the_week_is_refused(monkeypatch):
+    """An empty day plus a refused week is unverified, not an outage: no_data would be a false report."""
+    week = {"relativeTime": health.STALE_LOOKBACK_HOURS * 3_600_000}
+
+    class WeekRefusingXsiam(FakeXsiam):
+        async def run(self, ctx, query, limit, timeframe=None, **kwargs):
+            if timeframe == week:
+                self.calls.append({"dataset": TRAFFIC, "query": query, "limit": limit, "timeframe": timeframe})
+                raise CostGuardRefusal(
+                    {
+                        "success": False,
+                        "executed": False,
+                        "error": "cost_guard",
+                        "message": "Query not allowed by the cost guard (approval_required): test.",
+                        "rule": "approval_required",
+                    }
+                )
+            return await super().run(ctx, query, limit, timeframe=timeframe, **kwargs)
+
+    fake = WeekRefusingXsiam()
+    _install(monkeypatch, fake, [TRAFFIC], [TRAFFIC])
+
+    response = await health.dataset_health(_ctx(), dataset=TRAFFIC)
+
+    assert response["success"] is False and response["executed"] is False
+    assert response["error"] == "cost_guard" and response["rule"] == "approval_required"
+    assert "datasets" not in response, "a refused sample must not be reported as an empty dataset"
+    assert [call["timeframe"] for call in fake.calls] == [
+        {"relativeTime": health.SCHEMA_SAMPLE_WINDOW_HOURS * 3_600_000},
+        week,
+    ]
+    refused = [query for query in response["provenance"]["queries"] if query.get("error")]
+    assert len(refused) == 1 and refused[0]["cost_guard_rule"] == "approval_required"
+
+
+@pytest.mark.parametrize("failing_window", ["day", "week"])
+@pytest.mark.asyncio
+async def test_dataset_health_reports_unknown_when_a_schema_sample_fails(monkeypatch, failing_window):
+    """A failed sample checked nothing, so the dataset is unknown, not empty."""
+    windows = {
+        "day": {"relativeTime": health.SCHEMA_SAMPLE_WINDOW_HOURS * 3_600_000},
+        "week": {"relativeTime": health.STALE_LOOKBACK_HOURS * 3_600_000},
+    }
+
+    class FailingXsiam(FakeXsiam):
+        async def run(self, ctx, query, limit, timeframe=None, **kwargs):
+            if timeframe == windows[failing_window]:
+                self.calls.append({"dataset": TRAFFIC, "query": query, "limit": limit, "timeframe": timeframe})
+                return {"success": False, "error": "XQL query timed out", "query_id": "q"}
+            return await super().run(ctx, query, limit, timeframe=timeframe, **kwargs)
+
+    fake = FailingXsiam()
+    _install(monkeypatch, fake, [TRAFFIC], [TRAFFIC])
+
+    response = await health.dataset_health(_ctx(), dataset=TRAFFIC)
+
+    report = response["datasets"][0]
+    assert report["status"] == "unknown" and "events" not in report
+    assert "failed" in report["detail"]
+    expected_calls = 1 if failing_window == "day" else 2
+    assert len(fake.calls) == expected_calls
+    assert response["provenance"]["queries"][-1]["error"] is True
 
 
 @pytest.mark.asyncio
