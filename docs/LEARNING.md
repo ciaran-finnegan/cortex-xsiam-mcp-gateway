@@ -163,7 +163,8 @@ Never automatic:
 - pinning, unpinning or reverting a fact (only a member of `LEARNING_ADMIN_GROUPS`
   can; no human step is needed for verification);
 - changing gateway code, prompts or skills, or calling a model (the gateway and
-  the learner call no model);
+  the learner call no model; the [intent labelling pilot](#intent-labelling-pilot)
+  is a separate process an operator starts);
 - quota spent to learn, beyond the learner's nightly history query under its cap
   and a backfill an operator starts under its own budget.
 
@@ -190,6 +191,14 @@ Never automatic:
     <case_id>/results/
       manifest.json              steps, query ids, units, fact links
       0000.json ...              bounded results the gateway returned
+  intents/                       intent labelling pilot, written only by python -m intents
+    .gitignore                   keeps the whole directory out of the pack's history
+    issuer.key                   key behind the issuer hash
+    history.json                 progress and tokenised steps
+    sessions.json                steps grouped into sessions, with measured outcome signals
+    dry_run.json                 prompts from label --dry-run
+    labels.json                  validated model output, marked inferred
+    review.csv                   what a person marks right or wrong
 ```
 
 `TENANT_PACK_DIR` must be an absolute path outside the gateway repository.
@@ -375,6 +384,171 @@ The report's `outcomes` counts rows by what became of them: the fact kind, or
 `kept_live_fact`, `no_units`, `unmetered_source`, `multi_source`,
 `no_single_dataset`, `query_truncated`, `status_not_used`, `failure_not_classified`,
 `field_not_from_dataset`, `too_old_for_field_facts`, `refused` or `invalid_row`.
+
+## Intent labelling pilot
+
+A single query says little about what its author wanted, so this labels sessions:
+one person's queries close together in time. The aim is to improve dataset routing,
+spot dead ends such as `xdm.*` fields tried on `xdr_data`, and find candidates for new
+helpers.
+
+This is the one place in the codebase that calls a model, so it is its own process:
+`python -m intents`, under `src/intents/`, started by an operator and never on a
+schedule. The gateway and `python -m learner` do not import it, and a test holds
+them to that. It reads XQL and describes it, so it is not natural-language-to-XQL
+translation, which stays the MCP client's job.
+
+Labels say what a model thinks an author wanted, so they are inferred rather than
+measured. They never use the `measured_metadata` label, never reach the tier-1 fact
+files, and no MCP tool or resource serves them during the pilot. Replay cannot score
+them, because old queries have no cached results, so a person judges them.
+
+### Running it
+
+```bash
+# 1. No model. Same budget and resume behaviour as the history backfill.
+PYTHONPATH=/app/src python -m intents sessions --days 30 --max-units 5
+
+# 2. See exactly what would leave the tenant. Needs no provider and sends nothing.
+PYTHONPATH=/app/src python -m intents label --dry-run
+
+# 3. Send up to 50 sessions to the configured provider.
+PYTHONPATH=/app/src python -m intents label --max-sessions 50
+
+# 4. Write the review file, then run this again after marking it to get precision.
+PYTHONPATH=/app/src python -m intents review
+```
+
+Exit codes: `0` success or skipped, `1` a run that stopped early or refused, `2` error.
+`LEARNING_ENABLED=false` or an empty `TENANT_PACK_DIR` stops every stage.
+
+### Provider
+
+The client chooses the provider. There is no default vendor and no built-in endpoint,
+and with nothing configured `label` refuses to run, naming the missing settings.
+
+| Setting | Meaning |
+| --- | --- |
+| `INTENT_PROVIDER_ENDPOINT` | Full URL of a chat-completions JSON endpoint, which most providers and internal AI gateways accept. HTTPS, or HTTP to a loopback address. |
+| `INTENT_PROVIDER_MODEL` | Model name to send. |
+| `INTENT_PROVIDER_API_KEY` | Credential. Required unless the endpoint is on loopback. Inject it with your secret manager rather than storing it in `.env`. |
+| `INTENT_PROVIDER_AUTH_HEADER` | Header for the credential, `Authorization` by default (sent as `Bearer <key>`). Any other header gets the key as written. |
+| `INTENT_PROVIDER_EXTRA_BODY` | JSON object merged into the request, for what a provider needs, such as `{"max_tokens": 800}`. It cannot replace `model` or `messages`. |
+| `INTENT_PROVIDER_TIMEOUT_SECONDS` | Read timeout per call, `120` by default. |
+
+These are read only by `src/intents/settings.py`, so a gateway process never holds
+the key. Redirects are not followed. To reach a provider that does not speak this
+format, implement the one-method `LabelProvider` interface in
+`src/intents/provider.py` and return it from `build_provider`.
+
+### Reading the history
+
+`sessions` reuses the backfill's query path as the learner principal, so dataset
+policy, tool policy, audit, the reserve and a per-invocation unit budget all apply.
+Each day is queried on its own, a full page is split rather than walked, and progress
+is committed daily, so a run that stops is resumed by the same command. A finished
+history is not read again, and `sessions.json` is rebuilt from it if a run stopped
+before writing the final file. The range is fixed by the first run. To read another
+range, delete `intents/history.json` and `intents/sessions.json`. The history queries are observed like any other, so they add
+cost samples for `xql_query_center_history` to the journal, and their units go to the
+learner's spend ledger.
+
+Unlike the backfill, this selects `issuer`, because a session is one
+person's queries. Rows with `issuer = System` are excluded in the query and again on
+arrival. The issuer is reduced to a keyed hash and a kind (`person`, `api_key`,
+`other`) on arrival and never stored raw. The key is random, per pack, in
+`intents/issuer.key`. The hash is stored to group steps. Neither it nor the raw issuer
+is sent to the model.
+
+The same issuer's steps split wherever the time between two is longer
+than `INTENT_SESSION_GAP_MINUTES` (`30`). A step holds its datasets, tokenised query
+text, status, `result_count`, `compute_units`, duration and failure class from
+`classify_xql_failure`. Only `validation_message` is read from `status_details`, only
+to classify it, and it is not stored. A row whose `xql_query` ends with the truncation
+marker cannot be tokenised reliably, so it is counted against its session and not read.
+
+Each session also gets outcome signals, measured with no model: `outcome` (`ended_in_rows`,
+`ended_with_no_rows`, `abandoned_after_failure`, `unknown`, `no_readable_steps`),
+`failed_steps`, `empty_steps`, `recovered_after_failure`, `dataset_switches`,
+`automated_only` and `dead_ends`, the fields XSIAM reported unknown on each dataset.
+`sessions.json` also totals dead ends across sessions.
+
+### What the model sees
+
+`tokenise_query` in `src/intents/literals.py` works from an allow list. Comments are
+dropped. A word survives only where XQL syntax puts a field, dataset, function or
+keyword. A value survives only when its type is in `INTENT_KEEP_LITERALS`.
+
+| Type | Recognised by | Sent by default |
+| --- | --- | --- |
+| `ip` | Format: IPv4, IPv6, CIDR. | As written |
+| `host` | The field it filters on (its last segment names a host, as in `agent_hostname` or `xdm.target.host.fqdn`, but not `host_owner`) plus hostname format. | As written |
+| `user`, `email` | The field, a `DOMAIN\user` shape, or email format. | Token |
+| `hash`, `uuid`, `number`, `duration`, `time` | Format. | Token |
+| `term` | Everything else, including free-text search terms. | Token |
+
+A stage that does not start with an XQL stage word becomes `<term>` whole, whatever
+the setting says, because a pasted sentence in a failed query is not a value anyone
+cleared. An unquoted value, such as `user_name = someone`, is treated as a value, and
+when XSIAM reports it as an unknown field that name is withheld too.
+
+Sent to the model for each step: time since the previous step, source, datasets, query
+text, status, `result_count`, duration, window bucket, failure class and unknown
+field. Also sent: the session's `outcome` and how many steps were left out. Not sent:
+issuer or its hash, execution ids, absolute times, compute units.
+
+Dataset names, field names and aliases are sent as written, because they are what is
+being labelled. An analyst who names an alias after a person sends that name.
+
+Sessions with fewer than `--min-steps` steps (`2`), those made only of dashboard,
+widget, correlation or playbook queries, and API-key sessions reading only the query
+history, which include this pilot's own reads, are counted and not sent. A session
+over 40 steps sends the first and last 20.
+
+### Hostile query text
+
+Anyone with XQL access writes query text, and kept literals are attacker-writable too:
+`agent_hostname = "ignore-all-previous-instructions"` is a valid hostname. So:
+
+- the session travels as one line of JSON between tags with a random name per call,
+  and the system prompt says everything inside is untrusted data;
+- a reply must be one JSON object with exactly the expected keys, an `intent` from a
+  closed list (`INTENTS` in `src/intents/labels.py`), and `datasets` and `fields` that
+  appear in that session;
+- a reply that does not fit is discarded and only the reason is kept, in
+  `labels.json` and the `rejected_replies` report;
+- `summary` is the one free-text field. It is length-capped, stored with
+  `summary_trust: "inferred"`, and neutralised against spreadsheet formulas in the
+  review file.
+
+Each session sent emits a `cortex_xsiam_mcp.learning` event before the call, with the
+provider host, model, literal counts and a hash of the prompt, never the content. A
+failed export under `AUDIT_LOG_FAIL_CLOSED` stops the call.
+
+### Measuring precision
+
+`review` writes `intents/review.csv`, one row per label, with the queries as they were
+sent, how many steps were not sent, and the execution ids, so a reviewer can look up the originals in XSIAM. Fill in:
+
+| Column | Values |
+| --- | --- |
+| `verdict` | `right`, `wrong` or `unsure` |
+| `correct_intent` | The intent it should have been, when wrong |
+| `tokens_hid_intent` | `yes` or `no`, having looked at the original query |
+| `notes` | Free text |
+
+Run `review` again to get `precision` (right out of right plus wrong), overall and per
+intent. What was entered is kept on every rewrite, and labels from later runs join the
+file. The file holds kept IPs and hostnames, so it stays in the pack.
+
+Search terms often carry the intent, and they are hidden by default. To show the
+effect, `term_token_effect` in the report gives precision with and without `<term>`
+tokens in the session, how often the model said tokens hid the intent, and how often
+the reviewer did. If those show a gap and the client clears search terms for the
+provider, run the stages in a second pack with `INTENT_KEEP_LITERALS=ip,host,term` and
+compare. Session ids come from execution ids, so a session has the same id and sort
+position in both packs. Terms can hold usernames and anything else a person typed, so
+the client decides.
 
 ## Serving
 

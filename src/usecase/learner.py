@@ -36,7 +36,7 @@ import math
 import re
 import time
 from collections import Counter
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -1128,6 +1128,7 @@ class _BackfillRun:
     principal: MCPContext
     max_units: float
     limit: int
+    fields: list[str] = field(default_factory=lambda: list(BACKFILL_FIELDS))
     queries: int = 0
     spent: float = 0.0
     saved_queries: int = 0
@@ -1154,7 +1155,7 @@ async def _backfill_query(run: _BackfillRun, from_ms: int, to_ms: int) -> tuple[
     result = await _query_history(
         run.ctx,
         run.principal,
-        fields=BACKFILL_FIELDS,
+        fields=run.fields,
         filters=BACKFILL_FILTERS,
         from_ms=from_ms,
         to_ms=to_ms,

@@ -52,6 +52,17 @@ This project follows a lightweight changelog format until stable releases begin.
   counts survive a restart, the run is counted and saved before it is sent, and
   an unusable ledger refuses new runs (`state_unavailable`).
   `get_endpoint_script_run` with no `action_id` lists the caller's own runs.
+- Added an intent labelling pilot, `python -m intents`, as its own operator-run
+  process under `src/intents/`. `sessions` groups `xql_query_center_history` into
+  per-person sessions with measured outcome signals and calls no model. `label`
+  sends up to `--max-sessions` sessions to a provider the operator configures, with
+  no default vendor or endpoint, and `--dry-run` shows the prompts without sending.
+  `review` writes a file a person marks, and reports precision. IP addresses and
+  hostnames go to the model as written, per `INTENT_KEEP_LITERALS`; every other
+  literal becomes a type token, and `issuer` and its keyed hash are never sent.
+  Replies must fit a closed schema. Results are marked inferred, stay in
+  `<TENANT_PACK_DIR>/intents/`, and are not served to agents. The gateway and the
+  learner still call no model.
 - Added engagement modes (`incident_response`, `threat_hunt`, `operations`,
   `unset`) with `set_engagement`, `get_engagement`, `record_fact`, and
   `get_engagement_log`. Scope lists are validated and capped, state is bound to

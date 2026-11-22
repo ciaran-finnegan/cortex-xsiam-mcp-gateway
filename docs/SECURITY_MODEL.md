@@ -184,6 +184,10 @@ Tier-1 learning writes measured tenant facts to `<TENANT_PACK_DIR>/learned/`
 - verification is automatic and needs repeated confirmation across several
   engagements over at least a week with no contradiction, so one session cannot
   verify a fact; one contradiction removes verification;
+- the intent labelling pilot is a separate operator-run process, so the gateway and
+  the learner call no model. It sends only IP addresses and hostnames as written,
+  validates replies against a closed schema, and keeps results, marked inferred, in
+  the tenant pack, unserved;
 - every learner run is audited before commit; `LEARNING_ENABLED=false` stops the
   observers and the learner; revert, pin and unpin are restricted to
   `LEARNING_ADMIN_GROUPS`;

@@ -248,6 +248,10 @@ changed, and `revert_learned` lets `LEARNING_ADMIN_GROUPS` revert, pin or unpin
 a fact. `LEARNING_ENABLED=false` stops both processes. See
 [learning](docs/LEARNING.md).
 
+The gateway and the learner call no model. A separate pilot, `python -m intents`,
+labels what the authors of past XQL queries were trying to achieve, using a provider
+you configure. See [intent labelling](docs/LEARNING.md#intent-labelling-pilot).
+
 ## Local development
 
 Requires Python 3.12 or 3.13 and Poetry.
