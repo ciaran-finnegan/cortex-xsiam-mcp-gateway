@@ -237,6 +237,12 @@ queries XSIAM only as the `learner` group, within 0.5 units a day. Run it every
 PYTHONPATH=src poetry run python -m learner tick
 ```
 
+To prime a new pack from the tenant's query history, run once:
+
+```bash
+PYTHONPATH=src poetry run python -m learner backfill --days 30 --max-units 5
+```
+
 Agents read facts with `get_learned_facts`. `learning_digest` lists what
 changed, and `revert_learned` lets `LEARNING_ADMIN_GROUPS` revert, pin or unpin
 a fact. `LEARNING_ENABLED=false` stops both processes. See

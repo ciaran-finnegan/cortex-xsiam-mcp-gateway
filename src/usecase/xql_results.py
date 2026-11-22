@@ -3,6 +3,8 @@ from typing import Any
 
 from config.config import get_config
 
+TRUNCATION_MARKER = "...<truncated>"
+
 
 def bound_result_rows(
     rows: list[dict[str, Any]],
@@ -61,7 +63,7 @@ def _bound_value(value: Any, max_chars: int) -> tuple[Any, int]:
     if isinstance(value, str):
         if len(value) <= max_chars:
             return value, 0
-        return value[:max_chars] + "...<truncated>", 1
+        return value[:max_chars] + TRUNCATION_MARKER, 1
     if isinstance(value, list):
         bounded = []
         count = 0
@@ -70,7 +72,7 @@ def _bound_value(value: Any, max_chars: int) -> tuple[Any, int]:
             bounded.append(result)
             count += truncated
         if len(value) > 50:
-            bounded.append("...<truncated>")
+            bounded.append(TRUNCATION_MARKER)
             count += 1
         return bounded, count
     if isinstance(value, dict):

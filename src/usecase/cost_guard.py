@@ -438,8 +438,10 @@ def apply_learned_cost(estimate: CostEstimate, query: str, shape: QueryShape, wi
     """Replace the seed units with the learned cost table entry for this query, when one exists.
 
     Learned units may raise the estimate without bound but lower it only to the seed band's low
-    bound, so a learned entry can never rate a query cheaper than its seed class allows. The
-    class, and with it the long-running-slot rule, stays the seed class.
+    bound, so a learned entry can never rate a query cheaper than its seed class allows. An entry
+    built only from the history backfill may raise the estimate but not lower it, because anyone
+    who can run XQL writes that history. The class, and with it the long-running-slot rule, stays
+    the seed class.
     """
     if len(shape.datasets) != 1:
         return estimate
@@ -456,6 +458,8 @@ def apply_learned_cost(estimate: CostEstimate, query: str, shape: QueryShape, wi
     if learned is None:
         return estimate
     high = max(float(learned["high_units"]), estimate.low_units)
+    if learned.get("source_class") == learned_store.BACKFILL_SOURCE_CLASS:
+        high = max(high, estimate.high_units)
     low = min(max(float(learned["median_units"]), estimate.low_units), high)
     return replace(
         estimate,
