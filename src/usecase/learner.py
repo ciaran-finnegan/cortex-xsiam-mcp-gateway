@@ -20,6 +20,9 @@ Then the scheduled jobs run when due (``tick``) or on demand (all times UTC):
 - ``canary`` (on deploy): replay recorded engagements and fail when one reaches less than its
   stored score.
 
+``backfill`` (:func:`run_backfill`) is run once by an operator, never on a schedule. It reads older
+queries from ``xql_query_center_history`` into cost and absent-field facts under its own unit budget.
+
 Changes are audited before they are committed. The learner queries XSIAM only as its own
 principal (LEARNER_PRINCIPAL_ID in LEARNER_GROUPS) under the normal dataset and tool policy,
 within LEARNER_DAILY_UNIT_CAP, and never when remaining quota is below LEARNER_RESERVE_UNITS.
@@ -33,7 +36,7 @@ import math
 import re
 import time
 from collections import Counter
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -51,6 +54,7 @@ from usecase.fetcher import get_fetcher
 from usecase.identity import parse_csv, service_principal
 from usecase.learned_store import (
     ADMIN_ACTIONS,
+    BACKFILL_SOURCE_CLASS,
     ENTRY_ID_RE,
     KINDS,
     LIFECYCLE_ACTIONS,
@@ -66,13 +70,24 @@ from usecase.learned_store import (
     apply_observation,
     build_digest,
     ensure_private_dir,
+    entry_key,
     get_learned_store,
     iso_timestamp,
     journal_dir,
     kind_of_entry_id,
+    make_entry_id,
     sweep_entries,
     validate_observation,
     write_private_file,
+)
+from usecase.learning_observers import (
+    classify_xql_failure,
+    field_read_from_dataset,
+    parse_xql,
+    reads_other_sources,
+    selectivity_class,
+    window_bucket,
+    window_ms,
 )
 from usecase.log_policy import authorize_dataset
 from usecase.replay import (
@@ -86,6 +101,7 @@ from usecase.replay import (
     replay_engagement,
 )
 from usecase.tool_policy import authorize_tool
+from usecase.xql_results import TRUNCATION_MARKER
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +117,25 @@ MAX_JOURNAL_READ_BYTES = 64 * 1024 * 1024
 MAX_SCORED_CASES = 100
 JOURNAL_RETENTION_DAYS = 2
 HISTORY_LOOKBACK = timedelta(days=2)
+DAY_MS = 86_400_000
+BACKFILL_MAX_DAYS = 365
+BACKFILL_MAX_UNITS = 100.0
+BACKFILL_MIN_WINDOW_MS = 1000  # _time has one-second resolution in the query history
+BACKFILL_LOCK_WAIT_SECONDS = 60.0
+BACKFILL_FIELDS = [
+    "_time",
+    "execution_id",
+    "status",
+    "status_details",
+    "timeframe_duration_secs",
+    "compute_units",
+    "xql_query_source",
+    "xql_query",
+]
+BACKFILL_FILTERS = [{"field": "issuer", "operator": "neq", "value": "System"}]
+HISTORY_OK_STATUSES = frozenset({"STATUS_040_OK", "STATUS_050_DATA_DELETED"})
+HISTORY_FAILED_STATUS = "STATUS_030_FAILED"
+HISTORY_METERED_SOURCE = "investigation"
 _JOURNAL_FILE_RE = re.compile(r"^(events|admin)-(\d{8})-[0-9a-f]{8}-\d{1,10}\.jsonl$")
 _ENGAGEMENT_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
 _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
@@ -218,18 +253,24 @@ def _add_spend(root: Path, day: str, units: float) -> None:
     write_private_file(_spend_path(root), json.dumps({"day": day, "units": round(total, 6)}))
 
 
-async def _history_query(ctx: LearnerContext, principal: MCPContext, ids: list[str], now: datetime) -> dict[str, Any]:
+async def _query_history(
+    ctx: LearnerContext,
+    principal: MCPContext,
+    *,
+    fields: list[str],
+    filters: list[dict[str, Any]],
+    from_ms: int,
+    to_ms: int,
+    limit: int,
+) -> dict[str, Any]:
     from usecase.builtin_components.datasets import query_dataset
     from usecase.dataset_query import QueryFilter, QueryTimeframe
 
-    to_ms = int(now.timestamp() * 1000)
-    from_ms = int((now - HISTORY_LOOKBACK).timestamp() * 1000)
-    limit = min(len(ids), get_config().dataset_query_max_rows)
     arguments = {
         "dataset": HISTORY_DATASET,
         "mode": "rows",
-        "fields": ["execution_id", "compute_units"],
-        "filters": [{"field": "execution_id", "operator": "in", "value": ids}],
+        "fields": fields,
+        "filters": filters,
         "timeframe": {"from_ms": from_ms, "to_ms": to_ms},
         "limit": limit,
     }
@@ -238,8 +279,8 @@ async def _history_query(ctx: LearnerContext, principal: MCPContext, ids: list[s
         ctx,
         dataset=HISTORY_DATASET,
         mode="rows",
-        fields=["execution_id", "compute_units"],
-        filters=[QueryFilter(field="execution_id", operator="in", value=ids)],
+        fields=fields,
+        filters=[QueryFilter(**item) for item in filters],
         timeframe=QueryTimeframe(from_ms=from_ms, to_ms=to_ms),
         limit=limit,
     )
@@ -260,6 +301,18 @@ async def _history_query(ctx: LearnerContext, principal: MCPContext, ids: list[s
         )
     )
     return result
+
+
+async def _history_query(ctx: LearnerContext, principal: MCPContext, ids: list[str], now: datetime) -> dict[str, Any]:
+    return await _query_history(
+        ctx,
+        principal,
+        fields=["execution_id", "compute_units"],
+        filters=[{"field": "execution_id", "operator": "in", "value": ids}],
+        from_ms=int((now - HISTORY_LOOKBACK).timestamp() * 1000),
+        to_ms=int(now.timestamp() * 1000),
+        limit=min(len(ids), get_config().dataset_query_max_rows),
+    )
 
 
 async def history_units(root: Path, ids: list[str], now: datetime) -> tuple[dict[str, float], str | None, float]:
@@ -292,7 +345,8 @@ async def history_units(root: Path, ids: list[str], now: datetime) -> tuple[dict
     for row in result.get("rows") or []:
         query_id = row.get("execution_id") if isinstance(row, dict) else None
         units = _finite(row.get("compute_units")) if isinstance(row, dict) else None
-        if query_id in wanted and units is not None and 0 <= units <= MAX_UNITS:
+        # Zero is not a measurement (see _backfill_observation), so such a sample keeps its quota delta.
+        if query_id in wanted and units is not None and 0 < units <= MAX_UNITS:
             measured[query_id] = round(units, 6)
     return measured, None, cost
 
@@ -315,6 +369,7 @@ def empty_state() -> dict[str, Any]:
         "last_tick": None,
         "last_nightly": None,
         "last_weekly": None,
+        "backfill": None,
     }
 
 
@@ -963,8 +1018,302 @@ def status(store: LearnedStore | None) -> dict[str, Any]:
             "held_cost_samples": len(state["pending_recalibration"]),
             "replay_cases_scored": len(state["replay_scores"]),
             "journal_backlog_bytes": backlog,
+            "backfill": state["backfill"],
         }
     )
+    return report
+
+
+# --- One-time history backfill ---
+
+
+def _validation_message(details: Any) -> str | None:
+    """XSIAM's validation message from ``status_details``. The rest of the object is not read."""
+    if isinstance(details, str):
+        try:
+            details = json.loads(details)
+        except json.JSONDecodeError:
+            return None
+    message = details.get("validation_message") if isinstance(details, dict) else None
+    return message if isinstance(message, str) else None
+
+
+def _backfill_observation(row: dict[str, Any], *, absent_since_ms: int) -> tuple[Observation | None, str | None]:
+    """One history row as one observation, or the reason it gave none.
+
+    Whoever ran a query wrote its text, so it stays in this function: only validated identifiers,
+    enumerated tokens, the execution id and XSIAM's measured units leave it.
+    """
+    execution_id, query, status = row["execution_id"], row.get("xql_query"), row.get("status")
+    if not QUERY_ID_RE.match(execution_id) or not isinstance(query, str):
+        return None, "invalid_row"
+    if query.endswith(TRUNCATION_MARKER):
+        return None, "query_truncated"
+    if status not in HISTORY_OK_STATUSES and status != HISTORY_FAILED_STATUS:
+        return None, "status_not_used"
+    parsed = parse_xql(query)
+    if parsed.dataset is None:
+        return None, "no_single_dataset"
+    if status == HISTORY_FAILED_STATUS:
+        classified = classify_xql_failure(_validation_message(row.get("status_details")), query)
+        if classified is None:
+            return None, "failure_not_classified"
+        field_name = classified["unknown_field"]
+        if not field_read_from_dataset(parsed, field_name):
+            return None, "field_not_from_dataset"
+        if row["_time"] < absent_since_ms:
+            return None, "too_old_for_field_facts"
+        observation = Observation(
+            "absent_fields", {"field": field_name}, (execution_id,), BACKFILL_SOURCE_CLASS, parsed.dataset
+        )
+    else:
+        # Only investigation queries have been seen reporting units; zeros from the rest would drag the table down.
+        if row.get("xql_query_source") != HISTORY_METERED_SOURCE:
+            return None, "unmetered_source"
+        if reads_other_sources(parsed):
+            return None, "multi_source"
+        units = _finite(row.get("compute_units"))
+        # Zero is not a measurement: the history rounds to 0.001 units and reports zero for some
+        # 90-day xdr_data queries too, so a zero says nothing about what the query would cost.
+        if units is None or not 0 < units <= MAX_UNITS:
+            return None, "no_units"
+        seconds = _finite(row.get("timeframe_duration_secs"))
+        timeframe = {"relativeTime": int(seconds * 1000)} if seconds is not None else None
+        observation = Observation(
+            "cost_table",
+            {
+                "window_bucket": window_bucket(window_ms(timeframe, parsed)),
+                "selectivity": selectivity_class(parsed),
+                "units": round(units, 6),
+                "units_source": "query_history",
+            },
+            (execution_id,),
+            BACKFILL_SOURCE_CLASS,
+            parsed.dataset,
+            effect="measure",
+        )
+    try:
+        validate_observation(observation, require_issued=False)
+    except LearnedFactRefused:
+        return None, "refused"
+    return observation, None
+
+
+def _keeps_live_fact(batch: Batch, observation: Observation) -> bool:
+    """Live measurements outrank history: the backfill only fills gaps, and never touches what the gateway measured."""
+    key = entry_key(observation.kind, observation.dataset, observation.fact)
+    entry = batch._kind(observation.kind).get(make_entry_id(observation.kind, key))
+    if entry is not None and entry["source_class"] != BACKFILL_SOURCE_CLASS:
+        return True
+    if observation.kind == "absent_fields":
+        discovered = batch._kind("schema").get(make_entry_id("schema", key))
+        return discovered is not None and discovered["status"] == "active"
+    return False
+
+
+def _reported_cost(result: dict[str, Any]) -> float | None:
+    cost = (result.get("xsiam") or {}).get("query_cost")
+    if isinstance(cost, dict):
+        values = [_finite(item) for item in cost.values()]
+        cost = sum(values) if values and all(item is not None for item in values) else None
+    cost = _finite(cost)
+    return cost if cost is not None and cost >= 0 else None
+
+
+@dataclass
+class _BackfillRun:
+    """Counters of one backfill invocation. The budget applies per invocation."""
+
+    ctx: LearnerContext
+    principal: MCPContext
+    max_units: float
+    limit: int
+    queries: int = 0
+    spent: float = 0.0
+    saved_queries: int = 0
+    saved_spent: float = 0.0
+    full_windows: int = 0
+    invalid_rows: int = 0
+
+
+async def _backfill_query(run: _BackfillRun, from_ms: int, to_ms: int) -> tuple[dict[str, Any] | None, str | None]:
+    """One history query within the budget and the reserve, or the reason to stop before it.
+
+    XSIAM reports quota per tenant and no cost per query, so the drop in quota around a query also
+    holds whatever anyone else ran meanwhile. The budget therefore counts an upper bound, so a busy
+    tenant can stop a run early, which the next run resumes. It is checked before each query, so
+    the last query can take a run over it by that query's own cost.
+    """
+    before = await remaining_quota(run.ctx)
+    if before is None:
+        return None, "quota_unknown"
+    if before < get_config().learner_reserve_units:
+        return None, "below_reserve"
+    if run.spent >= run.max_units:
+        return None, "budget"
+    result = await _query_history(
+        run.ctx,
+        run.principal,
+        fields=BACKFILL_FIELDS,
+        filters=BACKFILL_FILTERS,
+        from_ms=from_ms,
+        to_ms=to_ms,
+        limit=run.limit,
+    )
+    run.queries += 1
+    cost = _reported_cost(result)
+    if cost is None:
+        after = await remaining_quota(run.ctx)
+        # Unknown cost: count the rest of the budget so this run stops.
+        cost = max(before - after, 0.0) if after is not None else max(run.max_units - run.spent, 0.0)
+    run.spent = round(run.spent + cost, 6)
+    return result, None
+
+
+async def _backfill_slice(run: _BackfillRun, start: int, end: int) -> tuple[list[dict[str, Any]], str | None]:
+    """Every row of one time slice, or the reason to stop.
+
+    A full page is thrown away and its window split in two, rather than walked from its last row:
+    XSIAM returns rows in no particular order after ``sort`` and ``limit``, and the response budget
+    can drop rows from a page, so the last row of a page says nothing about what was left out.
+    Windows are half open on ``_time``, so a row on a boundary is counted once.
+    """
+    rows: dict[str, dict[str, Any]] = {}
+    windows = [(start, end)]
+    while windows:
+        low, high = windows.pop()
+        result, stopped = await _backfill_query(run, low, high)
+        if stopped is not None:
+            return [], stopped
+        if not result.get("success"):
+            return [], "query_failed"
+        page = result.get("rows") or []
+        if result.get("has_more") or len(page) >= run.limit:
+            if high - low > BACKFILL_MIN_WINDOW_MS:
+                middle = low + (high - low) // 2
+                windows.extend([(middle, high), (low, middle)])
+                continue
+            run.full_windows += 1
+        for row in page:
+            moment = _finite(row.get("_time")) if isinstance(row, dict) else None
+            execution_id = row.get("execution_id") if isinstance(row, dict) else None
+            if moment is None or not isinstance(execution_id, str):
+                run.invalid_rows += 1
+            elif low <= moment < high:
+                rows.setdefault(execution_id, row)
+    return sorted(rows.values(), key=lambda row: row["_time"]), None
+
+
+def _apply_backfill_rows(batch: Batch, rows: list[dict[str, Any]], counts: Counter, absent_since_ms: int) -> None:
+    for row in rows:
+        observation, skipped = _backfill_observation(row, absent_since_ms=absent_since_ms)
+        if observation is None:
+            counts[skipped] += 1
+        elif _keeps_live_fact(batch, observation):
+            counts["kept_live_fact"] += 1
+        else:
+            batch.apply(observation)
+            counts[observation.kind] += 1
+
+
+async def run_backfill(days: int, max_units: float, *, now: datetime | None = None) -> dict[str, Any]:
+    """Read older queries from the query history into facts, once. Run by an operator.
+
+    The range is fixed by the first run and progress is committed one day at a time, so a run that
+    stops (budget, reserve, a failed query) is resumed by running the command again, and a finished
+    backfill refuses to run twice. Nothing about the person who ran a query is read or stored.
+
+    The lock is taken only to commit, so the learner's timer keeps running during the queries. A
+    run that finds another has already committed its slice discards its rows instead of counting
+    them twice.
+    """
+    if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= BACKFILL_MAX_DAYS:
+        raise ValueError(f"days must be between 1 and {BACKFILL_MAX_DAYS}")
+    if not 0 < max_units <= BACKFILL_MAX_UNITS:
+        raise ValueError(f"max_units must be above 0 and at most {BACKFILL_MAX_UNITS:g}")
+    config = get_config()
+    store = get_learned_store()
+    if not config.learning_enabled:
+        logger.info("Learning is frozen (LEARNING_ENABLED=false); the backfill did nothing")
+        return {"command": "backfill", "skipped": "learning_disabled"}
+    if store is None:
+        return {"command": "backfill", "skipped": "no_tenant_pack"}
+    principal = learner_principal()
+    if not authorize_tool(principal, "query_dataset").allowed or not authorize_dataset(principal, HISTORY_DATASET).allowed:
+        return {"command": "backfill", "skipped": "not_authorized"}
+    now = now or learned_store.now_utc()
+    root = store.pack_root
+    async with store.locked(wait_seconds=BACKFILL_LOCK_WAIT_SECONDS):
+        learning_journal.ignore_runtime_files_in_pack_history(root)
+        state = load_state(root)
+        progress = state["backfill"]
+        if progress is None:
+            to_ms = int(now.timestamp() * 1000)
+            from_ms = to_ms - days * DAY_MS
+            progress = {
+                "from_ms": from_ms,
+                "to_ms": to_ms,
+                "next_ms": from_ms,
+                "started_at": iso_timestamp(now),
+                "completed_at": None,
+                "queries": 0,
+                "rows": 0,
+                "units_at_most": 0.0,
+            }
+            state["backfill"] = progress
+            save_state(root, state)
+        elif progress["completed_at"] is not None:
+            return {"command": "backfill", "skipped": "already_completed", "backfill": progress}
+    run = _BackfillRun(
+        ctx=LearnerContext(principal), principal=principal, max_units=max_units, limit=config.dataset_query_max_rows
+    )
+    max_span = config.dataset_query_max_timeframe_ms
+    slice_ms = min(DAY_MS, max_span) if max_span > 0 else DAY_MS
+    absent_since_ms = int(now.timestamp() * 1000) - config.learning_schema_ttl_days * DAY_MS
+    counts: Counter = Counter()
+    stopped = None
+    with service_principal(principal):
+        while stopped is None and progress["next_ms"] < progress["to_ms"]:
+            start = progress["next_ms"]
+            end = min(start + slice_ms, progress["to_ms"])
+            rows, stopped = await _backfill_slice(run, start, end)
+            async with store.locked(wait_seconds=BACKFILL_LOCK_WAIT_SECONDS):
+                state = load_state(root)
+                progress = state["backfill"]
+                batch = Batch(store, now)
+                if progress["next_ms"] != start:
+                    stopped = "concurrent_run"
+                elif stopped is None:
+                    _apply_backfill_rows(batch, rows, counts, absent_since_ms)
+                    progress["next_ms"] = end
+                    progress["rows"] += len(rows)
+                    if end >= progress["to_ms"]:
+                        progress["completed_at"] = iso_timestamp(now)
+                spent = round(run.spent - run.saved_spent, 6)
+                progress["queries"] += run.queries - run.saved_queries
+                progress["units_at_most"] = round(progress["units_at_most"] + spent, 6)
+                await batch.commit(
+                    principal=principal,
+                    operation="backfill",
+                    details={"slice": {"from_ms": start, "to_ms": end}, "rows": len(rows)},
+                    force_audit=False,
+                )
+                _add_spend(root, now.date().isoformat(), spent)
+                save_state(root, state)
+                run.saved_queries, run.saved_spent = run.queries, run.spent
+    report = {
+        "command": "backfill",
+        "at": iso_timestamp(now),
+        "stopped": stopped,
+        "this_run": {"queries": run.queries, "units_at_most": run.spent},
+        "full_windows": run.full_windows,
+        "invalid_rows": run.invalid_rows,
+        "outcomes": dict(counts),
+        "backfill": progress,
+    }
+    async with store.locked(wait_seconds=BACKFILL_LOCK_WAIT_SECONDS):
+        await Batch(store, now).commit(principal=principal, operation="backfill", details=report, force_audit=True)
+    await learning_journal.flush()
     return report
 
 

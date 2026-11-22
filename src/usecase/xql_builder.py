@@ -7,10 +7,38 @@ SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*\Z")
 TERMINAL_LIMIT_RE = re.compile(r"\|\s*limit\s+([0-9]+)\s*$", re.IGNORECASE)
 
 
+# Words the XSIAM XQL parser refuses as a bare field name, in any letter case: it reads them as a
+# stage, a source or an operator and fails the whole query with a syntax error. Written in backticks
+# they are accepted as a field in every position this builder emits one (filter, fields, sort, bin,
+# comp ... by, a metric argument and an alias). Measured against a live tenant on 2026-11-13 by
+# submitting each word as a field. `switch` is a documented stage that parser still took bare; it is
+# listed because quoting a word that is not reserved is harmless. A reserved word missing from this
+# set fails closed, as the same syntax error.
+XQL_RESERVED_WORDS = frozenset(
+    {
+        "alter", "and", "arrayexpand", "as", "asc", "between", "bin", "by", "call", "cold_dataset", "comp",
+        "config", "contains", "datamodel", "dataset", "dedup", "desc", "false", "fields", "filter", "for",
+        "getrole", "in", "incidr", "incidr6", "iploc", "join", "like", "limit", "not", "null", "or", "pivot",
+        "preset", "replacenull", "search", "sort", "span", "suffix", "switch", "table", "tag", "target",
+        "timeshift", "timezone", "top", "transaction", "transpose", "true", "union", "view", "windowcomp",
+    }
+)
+
+
 def _validate_identifier(value: str, label: str) -> str:
     if not value or len(value) > 255 or not SAFE_IDENTIFIER_RE.match(value):
         raise ValueError(f"Invalid {label}: {value}")
     return value
+
+
+def _field_reference(value: str, label: str) -> str:
+    """Validate a field or alias name and return it as XQL text.
+
+    A reserved word is wrapped in backticks. The identifier check runs first and admits no backtick,
+    so the quoted form cannot be closed early. Result rows are still keyed by the bare name.
+    """
+    name = _validate_identifier(value, label)
+    return f"`{name}`" if name.lower() in XQL_RESERVED_WORDS else name
 
 
 ENUM_VALUE_RE = re.compile(r"^[A-Z][A-Z0-9_]*\Z")
@@ -32,7 +60,7 @@ def _format_xql_value(value) -> str:
 
 
 def _build_filter_clause(field: str, operator: str, value) -> str:
-    field = _validate_identifier(field, "filter field")
+    field = _field_reference(field, "filter field")
     operator = operator.lower()
 
     if operator in {"eq", "=", "=="}:
@@ -76,6 +104,15 @@ def format_xql_value(value) -> str:
 def validate_identifier(value: str, label: str) -> str:
     """Validate a dataset, field, or alias identifier used by generated XQL."""
     return _validate_identifier(value, label)
+
+
+def field_reference(value: str, label: str) -> str:
+    """Validate a field or alias name and return the text to write into generated XQL.
+
+    Use this wherever a field name is written into a query; keep ``validate_identifier`` for the
+    bare name used to read result rows, and for dataset names, which XSIAM does not accept quoted.
+    """
+    return _field_reference(value, label)
 
 
 def strip_xql_comments(query: str) -> str:
@@ -154,7 +191,7 @@ def build_structured_xql(
 
     selected_fields = fields or DEFAULT_LOG_FIELDS
     if selected_fields:
-        safe_fields = [_validate_identifier(field, "field") for field in selected_fields]
+        safe_fields = [_field_reference(field, "field") for field in selected_fields]
         query_parts.append("| fields " + ", ".join(safe_fields))
 
     query_parts.append(f"| limit {safe_limit}")

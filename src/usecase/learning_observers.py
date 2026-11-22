@@ -92,7 +92,6 @@ _DURATION_MS = {
     "y": 365 * DAY_MS,
 }
 _SAMPLE_STAGES = frozenset({"dataset", "fields", "limit", "sort"})
-# Stages that read other sources, so the cost is not the first dataset's alone.
 _MULTI_SOURCE_STAGES = frozenset({"join", "union", "call"})
 # Stages that keep every dataset field visible to the stages after them.
 _PASS_THROUGH_STAGES = frozenset({"filter", "sort", "limit"})
@@ -188,6 +187,11 @@ def parse_xql(query: str) -> ParsedQuery:
         stages=tuple(stages),
         dataset=dataset_match.group(1) if dataset_match else None,
     )
+
+
+def reads_other_sources(parsed: ParsedQuery) -> bool:
+    """True when a stage reads another source, so the cost is not the first dataset's alone."""
+    return any(parsed.stage_word(index) in _MULTI_SOURCE_STAGES for index in range(len(parsed.stages)))
 
 
 def window_ms(timeframe: Any, parsed: ParsedQuery | None = None) -> int | None:
@@ -468,8 +472,7 @@ async def observe_xql_execution(
         key = call.engagement_key if call is not None else engagement_key(ctx, principal)
         observations: list[Observation] = []
         if not response.get("error"):
-            words = {parsed.stage_word(index) for index in range(len(parsed.stages))}
-            if units is not None and not words & _MULTI_SOURCE_STAGES:
+            if units is not None and not reads_other_sources(parsed):
                 observations.append(
                     Observation(
                         "cost_table",

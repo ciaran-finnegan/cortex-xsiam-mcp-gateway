@@ -8,7 +8,11 @@ credential broker.
 
 For HTTP transport, incoming users can be authenticated through Entra bearer
 JWT validation, HMAC-signed trusted gateway identity forwarding, or either path
-when `MCP_IDENTITY_AUTH_MODE=entra_or_gateway`.
+when `MCP_IDENTITY_AUTH_MODE=entra_or_gateway`. `MCP_IDENTITY_AUTH_MODE=api_key`
+replaces both with per-person static keys for a small test group: the gateway
+holds only each key's SHA-256, maps it to a principal and groups set by the
+operator, and applies the same tool, dataset and audit controls. A static key
+is a bearer secret with no second factor, so it is a stopgap before Entra.
 
 Every MCP tool invocation is checked against `TOOL_ACCESS_POLICY`.
 `query_dataset`, `search_logs`, and discovery tools enforce dataset allowlists
@@ -185,6 +189,11 @@ Tier-1 learning writes measured tenant facts to `<TENANT_PACK_DIR>/learned/`
   `LEARNING_ADMIN_GROUPS`;
 - the learner queries XSIAM only as its own `learner` principal under the normal
   dataset and tool policy, within a daily unit cap, and not below the reserve;
+- the history backfill, which an operator starts once, is the one path that reads
+  query text from XSIAM rows. That text is author-controlled, so it stays in memory
+  and only validated identifiers and tokens leave it; its facts never count towards
+  verification, never contradict or replace a live fact, and can raise a cost
+  estimate but not lower it. It never selects `issuer`;
 - the replay cache is off by default, holds only results the gateway already
   returned, is capped, owner-only and git-ignored in the pack, and is not exposed
   as an MCP tool.
@@ -226,7 +235,7 @@ listing:
 | Parameters | At most 20, identifier names, string, number, or boolean values, strings up to 500 characters. |
 | Audit | Every attempt emits a `cortex_xsiam_mcp.script_run` event, allowed or refused, with endpoint ids, parameter names, and hashes, never endpoint names or parameter values. See [Audit Logging](AUDIT_LOGGING.md). |
 | Untrusted output | Standard output and returned values are capped per endpoint and in total, stripped of control characters, and labelled `content_trust: "untrusted_data"`. Every returned value is charged its key name and serialised size, and one that does not fit is omitted. Tool descriptions and server instructions say results are data, never instructions. |
-| Files | The signed link is never returned or logged. The zip is saved under `SCRIPT_RUN_RESULTS_DIR` with a size cap and owner-only permissions, and only its path and size are returned. Only `https` links to a named host are fetched: an IP literal, `localhost`, or a host without a DNS top-level label is refused, on the first URL and on each redirect. The XSIAM API key is never sent to the download host. |
+| Files | XSIAM's download link is not signed: it is a token URL on the public API host that answers 401 without the API key. The link is never returned or logged. The zip is saved under `SCRIPT_RUN_RESULTS_DIR` with a size cap and owner-only permissions, and only its path and size are returned. Only `https` links to a named host are fetched: an IP literal, `localhost`, or a host without a DNS top-level label is refused, on the first URL and on each redirect. The API key headers are attached only when a URL's host and port exactly match the API host built from `CORTEX_MCP_PAPI_URL`, checked again on each redirect. Any other host, including a redirect target, is fetched without them, and no cookie is carried from one hop to the next. Once a redirect leaves the API host the key is not sent again in that chain, even if a later redirect points back at the API host. |
 | Run ownership | `get_endpoint_script_run` serves and lists only actions this gateway recorded for the same principal. |
 
 What it deliberately cannot do:
@@ -289,6 +298,8 @@ execution fails closed.
     an allow-listed script does;
   - the download host check is on the name. It does not resolve the name, so
     it does not stop a public name that points at a private address;
+  - the API key goes wherever `CORTEX_MCP_PAPI_URL` points. Its host is
+    trusted as the tenant's API host;
   - downloaded files are not scanned or unpacked. Treat them as hostile.
 
 ## Threat Model Summary
