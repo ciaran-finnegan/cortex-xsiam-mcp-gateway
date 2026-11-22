@@ -35,7 +35,6 @@ class LabelProvider(Protocol):
 
     def complete(self, system: str, user: str) -> str:
         """The model's reply text. Raises ProviderError when there is none."""
-        ...
 
 
 class ChatCompletionsProvider:
