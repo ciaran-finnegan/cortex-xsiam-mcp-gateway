@@ -1,0 +1,8 @@
+name: CodeQL configuration
+
+# Tests are not analysed. They create group-readable paths, assert on host
+# names in strings and build long queries from adjacent literals on purpose,
+# which CodeQL reports as findings. Code under src/ and scripts/ is analysed
+# in full. Ruff and the test suite still cover tests/.
+paths-ignore:
+  - tests

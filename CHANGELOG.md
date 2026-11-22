@@ -4,6 +4,10 @@ This project follows a lightweight changelog format until stable releases begin.
 
 ## Unreleased
 
+- CodeQL no longer analyses `tests/` (`.github/codeql/codeql-config.yml`). The
+  tests create group-readable paths and assert on host names in strings on
+  purpose, which were reported as findings. `src/` and `scripts/` are analysed
+  as before.
 - Fixed typed queries failing with an opaque server error when a field is
   named like an XQL stage or operator, for example the `target` field of
   SailPoint events. `query_dataset`, `continue_dataset_query`, `search_logs`,
