@@ -102,7 +102,7 @@ def test_learner_recalibration_query_is_light_by_default():
     [
         (6.0, 4.0, 6.0, 4.0),  # learned above the seed band raises the estimate
         (1.2, 0.8, 1.2, 0.8),  # learned inside the band lowers it
-        (0.01, 0.005, 0.5, 0.5),  # learned below the band stops at the seed low bound
+        (0.01, 0.005, 0.05, 0.05),  # learned below the band stops at the seed low bound
     ],
 )
 def test_learned_cost_replaces_the_seed_units_within_the_seed_floor(
@@ -125,10 +125,10 @@ def test_learned_cost_replaces_the_seed_units_within_the_seed_floor(
     query = 'dataset = sample_auth_logs | filter user_name = "a" | limit 5'
     seed_low, seed_high = cost_guard.unit_bands()["medium"]
 
-    estimate = cost_guard.estimate_xql(query, _window(2 * DAY_MS))
+    estimate = cost_guard.estimate_xql(query, _window(30 * DAY_MS))
 
-    assert (seed_low, seed_high) == (0.5, 3.6)
-    assert lookups == [("sample_auth_logs", "le_7d", "selective")]
+    assert (seed_low, seed_high) == (0.05, 2.5)
+    assert lookups == [("sample_auth_logs", "le_30d", "selective")]
     assert estimate.cost_class == "medium"
     assert (estimate.high_units, estimate.low_units) == (expected_high, expected_low)
     assert estimate.factors["units_source"] == "learned"
@@ -195,14 +195,14 @@ async def test_learned_cost_drives_the_approval_rule(monkeypatch, observed):
     )
     use_fetcher(monkeypatch, [success("q-l1", [{"user_name": "a"}], cost=0.2)])
 
-    # Over two days the seed rates this query medium (up to 3.6 units), above the 1-unit threshold;
-    # the learned entry brings it to the band's 0.5-unit floor, so the query runs without approval.
+    # Over thirty days the seed rates this query medium (up to 2.5 units), above the 1-unit threshold;
+    # the learned high of 0.3 units is inside the band, so the query runs without approval.
     response = await xql_executor.run_xql_query(
-        ctx(), 'dataset = sample_auth_logs | filter user_name = "a" | limit 5', 5, timeframe=_window(2 * DAY_MS)
+        ctx(), 'dataset = sample_auth_logs | filter user_name = "a" | limit 5', 5, timeframe=_window(30 * DAY_MS)
     )
 
     assert response["query_id"] == "q-l1"
-    assert response["quota"]["estimate_units"] == 0.5
+    assert response["quota"]["estimate_units"] == 0.3
 
 
 @pytest.mark.asyncio

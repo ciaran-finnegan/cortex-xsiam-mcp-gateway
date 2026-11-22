@@ -18,6 +18,7 @@ env/
 .env
 .env.*
 !.env.example
+!.env.op.example
 
 # OS/editor
 .DS_Store
