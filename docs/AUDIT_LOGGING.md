@@ -59,7 +59,7 @@ and the journal is read again next time.
 
 | Field | Description |
 | --- | --- |
-| `operation` | Learner: `tick`, `nightly`, `weekly`. Gateway: `revert_requested`, `pin_requested`, `unpin_requested`, `read` (resource read). |
+| `operation` | Learner: `tick`, `nightly`, `weekly`, `backfill`. Gateway: `revert_requested`, `pin_requested`, `unpin_requested`, `read` (resource read). |
 | `trigger` | `learner`, `revert_learned`, or `resource`. |
 | `principal.id`, `principal.groups` | The learner principal (`LEARNER_PRINCIPAL_ID`), or the admin or reader in the gateway. |
 | `actions` | Count of changes per action. |
@@ -67,10 +67,13 @@ and the journal is read again next time.
 | `changes_truncated` | True when more than 100 changes were made. |
 | `details` | Learner: the run report (journal records read, engagements processed, jobs and their results), cached results, fact links, and `observed_by`, the principals whose calls produced the observations. Gateway: the entry for a revert request; kind, success and count for a read. |
 
-The learner's nightly query of `xql_query_center_history` also emits a normal
-`cortex_xsiam_mcp.tool_invocation` event for the learner principal. Facts are
-validated short tokens and identifiers; result text and filter literals never
-appear in these events. See [Learning](LEARNING.md).
+Each of the learner's queries of `xql_query_center_history`, nightly or for a
+backfill, also emits a normal `cortex_xsiam_mcp.tool_invocation` event for the
+learner principal. A backfill emits a `learning` event for each day that changed
+facts and one for each run, whose `details` hold the range, progress and row
+outcomes. Facts are validated short tokens and identifiers; result text, query
+text and filter literals never appear in these events. See
+[Learning](LEARNING.md).
 
 ## Example Event
 
@@ -170,7 +173,7 @@ invocation events. See
 | `script_run.foreign_action` | True when a read was served for an action this process did not start. |
 | `script_run.file_endpoint_ids`, `files_retrieved`, `file_bytes` | File retrieval requested and saved. |
 
-Script output, returned values, and signed download links are never logged.
+Script output, returned values, and download links (which carry a download token) are never logged.
 Tool invocation end events carry `result.script_run_rule` for a refusal, with
 `outcome=denied`.
 

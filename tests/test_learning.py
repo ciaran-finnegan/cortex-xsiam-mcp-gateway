@@ -797,6 +797,19 @@ async def test_nightly_recalibrates_held_cost_samples_from_query_history(pack, a
 
 
 @pytest.mark.asyncio
+async def test_recalibration_keeps_the_quota_delta_when_the_history_reports_zero_units(pack, audit_events, clock, monkeypatch):
+    await _held_delta_sample(monkeypatch)
+    _use_quota(monkeypatch)
+    use_fetcher(monkeypatch, [success("q-hist", [{"execution_id": "q-2", "compute_units": 0}], cost=0.05)])
+
+    report = await settle("nightly")
+
+    assert report["jobs"]["nightly"]["matched_in_history"] == 0
+    (entry,) = read_kind(pack, "cost_table").values()
+    assert (entry["fact"]["recent_units"], entry["fact"]["units_source"]) == ([0.75], "remaining_quota_delta")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "setting, value, reason",
     [
