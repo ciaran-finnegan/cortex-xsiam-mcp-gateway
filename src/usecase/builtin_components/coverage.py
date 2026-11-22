@@ -29,7 +29,7 @@ from usecase.helper_runtime import (
 )
 from usecase.identity import resolve_mcp_context
 from usecase.log_policy import DatasetAuthorizationError, ensure_dataset_authorized
-from usecase.xql_builder import format_xql_value, validate_identifier
+from usecase.xql_builder import field_reference, format_xql_value, validate_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -47,10 +47,10 @@ def _normalized_key(field: str, alias: str) -> str:
 
 def _side(dataset: str, host_field: str, alias: str, host_filter: tuple[str, str] | None) -> str:
     dataset = validate_identifier(dataset, "dataset")
-    host_field = validate_identifier(host_field, "host field")
+    host_field = field_reference(host_field, "host field")
     clauses = [f"{host_field} != null"]
     if host_filter:
-        clauses.append(f"{validate_identifier(host_filter[0], 'host filter field')} = {format_xql_value(host_filter[1])}")
+        clauses.append(f"{field_reference(host_filter[0], 'host filter field')} = {format_xql_value(host_filter[1])}")
     return f"dataset = {dataset} | filter {' and '.join(clauses)} | {_normalized_key(host_field, alias)} | dedup {alias}"
 
 

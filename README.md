@@ -138,7 +138,7 @@ working tree. See [engagement modes](docs/ENGAGEMENT_MODES.md).
 
 | Check | Setting | Default |
 | --- | --- | --- |
-| Caller identity, HTTP | `MCP_IDENTITY_AUTH_MODE` (`none`, `entra`, `gateway`, `entra_or_gateway`) | `none` |
+| Caller identity, HTTP | `MCP_IDENTITY_AUTH_MODE` (`none`, `entra`, `gateway`, `entra_or_gateway`, `api_key`) | `none` |
 | Tool access | `TOOL_ACCESS_POLICY` | Every tool for `Admin` and `Security`. Query, discovery, quota, case, issue, engagement and learned-fact tools for `SOC` and `Tier1`. `query_dataset` and `discover_log_fields` for `learner`. |
 | Dataset access | `LOG_SEARCH_DATASET_POLICY` | `{"Security": ["*"], "SOC": ["xdr_data"], "Tier1": ["xdr_data"], "learner": ["xql_query_center_history"]}` |
 | Raw XQL | `RAW_XQL_PRIVILEGED_GROUPS` and a `*` dataset grant | `Security,Admin` |
@@ -235,6 +235,12 @@ queries XSIAM only as the `learner` group, within 0.5 units a day. Run it every
 
 ```bash
 PYTHONPATH=src poetry run python -m learner tick
+```
+
+To prime a new pack from the tenant's query history, run once:
+
+```bash
+PYTHONPATH=src poetry run python -m learner backfill --days 30 --max-units 5
 ```
 
 Agents read facts with `get_learned_facts`. `learning_digest` lists what

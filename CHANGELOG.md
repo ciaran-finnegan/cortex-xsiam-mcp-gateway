@@ -4,6 +4,21 @@ This project follows a lightweight changelog format until stable releases begin.
 
 ## Unreleased
 
+- Fixed typed queries failing with an opaque server error when a field is
+  named like an XQL stage or operator, for example the `target` field of
+  SailPoint events. `query_dataset`, `continue_dataset_query`, `search_logs`,
+  `dataset_health`, `coverage_gap`, and the helpers now write such a name in
+  backticks in every position: filter, fields, sort, bin, `comp ... by`,
+  metric argument, alias, and the continuation seek clause. The list is 52
+  words (`XQL_RESERVED_WORDS`), measured against the XSIAM parser and matched
+  in any letter case. Result rows keep the bare name. Field names still admit
+  no backtick, so a quoted name cannot be closed early. Dataset names are not
+  quoted. `validate_xql` does not yet flag a bare reserved word in raw XQL.
+- Added `MCP_IDENTITY_AUTH_MODE=api_key`: per-person static client keys for a
+  small test group before an identity provider is wired in. `MCP_API_KEYS`
+  holds only each key's SHA-256 with the principal and groups it maps to, the
+  server refuses to start on a malformed registry, and the mode accepts no
+  Entra token or gateway header. See `docs/CONFIGURATION.md`.
 - Added endpoint script execution, off by default (`SCRIPT_RUN_ENABLED`):
   `list_endpoint_scripts`, `run_endpoint_script`, and
   `get_endpoint_script_run` run a script from the XSIAM agent script library on
@@ -100,6 +115,15 @@ This project follows a lightweight changelog format until stable releases begin.
 - Added automatic verification: a fact is labelled `verified` after 5
   confirmations from 3 distinct engagements over 7 days with no contradiction
   (all settings); one contradiction drops it back to `learned`.
+- Added `python -m learner backfill --days N --max-units X`, run once by an
+  operator, which reads older queries from `xql_query_center_history` into cost
+  and absent-field facts with the source class `query_history_backfill`. It is
+  resumable, never selects `issuer`, and keeps query text in memory. Its facts
+  never count towards verification, leave live facts alone, and can raise a cost
+  guard estimate but not lower it. It calls no model.
+- Nightly recalibration now keeps a sample's quota delta when the history reports
+  zero units, because zero there is not a measurement. Confirmed against a live
+  tenant that `execution_id` in the history equals the public API's query id.
 - Added `get_learned_facts`, the `tenant://learned/{kind}` resource,
   `learning_digest`, admin-only `revert_learned` (revert, pin, unpin), and the
   `LEARNING_ENABLED` kill switch for both processes.
@@ -192,6 +216,17 @@ This project follows a lightweight changelog format until stable releases begin.
   would; globs stay a fallback. The default map pins the firewall traffic, URL
   and cloud flow log datasets to `medium`, and its existing `light` pin for
   `xql_query_center_history` now takes effect.
+- Field discovery samples one day first and widens to seven days only when the day
+  returns no rows, in `validate_xql`, the investigation helpers and `dataset_health`.
+  With the early-exit sample scoring change (#68), discovery on a heavy dataset such as
+  `xdr_data` starts from a light estimate and is normally below every mode's
+  approval threshold, though both samples stay subject to every cost guard check;
+  before, the fixed seven-day sample
+  was rated medium and refused in operations mode, so `validate_xql` skipped its
+  field check there. An idle dataset now costs two cheap samples instead of one.
+  A sample the cost guard refuses, on either window, ends the helper or
+  `dataset_health` call with that refusal, and a sample that fails reports the
+  dataset as `unknown`, so an unverified dataset is never reported as empty.
 
 ## 0.2.0-alpha.1 - 2026-07-10
 

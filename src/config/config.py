@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     entra_groups_claim: str = Field("groups", validation_alias="ENTRA_GROUPS_CLAIM")
     entra_roles_claim: str = Field("roles", validation_alias="ENTRA_ROLES_CLAIM")
 
+    # --- Static Client API Keys (MCP_IDENTITY_AUTH_MODE=api_key) ---
+    # JSON object of key id to {"sha256", "principal", "groups", optional "expires", "disabled"}.
+    # Holds hashes only. Inject at start like the XSIAM API key, never commit it.
+    api_keys: str = Field("", validation_alias="MCP_API_KEYS")
+
     # --- Optional Trusted AI Gateway Identity Settings ---
     gateway_shared_secret: str = Field("", validation_alias="MCP_GATEWAY_SHARED_SECRET")
     gateway_allowed_issuers: str = Field("", validation_alias="MCP_GATEWAY_ALLOWED_ISSUERS")
