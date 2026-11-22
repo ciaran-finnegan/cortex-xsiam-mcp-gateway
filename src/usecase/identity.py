@@ -201,12 +201,26 @@ def load_api_key_registry(raw: str) -> dict[str, ApiKeyEntry]:
     return dict(_parse_api_key_registry(raw or ""))
 
 
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Refuse a JSON object that repeats a name.
+
+    json.loads keeps the last value, so a stale entry left under a disabled one, or a second
+    groups or disabled field, would silently win. The name is not echoed: it could be a pasted token.
+    """
+    result: dict[str, Any] = {}
+    for name, value in pairs:
+        if name in result:
+            raise ApiKeyRegistryError("MCP_API_KEYS repeats a key id or a field name")
+        result[name] = value
+    return result
+
+
 @lru_cache(maxsize=4)
 def _parse_api_key_registry(raw: str) -> tuple[tuple[str, ApiKeyEntry], ...]:
     if not raw.strip():
         return ()
     try:
-        data = json.loads(raw)
+        data = json.loads(raw, object_pairs_hook=_reject_duplicate_json_keys)
     except json.JSONDecodeError as e:
         raise ApiKeyRegistryError("MCP_API_KEYS is not valid JSON") from e
     if not isinstance(data, dict):

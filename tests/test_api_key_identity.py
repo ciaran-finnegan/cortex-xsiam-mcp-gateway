@@ -161,6 +161,12 @@ def test_empty_api_key_registry_rejects_every_key(monkeypatch):
                 "analyst-two": {"sha256": "a" * 64, "principal": "q", "groups": []},
             }
         ),
+        # json.dumps cannot repeat a name, so these are written out. Without the check the last value wins.
+        '{"analyst-one": {"sha256": "%s", "principal": "p", "groups": [], "disabled": true},'
+        ' "analyst-one": {"sha256": "%s", "principal": "p", "groups": ["Admin"]}}' % ("a" * 64, "a" * 64),
+        '{"analyst-one": {"sha256": "%s", "principal": "p", "groups": ["Tier1"], "groups": ["Admin"]}}' % ("a" * 64),
+        '{"analyst-one": {"sha256": "%s", "principal": "p", "groups": [], "disabled": true, "disabled": false}}'
+        % ("a" * 64),
     ],
 )
 def test_malformed_api_key_registry_fails_closed(monkeypatch, registry):
@@ -281,11 +287,16 @@ async def test_identity_middleware_passes_a_valid_api_key_and_blocks_an_invalid_
     assert reached == ["analyst.one"]
     assert sent == []
 
+    rejected_secret = "x" * 43
+    rejected_token = f"xgw_analyst-one.{rejected_secret}"
     await middleware(
-        {"type": "http", "path": path, "headers": [(b"authorization", f"Bearer xgw_analyst-one.{'x' * 43}".encode())]},
+        {"type": "http", "path": path, "headers": [(b"authorization", f"Bearer {rejected_token}".encode())]},
         receive,
         send,
     )
     assert reached == ["analyst.one"]
     assert sent[0]["status"] == 401
+    # Neither the rejected token nor the registered key's secret is echoed back.
+    assert rejected_token.encode() not in sent[1]["body"]
+    assert rejected_secret.encode() not in sent[1]["body"]
     assert SECRET.encode() not in sent[1]["body"]

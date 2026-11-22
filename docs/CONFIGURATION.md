@@ -151,7 +151,9 @@ entry stores the SHA-256 of the whole token:
 | `created`, `note` | no | Free text for the operator. Ignored. |
 
 The server refuses to start on a malformed registry, and an unknown field is
-malformed, so a misspelt `groups` cannot silently drop a restriction. A wrong
+malformed, so a misspelt `groups` cannot silently drop a restriction. A key id
+or field name that appears twice is malformed too, so an old entry left beside
+a disabled one cannot stay active. A wrong
 key id and a wrong secret get the same `401`. Rejections are logged with the
 key id only.
 
