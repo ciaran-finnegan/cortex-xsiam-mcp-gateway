@@ -186,13 +186,14 @@ class Settings(BaseSettings):
     # --- XQL Cost Guard Settings ---
     cost_guard_enabled: bool = Field(True, validation_alias="COST_GUARD_ENABLED")
     cost_guard_unit_bands: str = Field(
-        '{"light":[0.001,0.4],"medium":[0.5,3.6],"heavy":[5,9],"extreme":[10,31]}',
+        '{"light":[0.001,0.5],"medium":[0.05,2.5],"heavy":[2,9],"extreme":[5,32]}',
         validation_alias="COST_GUARD_UNIT_BANDS",
     )
     cost_guard_dataset_tiers: str = Field(
         (
             '{"xdr_data":"heavy","xdr_*":"heavy","*_story":"heavy",'
             '"amazon_aws_raw":"heavy","msft_azure_raw":"heavy","google_gcp_*":"heavy",'
+            '"panw_ngfw_traffic_raw":"medium","panw_ngfw_url_raw":"medium","msft_azure_flowlogs_raw":"medium",'
             '"xql_query_center_history":"light"}'
         ),
         validation_alias="COST_GUARD_DATASET_TIERS",
@@ -202,6 +203,7 @@ class Settings(BaseSettings):
         "agent_hostname,agent_id,endpoint_id,endpoint_name,host_name,hostname",
         validation_alias="COST_GUARD_SELECTIVE_FIELDS",
     )
+    cost_guard_partition_fields: str = Field("event_type", validation_alias="COST_GUARD_PARTITION_FIELDS")
     cost_guard_host_fields: str = Field(
         '{"xdr_data":"agent_hostname"}',
         validation_alias="COST_GUARD_HOST_FIELDS",
@@ -243,6 +245,53 @@ class Settings(BaseSettings):
         ge=1,
         le=1000,
         validation_alias="ENGAGEMENT_MAX_SCOPE_ITEMS",
+    )
+
+    # --- Endpoint Script Execution Settings ---
+    script_run_enabled: bool = Field(False, validation_alias="SCRIPT_RUN_ENABLED")
+    script_run_groups: str = Field("", validation_alias="SCRIPT_RUN_GROUPS")
+    script_run_allowed_scripts: str = Field("[]", validation_alias="SCRIPT_RUN_ALLOWED_SCRIPTS")
+    script_run_max_endpoints: int = Field(30, ge=1, le=200, validation_alias="SCRIPT_RUN_MAX_ENDPOINTS")
+    script_run_daily_max_runs: int = Field(5, ge=0, validation_alias="SCRIPT_RUN_DAILY_MAX_RUNS")
+    script_run_daily_max_endpoints: int = Field(100, ge=0, validation_alias="SCRIPT_RUN_DAILY_MAX_ENDPOINTS")
+    script_run_elicitation_enabled: bool = Field(True, validation_alias="SCRIPT_RUN_ELICITATION_ENABLED")
+    script_run_elicitation_timeout_seconds: int = Field(
+        120,
+        ge=1,
+        validation_alias="SCRIPT_RUN_ELICITATION_TIMEOUT_SECONDS",
+    )
+    script_run_max_output_bytes_per_endpoint: int = Field(
+        8192,
+        ge=256,
+        le=262144,
+        validation_alias="SCRIPT_RUN_MAX_OUTPUT_BYTES_PER_ENDPOINT",
+    )
+    script_run_max_output_bytes: int = Field(
+        65536,
+        ge=1024,
+        le=1048576,
+        validation_alias="SCRIPT_RUN_MAX_OUTPUT_BYTES",
+    )
+    script_run_api_timeout_seconds: int = Field(
+        30,
+        ge=1,
+        le=300,
+        validation_alias="SCRIPT_RUN_API_TIMEOUT_SECONDS",
+    )
+    script_run_results_dir: str = Field("", validation_alias="SCRIPT_RUN_RESULTS_DIR")
+    script_run_max_file_bytes: int = Field(
+        52428800,
+        ge=1024,
+        le=1073741824,
+        validation_alias="SCRIPT_RUN_MAX_FILE_BYTES",
+    )
+    script_run_allow_foreign_actions: bool = Field(False, validation_alias="SCRIPT_RUN_ALLOW_FOREIGN_ACTIONS")
+    script_run_state_dir: str = Field("", validation_alias="SCRIPT_RUN_STATE_DIR")
+    script_run_record_retention_days: int = Field(
+        30,
+        ge=1,
+        le=3650,
+        validation_alias="SCRIPT_RUN_RECORD_RETENTION_DAYS",
     )
 
     # --- Tenant Pack and Learning Settings ---

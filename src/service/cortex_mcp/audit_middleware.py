@@ -25,6 +25,7 @@ from usecase.identity import (
     resolve_mcp_context,
 )
 from usecase.log_policy import ToolAuthorizationError
+from usecase.script_run import SCRIPT_RUN_RULES
 from usecase.xql_errors import (
     clear_current_xql_error_class,
     get_current_xql_error_class,
@@ -167,6 +168,8 @@ async def _summarize_tool_result(result: ToolResult, fastmcp_context: Any | None
             summary["quota"] = quota
         if payload.get("error") == "cost_guard" and payload.get("rule") in COST_GUARD_RULES:
             summary["cost_guard_rule"] = payload["rule"]
+        if payload.get("error") == "script_run" and payload.get("rule") in SCRIPT_RUN_RULES:
+            summary["script_run_rule"] = payload["rule"]
         helper_queries = _summarize_helper_queries(payload.get("provenance"))
         if helper_queries:
             summary["helper_queries"] = helper_queries

@@ -815,7 +815,7 @@ async def test_cost_guard_hooks_see_current_mode_inside_a_tool_call(gateway):
 
 @pytest.mark.asyncio
 async def test_cost_guard_threshold_follows_the_engagement_mode(gateway):
-    # A one-host, one-day xdr_data lookup estimates medium (up to 3.6 units): above the
+    # A one-host, one-day xdr_data lookup estimates medium (up to 2.5 units): above the
     # operations threshold of 1 unit, below the incident_response threshold of 5.
     server = gateway(fetcher=QueryFetcher(query_cost=1.2))
     arguments = {
