@@ -50,6 +50,7 @@ check dataset policy.
 | `get_xql_query_quota` | XQL quota usage. |
 | `get_issues`, `get_cases` | Issues (alerts) and cases. |
 | `get_tenant_info`, `get_assets`, `get_asset_by_id`, `get_filtered_endpoints`, `get_vulnerabilities`, `get_assessment_profile_results` | Tenant, asset, endpoint, vulnerability and assessment data. |
+| `list_endpoint_scripts`, `run_endpoint_script`, `get_endpoint_script_run` | Off by default. Run an allow-listed script from the XSIAM agent script library on named endpoints and read the capped result. Every run needs an explicit group, a response mode and the analyst's approval. See [endpoint script execution](docs/CONFIGURATION.md#endpoint-script-execution). |
 
 ## Request path
 
@@ -153,6 +154,11 @@ until it is set. HTTP will not start with `none` unless
 caller's groups and current mode allow, and hidden tools are denied on call.
 The `operations` and `unset` modes hide `execute_xql_query`.
 
+Every tool only reads from XSIAM except `run_endpoint_script`. It is off until
+`SCRIPT_RUN_ENABLED=true`, and a `*` tool grant does not cover it: the caller
+must also be in `SCRIPT_RUN_GROUPS`, the script uid must be on
+`SCRIPT_RUN_ALLOWED_SCRIPTS`, and the analyst approves each run.
+
 Raw XQL needs the `*` grant because the gateway does not parse it for datasets.
 It must end in `| limit N`, which is clamped to the server row limit. Comments
 are stripped first, so a limit written inside a comment does not count.
@@ -254,16 +260,20 @@ Requires Python 3.12 or 3.13 and Poetry.
 poetry env use python3.12
 poetry install
 cp .env.example .env
+cp .env.op.example .env.op
 ```
 
-Fill in the three `CORTEX_MCP_PAPI_*` values (tenant API URL, API key, key ID)
-in `.env`, which git ignores. `.env.example` is set up for HTTP with Entra, so a
-local stdio session overrides three settings. Environment variables take
-precedence over `.env`.
+Set `CORTEX_MCP_PAPI_URL` in `.env`, which git ignores. The API key stays in
+1Password, `.env.op` holds the `op://` references and `op run` injects the
+values at start after a Touch ID or Windows Hello prompt. [Secrets and API
+keys](docs/SECRETS.md) covers the macOS Keychain, Windows SecretStore and MCP
+client registration. `.env.example` is set up for HTTP with Entra, so a local
+stdio session overrides three settings. Environment variables take precedence
+over `.env`.
 
 ```bash
 MCP_TRANSPORT=stdio MCP_IDENTITY_AUTH_MODE=none LOG_SEARCH_DEFAULT_GROUPS=Tier1 \
-  poetry run python src/main.py
+  op run --env-file=.env.op -- poetry run python src/main.py
 ```
 
 `Tier1` can query `xdr_data` and `Security` can use everything. Run it from
@@ -302,10 +312,14 @@ store are per process, so they do not span replicas. See [enterprise deployment]
 
 ```bash
 docker build -t cortex-xsiam-mcp-gateway .
-docker run --rm -p 8080:8080 --env-file .env cortex-xsiam-mcp-gateway
+op run --env-file=.env.op -- docker run --rm -p 8080:8080 --env-file .env \
+  -e CORTEX_MCP_PAPI_AUTH_HEADER -e CORTEX_MCP_PAPI_AUTH_ID \
+  cortex-xsiam-mcp-gateway
 ```
 
-The image runs `python src/main.py` as a non-root user and serves HTTP only if
+`-e NAME` with no value copies the variable from the host environment that
+`op run` populated. The image runs
+`python src/main.py` as a non-root user and serves HTTP only if
 the env file sets `MCP_TRANSPORT=streamable-http` and an identity mode, as
 `.env.example` does. For stdio, run it with `docker run -i` and the three
 overrides above as `-e` flags.

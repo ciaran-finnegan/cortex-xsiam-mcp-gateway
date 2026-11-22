@@ -1,7 +1,9 @@
 # Configuration
 
-Configuration is loaded from environment variables and optional `.env` files.
-Do not commit `.env` files.
+Configuration is loaded from environment variables and an optional `.env`
+file in the working directory, environment variables win. Keep API keys and
+other secrets out of `.env` and inject them at start, see
+[Secrets And API Keys](SECRETS.md). Do not commit `.env` files.
 
 ## Required XSIAM API Settings
 
@@ -10,6 +12,10 @@ Do not commit `.env` files.
 | `CORTEX_MCP_PAPI_URL` | XSIAM tenant API URL. If missing `api-`, the client normalizes the hostname. |
 | `CORTEX_MCP_PAPI_AUTH_HEADER` | XSIAM API key value. |
 | `CORTEX_MCP_PAPI_AUTH_ID` | XSIAM API key ID. |
+
+Do not write the key into `.env`, the MCP client's config file or a command
+line. [Secrets And API Keys](SECRETS.md) shows how to inject it at start from
+1Password, the macOS Keychain or the Windows SecretStore.
 
 ## MCP Server Settings
 
@@ -145,6 +151,10 @@ Tool policy is enforced for every MCP tool invocation. Dataset policy still
 runs inside discovery and query tools. Tools a principal cannot invoke are not
 advertised in `tools/list`.
 
+`run_endpoint_script` and `get_endpoint_script_run` also need a group in
+`SCRIPT_RUN_GROUPS`; a `*` grant does not cover them. See
+[Endpoint script execution](#endpoint-script-execution).
+
 ## Engagement Modes
 
 | Variable | Default | Description |
@@ -201,22 +211,62 @@ from a score:
 
 | Factor | Points |
 | --- | --- |
-| Dataset tier `light` / `medium` / `heavy` (highest tier referenced; no dataset clause counts as `heavy`) | 0 / 2 / 4 |
+| Dataset tier `light` / `medium` / `heavy` (highest tier referenced; no dataset clause counts as `heavy`) | 0 / 1 / 4 |
 | Window up to 1 d / 7 d / 30 d / 90 d / longer | 0 / 1 / 2 / 3 / 4 |
-| Heavy dataset without a positive `=` or `in` filter on a field in `COST_GUARD_SELECTIVE_FIELDS` | +1 |
-| `contains`, `~=`, `regextract`, `regexcapture` | +1 |
+| Heavy dataset with a positive `=` or `in` filter on a field in `COST_GUARD_SELECTIVE_FIELDS` | up to 3 window points removed |
+| Heavy dataset with a positive `=`, or an `in` list of at most two values, on a field in `COST_GUARD_PARTITION_FIELDS` | up to 2 window points removed |
+| Heavy dataset with neither filter, over more than a day | +1 |
+| `contains`, `~=`, `regextract`, `regexcapture` on that same un-narrowed scan | +1 |
 | `_raw_log` or `to_json_string(` | +2 |
 | `join`, `union`, `dedup` / `search` / `call` | +1 each / +2 / +3 |
 
 Scores up to 2 are light, up to 4 medium, up to 6 heavy, and above that
 extreme. A query with only dataset, `fields`, `limit`, and `config` stages is an
-early-exit sample and scores its tier points minus one, whatever the window.
+early-exit sample: it scores its tier and window points minus two and takes no
+selectivity, text-scan, or stage penalties, so a bounded sample of a heavy
+dataset over a day or less is light and the same sample over 90 days is heavy.
+Field discovery and `validate_xql` field checks are such samples.
 Comments and string literals are removed before parsing, so neither can hide or
-fake a stage. The dataset tier comes from the authored catalogue `volume` when
-the catalogue is installed (`very_high` is heavy, `high` medium, `medium` and
-`low` light), then `COST_GUARD_DATASET_TIERS`, then `COST_GUARD_DEFAULT_TIER`.
-Estimates are deliberately conservative; tune the tier map and bands against
-the `actual_units` each result records.
+fake a stage. A host or partition filter counts only in a filter stage without
+`or`, never under `not`, and only when it compares the field with literals: a
+field compared with itself, with another field or with a function result earns
+nothing, and a host list may name at most 20 values. Every pipeline that reads a
+heavy dataset needs its own filter, so a filter on one side of a join does not
+narrow the other, and a heavy dataset added by `union <name>` is never narrowed.
+The filter must also come before any stage that aggregates, joins, sorts, limits
+or otherwise reshapes the rows, and before an `alter` or `fields` stage that
+assigns the field, so it is the dataset's own field being filtered. A `not`
+that encloses the comparison at any depth cancels the credit. The narrowing
+credits take points off the window only, so a narrowed query never scores below
+its tier.
+
+The dataset tier is the first of: an exact dataset name in
+`COST_GUARD_DATASET_TIERS`; the authored catalogue `volume` when the catalogue
+is installed (`very_high` is heavy, `high` medium, `medium` and `low` light); a
+glob in `COST_GUARD_DATASET_TIERS`; `COST_GUARD_DEFAULT_TIER`. Pin a dataset by
+exact name when its recorded `actual_units` disagree with its catalogue volume.
+
+The points and the default bands were fitted to 880 queries with recorded
+compute units, taken from eight days of one tenant's `xql_query_center_history`.
+What that sample showed:
+
+- The dataset and the window alone do not predict cost. On endpoint telemetry
+  an equality on a host key cost 0.1 units at the median and 1.1 at the 90th
+  percentile for any window up to 30 days, and an `event_type` equality over 30
+  days cost 0.2 to 1.4. The same 30 days with neither filter cost up to 15.
+- Pattern matching made no measurable difference on light and medium datasets
+  or on narrowed scans.
+- Firewall traffic, URL and cloud flow logs on their own never cost more than
+  0.4 units, including 90-day pattern scans, so the defaults pin them to medium.
+  Joined to endpoint telemetry, a 7-day query cost 5 to 8.
+- The same query cost 0.06 units on a quiet day and up to 3.6 in a burst of
+  thirty concurrent runs. A band is a typical range, and the reserve and the
+  session budget are what bound a bad day.
+
+Against that sample the old points asked for approval on 635 of 880 queries in
+`threat_hunt` mode, 621 of which cost less than the threshold. These points ask
+on 66, and every query that cost more than 3.7 units is among them. Refit the
+tier map and bands against the `actual_units` each result records.
 
 When learning is enabled and the learned cost table has an active entry for a
 single-dataset query's dataset, window bucket and selectivity, the guard uses
@@ -286,10 +336,11 @@ against a timed-out query), `remaining_units`,
 | Variable | Default | Description |
 | --- | --- | --- |
 | `COST_GUARD_ENABLED` | `true` | Apply the cache and the refusal rules. The timeframe requirement and timeout ceiling apply either way. |
-| `COST_GUARD_UNIT_BANDS` | `{"light":[0.001,0.4],"medium":[0.5,3.6],"heavy":[5,9],"extreme":[10,31]}` | Unit band per class. Decisions use the high bound. |
-| `COST_GUARD_DATASET_TIERS` | `{"xdr_data":"heavy","xdr_*":"heavy","*_story":"heavy","amazon_aws_raw":"heavy","msft_azure_raw":"heavy","google_gcp_*":"heavy","xql_query_center_history":"light"}` | Dataset name or `*` glob to `light`, `medium`, or `heavy`. Exact names win over globs. |
+| `COST_GUARD_UNIT_BANDS` | `{"light":[0.001,0.5],"medium":[0.05,2.5],"heavy":[2,9],"extreme":[5,32]}` | Unit band per class. Decisions use the high bound. |
+| `COST_GUARD_DATASET_TIERS` | `{"xdr_data":"heavy","xdr_*":"heavy","*_story":"heavy","amazon_aws_raw":"heavy","msft_azure_raw":"heavy","google_gcp_*":"heavy","panw_ngfw_traffic_raw":"medium","panw_ngfw_url_raw":"medium","msft_azure_flowlogs_raw":"medium","xql_query_center_history":"light"}` | Dataset name or `*` glob to `light`, `medium`, or `heavy`. Exact names win over globs. |
 | `COST_GUARD_DEFAULT_TIER` | `medium` | Tier for datasets the catalogue and tier map do not list. |
 | `COST_GUARD_SELECTIVE_FIELDS` | `agent_hostname,agent_id,endpoint_id,endpoint_name,host_name,hostname` | Fields whose positive equality scopes a heavy dataset to hosts. |
+| `COST_GUARD_PARTITION_FIELDS` | `event_type` | Fields whose positive equality, or `in` list of at most two values, narrows a heavy dataset to a slice of its rows. Empty disables the credit. |
 | `COST_GUARD_HOST_FIELDS` | `{"xdr_data":"agent_hostname"}` | Field used by the host-filter alternative per heavy dataset. |
 | `COST_GUARD_CHEAPER_DATASETS` | `{"amazon_aws_raw":["cloud_audit_logs"],"msft_azure_raw":["cloud_audit_logs"]}` | Cheaper datasets for the same question. Catalogue datasets in the same domain that the principal's policy lists are added. |
 | `COST_GUARD_APPROVAL_THRESHOLD_UNITS` | `1.0` | Approval threshold used only if the engagement mode policy cannot be read. Matches the unset mode. |
@@ -312,6 +363,191 @@ readings, reservations, and slot timings live in the gateway process. Each
 replica keeps its own, so N replicas allow up to N times the approval cap and
 can each admit queries against the same reserve; size the cap and reserve with
 the replica count in mind.
+
+## Endpoint script execution
+
+Off by default. When on, three tools run a script from the XSIAM agent script
+library on named endpoints and read the result: `list_endpoint_scripts`,
+`run_endpoint_script` and `get_endpoint_script_run`. See
+[Security Model](SECURITY_MODEL.md#endpoint-script-execution) for every rule.
+
+XSIAM prerequisites:
+
+- The API key's role needs permission to run agent scripts. Use a separate key
+  through the credential broker so query-only groups keep a key without that
+  permission.
+- The script must already be in the tenant's script library. The gateway never
+  uploads a script and never runs code passed in a request.
+- Copy each script's uid from the library into `SCRIPT_RUN_ALLOWED_SCRIPTS`.
+  Scripts XSIAM marks high risk are refused even when listed.
+- The same key must be able to read endpoints: every endpoint id is looked up
+  before approval.
+
+A run needs all of these:
+
+1. `SCRIPT_RUN_ENABLED=true`.
+2. `TOOL_ACCESS_POLICY` grants the tool, and the principal is in a group named
+   in `SCRIPT_RUN_GROUPS`. A `*` tool grant alone is not enough, and
+   `SCRIPT_RUN_GROUPS` has no wildcard.
+3. The engagement mode is `incident_response` or `threat_hunt`.
+4. The script uid is on `SCRIPT_RUN_ALLOWED_SCRIPTS`, not high risk, and
+   unchanged if it is pinned.
+5. An explicit list of endpoint ids within `SCRIPT_RUN_MAX_ENDPOINTS`, every
+   one known to XSIAM.
+6. A stated reason and the analyst's approval, for every run.
+7. Room under both daily caps.
+8. A usable run ledger, when `SCRIPT_RUN_STATE_DIR` is set.
+
+```bash
+SCRIPT_RUN_ENABLED=true
+SCRIPT_RUN_GROUPS=Responders
+SCRIPT_RUN_ALLOWED_SCRIPTS='{"0a1b2c3d4e5f60718293a4b5c6d7e8f9":1800000000000}'
+SCRIPT_RUN_STATE_DIR=/var/lib/cortex-mcp/script-state
+SCRIPT_RUN_RESULTS_DIR=/var/lib/cortex-mcp/script-results
+```
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SCRIPT_RUN_ENABLED` | `false` | Master switch. When false the three tools are not registered, not listed, and refused on call. |
+| `SCRIPT_RUN_GROUPS` | empty | Comma-separated groups allowed to use `run_endpoint_script` and `get_endpoint_script_run`, checked in addition to `TOOL_ACCESS_POLICY`. Empty grants nobody. |
+| `SCRIPT_RUN_ALLOWED_SCRIPTS` | `[]` | Scripts that may run: a JSON list of uids, or a JSON object mapping each uid to the script's `modification_date` (or `null` for no pin). Empty means nothing can run. An invalid value stops startup when the feature is on. |
+| `SCRIPT_RUN_MAX_ENDPOINTS` | `30` | Endpoints per run after de-duplication; valid range 1-200. 200 is a hard ceiling. |
+| `SCRIPT_RUN_DAILY_MAX_RUNS` | `5` | Runs one principal may submit per UTC day. `0` blocks every run. |
+| `SCRIPT_RUN_DAILY_MAX_ENDPOINTS` | `100` | Endpoints one principal may target per UTC day, summed over runs. |
+| `SCRIPT_RUN_ELICITATION_ENABLED` | `true` | Ask the analyst through MCP elicitation when the client supports it. |
+| `SCRIPT_RUN_ELICITATION_TIMEOUT_SECONDS` | `120` | Time to wait for an answer before treating the prompt as unanswered. |
+| `SCRIPT_RUN_MAX_OUTPUT_BYTES_PER_ENDPOINT` | `8192` | Bytes of standard output and returned values returned per endpoint. Each returned value is charged its key name and its serialised size, numbers and booleans included; a value that does not fit is omitted and counted in `returned_values_omitted`. |
+| `SCRIPT_RUN_MAX_OUTPUT_BYTES` | `65536` | Bytes of script output returned per call, over all endpoints. |
+| `SCRIPT_RUN_API_TIMEOUT_SECONDS` | `30` | Deadline for each XSIAM call this feature makes; valid range 1-300. |
+| `SCRIPT_RUN_STATE_DIR` | empty | Absolute directory for the durable run ledger, `script_runs.json`. Same rules as `SCRIPT_RUN_RESULTS_DIR`. Empty keeps run records and daily counts in memory only. |
+| `SCRIPT_RUN_RECORD_RETENTION_DAYS` | `30` | Age after which a run record is dropped; valid range 1-3650. At most 1000 records are kept, fewer when the ledger file reaches its size budget. |
+| `SCRIPT_RUN_RESULTS_DIR` | empty | Absolute directory for retrieved files on the gateway host. Must not be a symbolic link, inside the repository, or inside a git working tree. Created owner-only; an existing directory open to group or others is refused. Empty disables file retrieval. |
+| `SCRIPT_RUN_MAX_FILE_BYTES` | `52428800` | Largest retrieved-files zip the gateway will save. |
+| `SCRIPT_RUN_ALLOW_FOREIGN_ACTIONS` | `false` | Let `get_endpoint_script_run` read any script action in the tenant, including runs started in the console. |
+
+Limits fixed in code: script timeout 1 to 3600 seconds (default 600), at most
+20 parameters, parameter strings up to 500 characters, reason up to 500
+characters, files for at most 5 endpoints per call, a 300-second deadline per
+file download, pending approvals kept 15 minutes (at most 256), and 50 runs per
+listing.
+
+### Approval
+
+With elicitation the gateway asks the analyst directly; a declined prompt
+refuses the run even if an `approval` argument was passed. A cancelled,
+timed-out, or unsupported prompt falls back to the `approval` argument, which
+must be the analyst's own typed words and is stored only as a SHA-256.
+
+The prompt and the `approval_required` refusal show everything, with nothing
+shortened: the script name and uid, every endpoint as `name (id), status`,
+every parameter as `name = value` with the whole value, the timeout, and the
+reason. Strings are quoted. A backslash and a double quote are escaped, and
+control characters, direction overrides, zero-width and other format
+characters, and unusual spaces are written as visible escapes such as `\n` or
+`\u202e`, never removed. Two different values therefore never look the same,
+and a value cannot start a new line in the prompt. With the largest allowed
+run, 200 endpoints and 20 parameters of 500 characters, the prompt is long;
+keep `SCRIPT_RUN_MAX_ENDPOINTS` at a size an analyst can read.
+
+A typed approval is bound to exactly what was shown. It is accepted only when
+this gateway process has already refused the same request with
+`approval_required` for the same principal: same script uid and
+`modification_date` as XSIAM reported it, same set of endpoint ids, same
+parameters, same timeout, same reason. The first call is always refused, even
+if it carries an approval. The pending entry is used once and expires after 15
+minutes. Changing any of those needs a new refusal and a new approval.
+
+After the approval, and immediately before the run is sent, the gateway reads
+the script again. If its `modification_date` is no longer the one shown, if
+XSIAM now marks it high risk, if a pin no longer matches, or if it cannot be
+read, the run is refused, nothing is sent, and the attempt is not counted. This
+covers a script edited while an approval prompt is open.
+
+### Pinning a script version
+
+An allow-listed uid names a script, not its content. To pin the reviewed
+version, use the object form and copy `modification_date` from
+`list_endpoint_scripts`:
+
+```bash
+SCRIPT_RUN_ALLOWED_SCRIPTS='{"0a1b2c3d4e5f60718293a4b5c6d7e8f9":1800000000000}'
+```
+
+In a shell, keep the single quotes: without them the shell removes the inner
+double quotes and the value is no longer JSON. In a `.env` file read by the
+gateway or passed with `docker --env-file`, write the JSON without surrounding
+quotes, as `.env.example` does.
+
+If XSIAM later reports a different date, or none, the run is refused with rule
+`script_changed` until an operator reviews the script and updates the pin.
+
+### Run ledger
+
+A script action can take days to finish: offline endpoints pick it up when
+they reconnect. Set `SCRIPT_RUN_STATE_DIR` so the gateway still knows its runs
+after a restart.
+
+With the directory set, one file, `script_runs.json`, holds every run record
+(action id, a hash of the owner, script uid and name, endpoint ids and names,
+start time, approval method, request hash) and each principal's daily counts.
+The daily caps then hold across restarts. The run is counted and saved before
+the request goes to XSIAM, and the action id is added after the reply. The file
+is replaced atomically, owner-only, and never holds parameter values, the
+approval text, or the reason.
+
+The file stays under a 6 MiB write budget, below the 8 MiB the gateway will
+read back, so the gateway never writes a ledger it would then refuse. Stored
+script and endpoint names are cut at 128 characters. When the budget is
+reached, the oldest records that already have an action id are dropped first.
+Daily counts are always kept, and a run still waiting for XSIAM's answer is
+never dropped. If the ledger still cannot fit, the write fails and the run is
+refused before anything is sent.
+
+The gateway fails closed. If the directory is invalid, or the file is
+unreadable, malformed, a symbolic link, or open to group or others, new runs
+are refused with rule `state_unavailable`, and so are listing and reads of
+actions the process does not already hold. The message says why. An operator
+must repair or remove the file. If the action id cannot be saved after a
+successful submit, the action id is still returned with a warning.
+
+With the directory empty, records and counts live in memory only. A restart
+loses the records and resets the daily caps, so the caps can be bypassed by
+restarting the gateway. Earlier runs stay visible in the XSIAM Action Center.
+
+`get_endpoint_script_run` with no `action_id` lists the caller's own recorded
+runs, newest first, at most 50. A run whose outcome is unknown is listed
+without an action id.
+
+The ledger file belongs to one gateway process. Do not point two replicas at
+the same directory: give each its own, or use a shared store. Each replica
+keeps its own counts, so N replicas allow up to N times the daily caps.
+
+### Timeouts and submission outcome
+
+Every XSIAM call the feature makes has its own deadline,
+`SCRIPT_RUN_API_TIMEOUT_SECONDS`. A script or endpoint lookup that does not
+answer refuses the run.
+
+Once `run_script` has been sent, the run is reported as not executed
+(`executed: false`) only when XSIAM's own response says so:
+
+- a 4xx reply, including authentication and permission errors;
+- a well-formed reply that reports failure and names no action.
+
+The record is then removed. Everything else is reported as submitted with
+outcome unknown (`executed: "unknown"`), because the action may be running:
+
+- no answer before the deadline, or a lost connection;
+- any 5xx, which a proxy can return after XSIAM started the action;
+- a reply that cannot be decoded, or that names no action without reporting
+  failure;
+- a reply that names an action and also reports failure. The action id is
+  kept and returned.
+
+An unknown outcome keeps its record, without an action id unless XSIAM gave
+one, so it stays in the caller's run list. The analyst should check the Action
+Center before submitting again. Either way the attempt counts against the
+daily caps.
 
 ## XSIAM Credential Broker
 
@@ -336,7 +572,9 @@ export XSIAM_CREDENTIAL_PROFILES='{
 }'
 ```
 
-Store the actual API key values in your secret manager or local environment.
+Inject the key values at start from your secret manager or credential store
+(see [Secrets And API Keys](SECRETS.md)), with 1Password that is one `op://`
+line per variable in `.env.op`.
 If the broker is enabled and no profile matches the verified principal, tool
 execution fails closed. When several groups match, the lowest numeric
 `priority` wins; group claim order is not trusted as authorization policy.
@@ -417,10 +655,13 @@ unset, `python -m intents label` refuses to run.
 
 ## Example `.env`
 
+Non-secret settings only, the key, key id and cursor secret are injected at
+start (see [Secrets And API Keys](SECRETS.md)).
+
 ```bash
 CORTEX_MCP_PAPI_URL=https://api-your-xsiam-tenant.example
-CORTEX_MCP_PAPI_AUTH_HEADER=replace-me
-CORTEX_MCP_PAPI_AUTH_ID=replace-me
+# CORTEX_MCP_PAPI_AUTH_HEADER and CORTEX_MCP_PAPI_AUTH_ID: injected at start,
+# never written here.
 MCP_TRANSPORT=streamable-http
 MCP_IDENTITY_AUTH_MODE=entra
 ENTRA_TENANT_ID=replace-with-tenant-id
@@ -429,14 +670,15 @@ LOG_SEARCH_DATASET_POLICY={"Security":["*"],"Tier1":["xdr_data"]}
 TOOL_ACCESS_POLICY={"Security":["*"],"Tier1":["get_dataset_query_guidance","find_datasets","resolve_entity","firewall_traffic","firewall_verdict","entity_activity","dataset_health","threat_intel_lookup","coverage_gap","list_log_datasets","discover_log_fields","query_dataset","continue_dataset_query","set_engagement","get_engagement","record_fact","get_engagement_log"]}
 RAW_XQL_PRIVILEGED_GROUPS=Security,Admin
 ENGAGEMENT_STORE_DIR=/var/lib/cortex-mcp/engagements
-DATASET_QUERY_CURSOR_SECRET=replace-with-a-long-random-secret
+# DATASET_QUERY_CURSOR_SECRET: a long random value, injected the same way.
 AUDIT_LOG_ENABLED=true
 AUDIT_LOG_XSIAM_HTTP_COLLECTOR_ENABLED=false
 ```
 
 ## Production Notes
 
-- Use a secret manager for API credentials.
+- Inject API credentials at start from a secret manager or credential store,
+  see [Secrets And API Keys](SECRETS.md).
 - Rotate API keys regularly.
 - Use separate credentials for development and production tenants.
 - Use role-scoped XSIAM API keys through the credential broker for shared HTTP

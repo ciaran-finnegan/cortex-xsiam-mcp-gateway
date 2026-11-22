@@ -4,6 +4,35 @@ This project follows a lightweight changelog format until stable releases begin.
 
 ## Unreleased
 
+- Added endpoint script execution, off by default (`SCRIPT_RUN_ENABLED`):
+  `list_endpoint_scripts`, `run_endpoint_script`, and
+  `get_endpoint_script_run` run a script from the XSIAM agent script library on
+  named endpoints and read the result. A run needs an explicit
+  `SCRIPT_RUN_GROUPS` membership on top of the tool policy (a `*` grant is not
+  enough), a uid on `SCRIPT_RUN_ALLOWED_SCRIPTS` that XSIAM does not mark high
+  risk, an explicit capped list of endpoint ids, `incident_response` or
+  `threat_hunt` mode, a stated reason, and the analyst's approval by
+  elicitation or a hashed `approval` argument. Runs and endpoints are capped
+  per principal per UTC day. Results are served only for runs this process
+  started for the same principal, capped and labelled untrusted; retrieved
+  files are saved under `SCRIPT_RUN_RESULTS_DIR` and never returned. Every
+  attempt emits a `cortex_xsiam_mcp.script_run` audit event. No API that runs
+  code supplied in a request is called.
+- Endpoint script execution hardening. A typed approval is accepted only for
+  the exact request already refused with `approval_required` for the same
+  principal, once, within 15 minutes; the audit event carries
+  `request_sha256`. The approval prompt and refusal show parameter values and
+  each endpoint as name, id, and status. Endpoint ids are resolved in XSIAM
+  first (`endpoint_unknown`, `endpoint_lookup_failed`). Every XSIAM call has a
+  deadline (`SCRIPT_RUN_API_TIMEOUT_SECONDS`); a submit that never answers is
+  reported as outcome unknown and stays counted. `SCRIPT_RUN_ALLOWED_SCRIPTS`
+  can pin a script's `modification_date` (`script_changed`). Retrieved-file
+  links to an IP literal or `localhost` are refused.
+- Added a durable run ledger (`SCRIPT_RUN_STATE_DIR`,
+  `SCRIPT_RUN_RECORD_RETENTION_DAYS`): run records and per-principal daily
+  counts survive a restart, the run is counted and saved before it is sent, and
+  an unusable ledger refuses new runs (`state_unavailable`).
+  `get_endpoint_script_run` with no `action_id` lists the caller's own runs.
 - Added an intent labelling pilot, `python -m intents`, as its own operator-run
   process under `src/intents/`. `sessions` groups `xql_query_center_history` into
   per-person sessions with measured outcome signals and calls no model. `label`
@@ -152,6 +181,37 @@ This project follows a lightweight changelog format until stable releases begin.
   with the estimate, alternatives and the provenance of the queries already
   run, and each helper accepts the `approval` argument. `threat_intel_lookup`
   takes `window_days` (default 30) because every query needs a timeframe.
+- Cost guard: an early-exit sample now scores its tier and window points minus
+  two instead of its tier points minus one, so a short-window field-discovery
+  sample of a heavy dataset is light and runs below the approval threshold.
+  Before this, `discover_log_fields` and the `validate_xql` field check were
+  refused for `xdr_data` in operations mode, and validation passed queries that
+  named fields the dataset does not have.
+- Added [Secrets And API Keys](docs/SECRETS.md): 1Password CLI, macOS Keychain
+  and Windows SecretStore examples that inject the XSIAM key at start after a
+  person approves, plus `.env.op.example`. `.env.example`, the README and the
+  configuration and testing docs no longer put secrets in `.env`.
+- Cost guard: refitted the score and the default unit bands to 880 queries with
+  recorded compute units. A positive equality on a host key or on a field in the
+  new `COST_GUARD_PARTITION_FIELDS` (default `event_type`) now takes window
+  points off a heavy dataset instead of saving one point, pattern matching adds
+  cost only to an un-narrowed multi-day scan of a heavy dataset, and the
+  `medium` tier scores 1 point, down from 2. Un-narrowed scans of a heavy
+  dataset over more than a day score as before. Default bands are now
+  `{"light":[0.001,0.5],"medium":[0.05,2.5],"heavy":[2,9],"extreme":[5,32]}`.
+- Cost guard: the narrowing credit needs a comparison with literals (a field
+  compared with itself, another field or a function result earns nothing; a
+  host list is capped at 20 values and a partition list at two), and every
+  pipeline that reads a heavy dataset must carry its own filter, so a filter on
+  one side of a join no longer narrows the other side. The filter must run on
+  the dataset's own rows and fields: one that follows an aggregation, a join, a
+  sort, a limit or a reassignment of the field earns nothing, and neither does
+  a comparison under an enclosing `not`.
+- Cost guard: an exact dataset name in `COST_GUARD_DATASET_TIERS` now pins the
+  tier ahead of the catalogue volume, as the catalogue comment always said it
+  would; globs stay a fallback. The default map pins the firewall traffic, URL
+  and cloud flow log datasets to `medium`, and its existing `light` pin for
+  `xql_query_center_history` now takes effect.
 
 ## 0.2.0-alpha.1 - 2026-07-10
 

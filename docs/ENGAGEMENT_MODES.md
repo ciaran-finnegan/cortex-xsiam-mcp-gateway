@@ -40,6 +40,12 @@ authorization. It defaults to `agent_inferred`.
 `unset` has no row of its own. It inherits the `operations` row, the most
 conservative, including any `operations` override.
 
+When `SCRIPT_RUN_ENABLED=true`, the endpoint script tools
+(`list_endpoint_scripts`, `run_endpoint_script`, `get_endpoint_script_run`)
+exist only in `incident_response` and `threat_hunt`. They are hidden and
+refused in `operations` and `unset`. This lock is fixed in code and is not part
+of `heavy_tools_hidden`, so a mode policy override cannot expose them there.
+
 `get_dataset_query_guidance` returns the workflow for the current mode under
 `engagement.workflow`, alongside the generic query workflow. While no engagement
 is set, every tool result except the engagement tools ends with a one-line
@@ -190,6 +196,10 @@ ENGAGEMENT_MODE_POLICY='{"threat_hunt":{"session_budget_units":10,"heavy_tools_h
 An `unset` entry is applied on top of the inherited `operations` row. Default
 units are a conservative starting point. Tune them to the tenant's daily XQL
 quota.
+
+`heavy_tools_hidden` can also hide the endpoint script tools in
+`incident_response` or `threat_hunt`. It cannot show them in `operations` or
+`unset`.
 
 ## Audit
 

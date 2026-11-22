@@ -142,12 +142,44 @@ def test_estimate_classifies_by_tier_window_selectivity_and_stages(query, days, 
     assert (estimate.low_units, estimate.high_units) == (low, high)
 
 
+@pytest.mark.parametrize(
+    "query, days, expected, measured_units",
+    [
+        # Shapes and the highest compute units recorded for each in the calibration sample.
+        ('dataset = xdr_data | filter agent_hostname = "wks-0001" | filter event_type = ENUM.PROCESS | limit 1', 1, "medium", 1.8),
+        ('dataset = xdr_data | filter agent_hostname in ("wks-0001", "wks-0002") | comp count() as n by actor_process_image_name', 30, "medium", 1.6),
+        ('dataset = xdr_data | filter event_type in (ENUM.PROCESS, ENUM.NETWORK) and action_process_image_name ~= "agent" | comp count() as n by agent_hostname', 30, "medium", 1.4),
+        ('dataset = xdr_data | filter action_remote_ip = "192.0.2.10" | fields agent_hostname | limit 25', 1, "medium", 1.4),
+        ('dataset = xdr_data | filter action_remote_ip in ("192.0.2.10", "192.0.2.11") | comp count() as n by agent_hostname', 30, "extreme", 15.2),
+        ('dataset = xdr_data | filter agent_hostname contains "wks" | comp count() as n by agent_hostname', 30, "extreme", 10.6),
+        ('dataset = xdr_data | filter action_file_name contains "invoice" | fields agent_hostname | limit 25', 180, "extreme", 31.3),
+        (
+            'dataset = acme_flow_logs | filter url contains "example" | join type = left (dataset = xdr_data) as ep '
+            "ep.agent_ip_addresses = source_ip | comp count() as n by source_ip",
+            7,
+            "extreme",
+            7.9,
+        ),
+        ('dataset = amazon_aws_raw | alter re = to_json_string(responseElements) | filter re contains "acme" | limit 5', 90, "extreme", 9.1),
+        ('dataset = acme_flow_logs | filter url contains "example" | comp count() as n by source_user', 30, "medium", 0.9),
+        ('dataset = acme_flow_logs | filter url contains "example" | comp count() as n by source_user', 7, "light", 0.4),
+        ('dataset = acme_alerts | filter alert_name contains "example" | comp count() as n by severity', 30, "light", 0.5),
+    ],
+)
+def test_measured_query_shapes_land_in_a_band_that_covers_their_cost(query, days, expected, measured_units):
+    # estimate_query takes the window directly: some of these ran over more than the default policy maximum.
+    estimate = cost_guard.estimate_query(cost_guard.parse_query(query), days * DAY_MS)
+
+    assert estimate.cost_class == expected
+    assert estimate.high_units >= measured_units
+
+
 def test_default_bands_match_the_profiled_unit_ranges():
     assert cost_guard.unit_bands() == {
-        "light": (0.001, 0.4),
-        "medium": (0.5, 3.6),
-        "heavy": (5.0, 9.0),
-        "extreme": (10.0, 31.0),
+        "light": (0.001, 0.5),
+        "medium": (0.05, 2.5),
+        "heavy": (2.0, 9.0),
+        "extreme": (5.0, 32.0),
     }
 
 
@@ -163,18 +195,48 @@ def test_unit_bands_are_configurable_and_validated(monkeypatch):
 
 
 def test_text_scans_add_cost_and_keywords_inside_strings_or_comments_do_not():
-    plain = cost_guard.estimate_xql('dataset = acme_flow_logs | filter src = "x" | limit 5', _days(7))
-    pattern = cost_guard.estimate_xql('dataset = acme_flow_logs | filter src contains "x" | limit 5', _days(7))
-    raw = cost_guard.estimate_xql('dataset = acme_flow_logs | filter _raw_log contains "x" | limit 5', _days(7))
+    plain = cost_guard.estimate_xql('dataset = xdr_data | filter src = "x" | limit 5', _days(7))
+    pattern = cost_guard.estimate_xql('dataset = xdr_data | filter src contains "x" | limit 5', _days(7))
+    raw = cost_guard.estimate_xql('dataset = xdr_data | filter _raw_log contains "x" | limit 5', _days(7))
     quoted = cost_guard.estimate_xql(
-        'dataset = acme_flow_logs | filter note = "join _raw_log contains" | limit 5 // | join (dataset = xdr_data)',
+        'dataset = xdr_data | filter note = "join _raw_log contains" | limit 5 // | join (dataset = amazon_aws_raw)',
         _days(7),
     )
 
     assert plain.score < pattern.score < raw.score
     assert raw.factors["text_scan"] == "raw_text"
     assert quoted.score == plain.score
-    assert quoted.factors["datasets"] == ["acme_flow_logs"]
+    assert quoted.factors["datasets"] == ["xdr_data"]
+
+
+@pytest.mark.parametrize(
+    "plain, pattern, days",
+    [
+        # A medium dataset.
+        ('dataset = acme_flow_logs | filter src = "x" | limit 5', 'dataset = acme_flow_logs | filter src contains "x" | limit 5', 30),
+        # A heavy dataset narrowed to one host, or to one event type.
+        (
+            'dataset = xdr_data | filter agent_hostname = "wks-0001" and src = "x" | limit 5',
+            'dataset = xdr_data | filter agent_hostname = "wks-0001" and src contains "x" | limit 5',
+            30,
+        ),
+        (
+            'dataset = xdr_data | filter event_type = ENUM.PROCESS and src = "x" | limit 5',
+            'dataset = xdr_data | filter event_type = ENUM.PROCESS and src ~= "x" | limit 5',
+            30,
+        ),
+        # A heavy dataset over a day or less.
+        ('dataset = xdr_data | filter src = "x" | limit 5', 'dataset = xdr_data | filter src contains "x" | limit 5', 1),
+    ],
+)
+def test_pattern_matching_adds_cost_only_to_an_unnarrowed_multi_day_scan_of_a_heavy_dataset(plain, pattern, days):
+    matched = cost_guard.estimate_xql(pattern, _days(days))
+
+    assert matched.score == cost_guard.estimate_xql(plain, _days(days)).score
+    assert matched.factors["text_scan"] == "pattern"
+    # Reading raw text still costs on every tier.
+    raw = cost_guard.estimate_xql(plain.replace('src = "x"', 'to_json_string(src) = "x"'), _days(days))
+    assert raw.score == matched.score + 2
 
 
 def test_host_scope_requires_a_positive_equality_without_or():
@@ -187,6 +249,139 @@ def test_host_scope_requires_a_positive_equality_without_or():
     assert with_or.host_scoped is False
     assert negated.host_scoped is False
     assert inequality.host_scoped is False
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "agent_hostname = agent_hostname",  # a field compared with itself is always true
+        "agent_hostname = actor_effective_username",
+        'agent_hostname = lowercase("WKS-0001")',
+        'not agent_hostname = "wks-0001"',
+        'not ((agent_hostname = "wks-0001"))',
+        "agent_hostname in (other_field)",
+        "agent_hostname in (" + ", ".join(f'"wks-{index:04d}"' for index in range(21)) + ")",
+        "event_type = event_type",
+        "event_type = lowercase_field",
+        "event_type in (ENUM.PROCESS, ENUM.NETWORK, ENUM.FILE)",
+        'event_type = ENUM.PROCESS or action_remote_ip = "192.0.2.10"',
+        "not (event_type = ENUM.PROCESS)",
+        "event_type != ENUM.PROCESS",
+        # A not that encloses the comparison at any depth excludes the rows instead of keeping them.
+        'not (action_process_image_name = "x" and event_type = ENUM.PROCESS)',
+        'not ((action_process_image_name = "x") and (event_type = ENUM.PROCESS))',
+        'not (action_process_image_name = "x" and agent_hostname = "wks-0001")',
+        'action_remote_port = 443 and not (action_local_port = 1 and (agent_hostname in ("wks-0001")))',
+    ],
+)
+def test_narrowing_needs_a_positive_comparison_with_a_bounded_set_of_literals(condition):
+    """Each of these keeps every row, or an unknown share of them, so none may earn the narrowing credit."""
+    query = f"dataset = xdr_data | filter {condition} | comp count() as total by agent_hostname | limit 25"
+    shape = cost_guard.parse_query(query)
+
+    assert (shape.host_scoped, shape.partition_scoped) == (False, False)
+    assert cost_guard.estimate_query(shape, 30 * DAY_MS).cost_class == "extreme"
+
+
+@pytest.mark.parametrize(
+    "condition, host_scoped, partition_scoped",
+    [
+        ('agent_hostname = "wks-0001"', True, False),
+        ('`agent_hostname` in ("wks-0001", "wks-0002")', True, False),
+        ("event_type = ENUM.PROCESS", False, True),
+        ("(`event_type` = PROCESS)", False, True),
+        ("event_type in (ENUM.PROCESS, enum.NETWORK)", False, True),
+        ('event_type = ENUM.PROCESS and agent_hostname = "wks-0001"', True, True),
+    ],
+)
+def test_host_and_partition_filters_take_window_points_off_a_heavy_dataset(condition, host_scoped, partition_scoped):
+    query = f'dataset = xdr_data | filter {condition} | filter action_process_image_name ~= "agent" | comp count() as total | limit 25'
+    shape = cost_guard.parse_query(query)
+
+    assert (shape.host_scoped, shape.partition_scoped) == (host_scoped, partition_scoped)
+    assert cost_guard.estimate_query(shape, 30 * DAY_MS).cost_class == "medium"
+    # A narrowed query never scores below its tier, and the credit runs out as the window grows.
+    assert cost_guard.estimate_query(shape, DAY_MS).score == 4
+    assert cost_guard.estimate_query(shape, 365 * DAY_MS).score == (5 if host_scoped else 6)
+
+
+def test_a_not_that_has_closed_does_not_cost_a_later_comparison_its_credit():
+    shape = cost_guard.parse_query(
+        'dataset = xdr_data | filter not (action_process_image_name = "x") and event_type = ENUM.PROCESS | limit 5'
+    )
+
+    assert shape.partition_scoped is True
+
+
+@pytest.mark.parametrize(
+    "stages",
+    [
+        # The filter reads a value the query made up, not the dataset's field.
+        "comp count() as event_type | filter event_type = 1",
+        'alter agent_hostname = "wks-0001" | filter agent_hostname = "wks-0001"',
+        'alter `event_type` = "PROCESS" | filter event_type = "PROCESS"',
+        'fields action_file_name as agent_hostname | filter agent_hostname = "wks-0001"',
+        # The rows were already read and reshaped before the filter ran.
+        'comp count() as total by agent_hostname | filter agent_hostname = "wks-0001"',
+        'dedup action_remote_ip | filter agent_hostname = "wks-0001"',
+        'sort desc _time | limit 1000 | filter event_type = ENUM.PROCESS',
+        'join (dataset = acme_alerts) as a a.host_name = agent_hostname | filter agent_hostname = "wks-0001"',
+    ],
+)
+def test_narrowing_filter_must_run_on_the_datasets_own_rows_and_fields(stages):
+    shape = cost_guard.parse_query(f"dataset = xdr_data | {stages} | limit 25")
+
+    assert (shape.host_scoped, shape.partition_scoped) == (False, False)
+    assert cost_guard.estimate_query(shape, 30 * DAY_MS).cost_class == "extreme"
+
+
+def test_an_alter_that_leaves_the_narrowing_field_alone_keeps_the_credit():
+    shape = cost_guard.parse_query(
+        "dataset = xdr_data | alter image = lowercase(action_process_image_name) "
+        '| filter event_type = ENUM.PROCESS and image = "agent.exe" | comp count() as total | limit 5'
+    )
+
+    assert shape.partition_scoped is True
+
+
+def test_partition_credit_can_be_disabled(monkeypatch):
+    monkeypatch.setattr(get_config(), "cost_guard_partition_fields", "")
+    shape = cost_guard.parse_query("dataset = xdr_data | filter event_type = ENUM.PROCESS | comp count() as total | limit 5")
+
+    assert shape.partition_scoped is False
+    assert cost_guard.estimate_query(shape, 30 * DAY_MS).cost_class == "extreme"
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        # The filtered subquery cannot vouch for the unfiltered heavy dataset it is joined to.
+        'dataset = xdr_data | filter action_remote_ip = "192.0.2.10" '
+        '| join (dataset = xdr_data | filter agent_hostname = "wks-0001" | limit 1) as ep ep.agent_id = agent_id | limit 25',
+        # Nor can the main pipeline's filter vouch for a heavy dataset read whole inside the join.
+        'dataset = xdr_data | filter agent_hostname = "wks-0001" '
+        "| join (dataset = amazon_aws_raw) as aws aws.sourceIPAddress = action_remote_ip | limit 25",
+        'dataset = acme_flow_logs | filter agent_hostname = "wks-0001" '
+        "| join (dataset = xdr_data) as ep ep.action_remote_ip = dest_ip | limit 25",
+        # A heavy dataset pulled in by name has no filter of its own.
+        'dataset = xdr_data | filter agent_hostname = "wks-0001" | union amazon_aws_raw | limit 25',
+        'dataset = acme_alerts | filter host_name = "wks-0001" | union xdr_data | limit 25',
+    ],
+)
+def test_narrowing_must_cover_every_heavy_dataset_the_query_reads(query):
+    shape = cost_guard.parse_query(query)
+
+    assert shape.host_scoped is False
+    assert cost_guard.estimate_query(shape, 30 * DAY_MS).cost_class == "extreme"
+
+
+def test_a_heavy_dataset_filtered_inside_its_own_subquery_is_narrowed():
+    shape = cost_guard.parse_query(
+        'dataset = acme_flow_logs | filter dest_ip = "192.0.2.10" '
+        '| join (dataset = xdr_data | filter agent_hostname = "wks-0001") as ep ep.action_remote_ip = dest_ip | limit 25'
+    )
+
+    assert shape.host_scoped is True
 
 
 def test_union_by_name_and_saved_query_calls_are_priced():
@@ -205,17 +400,74 @@ def test_query_without_a_dataset_is_priced_as_the_default_query_target():
     assert estimate.cost_class == "extreme"
 
 
-def test_early_exit_samples_ignore_the_window():
-    assert cost_guard.estimate_xql("dataset = xdr_data | limit 25", _days(30)).cost_class == "medium"
-    assert cost_guard.estimate_xql("dataset = acme_flow_logs | limit 25", _days(30)).cost_class == "light"
+def _hours(hours):
+    return {"from_ms": NOW_MS - hours * 3_600_000, "to_ms": NOW_MS}
 
 
-def test_catalogue_volume_is_used_before_the_tier_map(monkeypatch):
-    monkeypatch.setattr(cost_guard, "_catalogue_volume", lambda dataset: "very_high" if dataset == "acme_alerts" else None)
+@pytest.mark.parametrize(
+    "query, timeframe, expected",
+    [
+        # A heavy dataset's early-exit sample grows with the window but skips the selectivity penalty.
+        ("dataset = xdr_data | limit 5", _hours(1), "light"),
+        ("dataset = xdr_data | fields agent_hostname, _time | limit 25", _days(1), "light"),
+        ("dataset = xdr_data | limit 25", _days(7), "medium"),
+        ("dataset = xdr_data | limit 25", _days(30), "medium"),
+        ("dataset = acme_flow_logs | limit 25", _days(30), "light"),
+        # A filter stage is not a sample: the same window on a heavy dataset keeps its full score.
+        ('dataset = xdr_data | filter action_process_image_name = "x" | limit 5', _hours(1), "medium"),
+    ],
+)
+def test_early_exit_samples_score_two_below_tier_and_window(query, timeframe, expected):
+    estimate = cost_guard.estimate_xql(query, timeframe)
 
-    assert cost_guard.dataset_tier("acme_alerts") == ("heavy", "catalogue")
-    assert cost_guard.dataset_tier("acme_flow_logs") == ("medium", "tier_map")
-    assert cost_guard.dataset_tier("acme_unlisted") == ("medium", "default")
+    assert estimate.cost_class == expected
+    assert estimate.factors["sample"] is (" filter " not in query)
+
+
+def test_long_window_samples_keep_climbing_past_the_policy_cap():
+    """Windows above DATASET_QUERY_MAX_TIMEFRAME_MS never reach the guard, but the gradient must stay monotone."""
+    shape = cost_guard.parse_query("dataset = xdr_data | limit 25")
+
+    assert cost_guard.estimate_query(shape, 90 * DAY_MS).cost_class == "heavy"
+    assert cost_guard.estimate_query(shape, 365 * DAY_MS).cost_class == "heavy"
+    assert cost_guard.estimate_query(cost_guard.parse_query("dataset = acme_flow_logs | limit 25"), 91 * DAY_MS).cost_class == "medium"
+
+
+@pytest.mark.asyncio
+async def test_short_window_discovery_sample_of_a_heavy_dataset_runs_without_approval(fetcher, audit_events):
+    """The field-discovery shape (`dataset | limit N` over an hour) must stay below the 1-unit threshold."""
+    _observe(50.0)
+    fetcher.fetcher = SequenceFetcher([_success(rows=[{"agent_hostname": "wks-0001"}], remaining_quota=49.9)])
+
+    response = json.loads(await issues.execute_xql_query(_ctx(), "dataset = xdr_data | limit 5", timeframe=_hours(1)))
+
+    assert response["success"] == "true"
+    assert response["quota"]["estimate_class"] == "light"
+    assert response["quota"]["approved"] is False
+    assert response["quota"]["approval_method"] is None
+    assert len(fetcher.fetcher.requests) == 1
+    assert audit_events == []  # plain allows raise no cost-guard event
+
+
+def test_exact_tier_map_name_pins_a_dataset_ahead_of_its_catalogue_volume(monkeypatch):
+    monkeypatch.setattr(get_config(), "cost_guard_dataset_tiers", '{"acme_alerts":"light","acme_*":"light","xdr_*":"heavy"}')
+    monkeypatch.setattr(cost_guard, "_catalogue_volume", lambda dataset: {"acme_alerts": "very_high", "acme_dns": "very_high"}.get(dataset))
+
+    # Pinned by exact name: the measured tier wins over the catalogue's ingest volume.
+    assert cost_guard.dataset_tier("acme_alerts") == ("light", "tier_map")
+    # A glob is only a fallback, so it cannot lower a catalogued dataset by accident.
+    assert cost_guard.dataset_tier("acme_dns") == ("heavy", "catalogue")
+    assert cost_guard.dataset_tier("acme_flow_logs") == ("light", "tier_map")
+    assert cost_guard.dataset_tier("xdr_story") == ("heavy", "tier_map")
+    assert cost_guard.dataset_tier("other_unlisted") == ("medium", "default")
+
+
+def test_default_tier_map_pins_the_history_dataset_light_whatever_its_catalogue_volume(monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setattr(cost_guard, "_catalogue_volume", lambda dataset: "very_high")
+
+    assert cost_guard.dataset_tier("xql_query_center_history") == ("light", "tier_map")
+    assert cost_guard.dataset_tier("xdr_data") == ("heavy", "tier_map")
 
 
 def test_config_timeframe_in_xql_is_bounded_and_priced():
@@ -413,7 +665,7 @@ async def test_reserve_counts_queries_in_flight():
 
 @pytest.mark.asyncio
 async def test_unknown_remaining_quota_blocks_heavy_queries_only():
-    heavy = 'dataset = xdr_data | filter agent_hostname = "wks-0001" | limit 5'
+    heavy = 'dataset = xdr_data | filter action_remote_ip = "192.0.2.10" | limit 5'
     light = "dataset = acme_alerts | limit 5"
 
     with pytest.raises(cost_guard.CostGuardRefusal) as refused:
@@ -490,8 +742,8 @@ async def test_timed_out_query_stays_debited_until_xsiam_reports_the_quota(monke
 
     response = await xql_executor.run_xql_query(_ctx(), query, 5, timeframe=_days(1), approval="analyst ok")
 
-    assert response["quota"]["debited_units"] == 3.6
-    assert cost_guard._known_remaining(cost_guard.tenant_quota_key()) == pytest.approx(26.4)
+    assert response["quota"]["debited_units"] == 2.5
+    assert cost_guard._known_remaining(cost_guard.tenant_quota_key()) == pytest.approx(27.5)
     assert cost_guard._inflight[cost_guard.tenant_quota_key()] == {}
 
 
@@ -508,7 +760,7 @@ async def test_query_that_raises_stays_debited(monkeypatch):
     with pytest.raises(RuntimeError):
         await xql_executor.run_xql_query(_ctx(), "dataset = acme_alerts | limit 5", 5, timeframe=_days(1))
 
-    assert cost_guard._known_remaining(cost_guard.tenant_quota_key()) == pytest.approx(29.6)
+    assert cost_guard._known_remaining(cost_guard.tenant_quota_key()) == pytest.approx(29.5)
     assert cost_guard._inflight[cost_guard.tenant_quota_key()] == {}
 
 
@@ -566,7 +818,7 @@ async def test_long_running_slots_refuse_new_heavy_queries(monkeypatch):
     _observe(50.0)
     clock = {"now": 1_000.0}
     monkeypatch.setattr(cost_guard, "_monotonic", lambda: clock["now"])
-    heavy = 'dataset = xdr_data | filter agent_hostname = "wks-0001" | limit 5'
+    heavy = 'dataset = xdr_data | filter action_remote_ip = "192.0.2.10" | limit 5'
     light = "dataset = acme_alerts | limit 5"
 
     with cost_guard.track_slot(), cost_guard.track_slot():
@@ -587,7 +839,8 @@ async def test_long_running_slots_refuse_new_heavy_queries(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_approval_argument_is_hashed_and_counted_against_the_daily_cap(fetcher, audit_events):
+async def test_approval_argument_is_hashed_and_counted_against_the_daily_cap(monkeypatch, fetcher, audit_events):
+    monkeypatch.setattr(get_config(), "cost_guard_approval_daily_cap_units", 6.0)
     _observe(50.0)
     fetcher.fetcher = SequenceFetcher([_success(remaining_quota=49.0) for _ in range(3)])
     approval_text = "Approved by the on-call analyst for case 42"
@@ -601,13 +854,14 @@ async def test_approval_argument_is_hashed_and_counted_against_the_daily_cap(fet
     assert first["quota"]["approval_method"] == "approval_argument"
     assert third["rule"] == "approval_cap"
     approvals = [event for event in audit_events if event["decision"] == "approved"]
-    assert [event["cost_guard"]["approved_today_units"] for event in approvals] == [3.6, 7.2]
+    assert [event["cost_guard"]["approved_today_units"] for event in approvals] == [2.5, 5.0]
     assert approvals[0]["cost_guard"]["approval_sha256"] == hashlib.sha256(approval_text.encode()).hexdigest()
     assert approval_text not in json.dumps(audit_events)
 
 
 @pytest.mark.asyncio
-async def test_approval_cap_is_per_principal(audit_events):
+async def test_approval_cap_is_per_principal(monkeypatch, audit_events):
+    monkeypatch.setattr(get_config(), "cost_guard_approval_daily_cap_units", 6.0)
     _observe(50.0)
     query = 'dataset = xdr_data | filter agent_hostname = "wks-0001" | limit 5'
 
@@ -683,7 +937,7 @@ async def test_elicitation_asks_the_human_and_their_answer_is_the_approval(audit
     ticket = await cost_guard.prepare_query(
         _ctx(elicit=elicit),
         'dataset = xdr_data | filter action_remote_ip = "192.0.2.10" | limit 5',
-        timeframe=_days(1),
+        timeframe=_days(7),
         result_limit=5,
         timeout_seconds=60,
     )
@@ -691,7 +945,8 @@ async def test_elicitation_asks_the_human_and_their_answer_is_the_approval(audit
     assert ticket.approved is True and ticket.approval_method == "elicitation"
     message, response_type = prompts[0]
     assert response_type == ["approve", "deny"]
-    assert "5 to 9 units (heavy)" in message
+    assert "2 to 9 units (heavy)" in message
+    assert "window 7 days; host filter: no; partition filter: no." in message
     assert "Remaining today: 50 units; reserve 10 units." in message
     assert "XSIAM console" in message
     assert [event["decision"] for event in audit_events] == ["elicitation", "approved"]
@@ -934,7 +1189,7 @@ async def test_quota_block_reports_estimate_actual_remaining_and_session_spend(f
     first = json.loads(await issues.execute_xql_query(_ctx(), query, timeframe=_days(1)))
     second = json.loads(await issues.execute_xql_query(_ctx(), query, timeframe=_days(2)))
 
-    assert first["quota"]["estimate_units"] == 0.4 and first["quota"]["estimate_class"] == "light"
+    assert first["quota"]["estimate_units"] == 0.5 and first["quota"]["estimate_class"] == "light"
     assert first["quota"]["actual_units"] == 0.25
     assert first["quota"]["actual_units_source"] == "query_cost"
     assert first["quota"]["remaining_units"] == 40.0
@@ -945,7 +1200,7 @@ async def test_quota_block_reports_estimate_actual_remaining_and_session_spend(f
 
     summary = await audit_middleware._summarize_tool_result(ToolResult(structured_content=second))
     assert summary["quota"] == {
-        "estimate_units": 0.4,
+        "estimate_units": 0.5,
         "actual_units": 0.5,
         "remaining_units": 39.5,
         "session_spent_units": 0.75,

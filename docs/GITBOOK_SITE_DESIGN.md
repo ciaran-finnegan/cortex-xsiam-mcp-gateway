@@ -59,7 +59,7 @@ matches each file's H1, because GitBook uses the SUMMARY text in the sidebar.
 
 - (top): `README.md` (landing), `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`.
 - Deploy And Operate: `docs/ENTERPRISE_DEPLOYMENT.md`, `docs/CONFIGURATION.md`,
-  `docs/AUDIT_LOGGING.md`.
+  `docs/SECRETS.md`, `docs/AUDIT_LOGGING.md`.
 - Security: `docs/SECURITY_MODEL.md`, `docs/RBAC_AND_LOG_SEARCH_REVIEW.md`,
   `SECURITY.md`, `docs/DEPENDENCY_REMEDIATION.md`.
 - Agents And Tools: `docs/AGENT_LOG_SEARCH.md`,

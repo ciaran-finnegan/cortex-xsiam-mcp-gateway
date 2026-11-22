@@ -40,6 +40,10 @@ ENGAGEMENT_NUDGE = (
     "No engagement set: infer the mode from the request or ask the user one short question, then call set_engagement."
 )
 SCOPE_LISTS: tuple[str, ...] = ("iocs", "internal", "front_ends", "servers")
+# Endpoint script tools exist only in these modes. The lock is not part of the mode policy
+# table, so an ENGAGEMENT_MODE_POLICY override of heavy_tools_hidden cannot expose them elsewhere.
+SCRIPT_RUN_TOOL_NAMES: tuple[str, ...] = ("list_endpoint_scripts", "run_endpoint_script", "get_endpoint_script_run")
+SCRIPT_RUN_MODES: tuple[str, ...] = ("incident_response", "threat_hunt")
 
 MAX_NOTES_CHARS = 2000
 MAX_FACT_VALUE_CHARS = 1024
@@ -160,7 +164,10 @@ def get_mode_policy_table() -> dict[str, ModePolicy]:
 
 
 def hidden_tools_for_mode(mode: str) -> frozenset[str]:
-    return frozenset(get_mode_policy(mode).heavy_tools_hidden)
+    hidden = set(get_mode_policy(mode).heavy_tools_hidden)
+    if mode not in SCRIPT_RUN_MODES:
+        hidden.update(SCRIPT_RUN_TOOL_NAMES)
+    return frozenset(hidden)
 
 
 @lru_cache(maxsize=8)
