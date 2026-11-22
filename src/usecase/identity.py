@@ -1,9 +1,14 @@
 import hmac
+import json
+import logging
+import re
 import time
 from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from functools import lru_cache
 from hashlib import sha256
 from threading import Lock
@@ -18,13 +23,39 @@ from config.config import get_config
 from entities.MCPContext import MCPContext
 from usecase.engagement import apply_engagement
 
-VALID_IDENTITY_AUTH_MODES = {"none", "entra", "gateway", "entra_or_gateway"}
+logger = logging.getLogger("cortex_xsiam_mcp.identity")
+
+VALID_IDENTITY_AUTH_MODES = {"none", "entra", "gateway", "entra_or_gateway", "api_key"}
+API_KEY_AUTH_SOURCE = "api-key"
+API_KEY_PREFIX = "xgw_"
+API_KEY_MIN_SECRET_CHARS = 32
+API_KEY_MAX_TOKEN_CHARS = 256
+_API_KEY_ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{2,63}")
+_API_KEY_SECRET_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
+_API_KEY_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+_API_KEY_ENTRY_FIELDS = {"sha256", "principal", "groups", "expires", "disabled", "created", "note"}
+# Compared against when the key id is unknown, so a miss costs the same as a wrong secret.
+_API_KEY_DUMMY_SHA256 = sha256(b"cortex-xsiam-mcp-gateway:no-such-api-key").hexdigest()
 _gateway_nonces: OrderedDict[tuple[str, str, str], int] = OrderedDict()
 _gateway_nonce_lock = Lock()
 _service_principal: ContextVar[MCPContext | None] = ContextVar("service_principal", default=None)
 
 class IdentityAuthenticationError(PermissionError):
     """Raised when incoming MCP identity cannot be verified."""
+
+
+class ApiKeyRegistryError(ValueError):
+    """Raised when MCP_API_KEYS is not a valid registry. The message never includes a hash."""
+
+
+@dataclass(frozen=True)
+class ApiKeyEntry:
+    key_id: str
+    sha256: str
+    principal: str
+    groups: tuple[str, ...]
+    expires: date | None = None
+    disabled: bool = False
 
 
 def parse_csv(value: str) -> tuple[str, ...]:
@@ -81,6 +112,12 @@ async def authenticate_http_headers(headers: Headers | dict[str, str]) -> Access
     headers = Headers(headers) if isinstance(headers, dict) else headers
     errors = []
 
+    if mode == "api_key":
+        bearer = _extract_bearer(headers)
+        if not bearer:
+            raise IdentityAuthenticationError("Missing bearer token")
+        return verify_api_key(bearer)
+
     if mode in {"entra", "entra_or_gateway"}:
         bearer = _extract_bearer(headers)
         if bearer:
@@ -113,6 +150,147 @@ async def verify_entra_bearer(token: str) -> AccessToken:
     claims["auth_source"] = "entra"
     access_token.claims = claims
     return access_token
+
+
+def verify_api_key(token: str) -> AccessToken:
+    """Verify a static client API key against the hashed registry in MCP_API_KEYS.
+
+    The token is `xgw_<key_id>.<secret>`. Only its SHA-256 is configured, so the registry
+    alone cannot be replayed as a credential. Every rejection before the hash matches uses
+    one message, so a caller cannot tell a wrong key id from a wrong secret.
+    """
+    try:
+        registry = load_api_key_registry(get_config().api_keys)
+    except ApiKeyRegistryError as e:
+        logger.error("MCP_API_KEYS is invalid, rejecting every API key: %s", e)
+        raise IdentityAuthenticationError("API key registry is not usable") from e
+
+    key_id = _api_key_id_from_token(token)
+    entry = registry.get(key_id) if key_id else None
+    presented = sha256(token.encode("utf-8", "surrogatepass")).hexdigest()
+    matches = hmac.compare_digest(presented, entry.sha256 if entry else _API_KEY_DUMMY_SHA256)
+    if entry is None or not matches:
+        # The id comes from the registry entry, never from the presented token, so nothing the
+        # caller sent reaches the log.
+        logger.warning("API key rejected: key_id=%s", entry.key_id if entry else "unknown")
+        raise IdentityAuthenticationError("Invalid API key")
+    if entry.disabled:
+        logger.warning("API key rejected: key_id=%s is disabled", entry.key_id)
+        raise IdentityAuthenticationError("API key is disabled")
+    today = datetime.now(UTC).date()
+    if entry.expires is not None and today >= entry.expires:
+        logger.warning("API key rejected: key_id=%s expired on %s", entry.key_id, entry.expires.isoformat())
+        raise IdentityAuthenticationError("API key has expired")
+
+    return AccessToken(
+        # Never carry the presented secret past this point.
+        token=API_KEY_AUTH_SOURCE,
+        client_id=entry.key_id,
+        scopes=[],
+        expires_at=_epoch_at_utc_midnight(entry.expires) if entry.expires else None,
+        subject=entry.principal,
+        claims={
+            "auth_source": API_KEY_AUTH_SOURCE,
+            "key_id": entry.key_id,
+            "principal": entry.principal,
+            "groups": list(entry.groups),
+        },
+    )
+
+
+def load_api_key_registry(raw: str) -> dict[str, ApiKeyEntry]:
+    """Parse and validate MCP_API_KEYS. An empty value is an empty registry: every key is rejected."""
+    return dict(_parse_api_key_registry(raw or ""))
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Refuse a JSON object that repeats a name.
+
+    json.loads keeps the last value, so a stale entry left under a disabled one, or a second
+    groups or disabled field, would silently win. The name is not echoed: it could be a pasted token.
+    """
+    result: dict[str, Any] = {}
+    for name, value in pairs:
+        if name in result:
+            raise ApiKeyRegistryError("MCP_API_KEYS repeats a key id or a field name")
+        result[name] = value
+    return result
+
+
+@lru_cache(maxsize=4)
+def _parse_api_key_registry(raw: str) -> tuple[tuple[str, ApiKeyEntry], ...]:
+    if not raw.strip():
+        return ()
+    try:
+        data = json.loads(raw, object_pairs_hook=_reject_duplicate_json_keys)
+    except json.JSONDecodeError as e:
+        raise ApiKeyRegistryError("MCP_API_KEYS is not valid JSON") from e
+    if not isinstance(data, dict):
+        raise ApiKeyRegistryError("MCP_API_KEYS must be a JSON object of key id to entry")
+
+    entries: list[tuple[str, ApiKeyEntry]] = []
+    seen_hashes: set[str] = set()
+    for key_id, value in data.items():
+        if not _API_KEY_ID_PATTERN.fullmatch(key_id):
+            raise ApiKeyRegistryError("MCP_API_KEYS has a key id that is not 3-64 chars of a-z, 0-9 and hyphen")
+        if not isinstance(value, dict):
+            raise ApiKeyRegistryError(f"MCP_API_KEYS entry {key_id} must be an object")
+        unknown = sorted(set(value) - _API_KEY_ENTRY_FIELDS)
+        if unknown:
+            raise ApiKeyRegistryError(f"MCP_API_KEYS entry {key_id} has unknown fields: {', '.join(unknown)}")
+        digest = value.get("sha256")
+        if not isinstance(digest, str) or not _API_KEY_SHA256_PATTERN.fullmatch(digest):
+            raise ApiKeyRegistryError(f"MCP_API_KEYS entry {key_id} needs sha256 as 64 lowercase hex chars")
+        if digest in seen_hashes:
+            raise ApiKeyRegistryError(f"MCP_API_KEYS entry {key_id} repeats another entry's sha256")
+        seen_hashes.add(digest)
+        principal = value.get("principal")
+        if not isinstance(principal, str) or not principal.strip() or principal != principal.strip():
+            raise ApiKeyRegistryError(f"MCP_API_KEYS entry {key_id} needs a non-empty principal")
+        groups = value.get("groups", [])
+        if not isinstance(groups, list) or any(not isinstance(g, str) or not g.strip() for g in groups):
+            raise ApiKeyRegistryError(f"MCP_API_KEYS entry {key_id} needs groups as a list of names")
+        disabled = value.get("disabled", False)
+        if not isinstance(disabled, bool):
+            raise ApiKeyRegistryError(f"MCP_API_KEYS entry {key_id} needs disabled as true or false")
+        expires_raw = value.get("expires")
+        expires = None
+        if expires_raw is not None:
+            try:
+                expires = date.fromisoformat(expires_raw) if isinstance(expires_raw, str) else None
+            except ValueError:
+                expires = None
+            if expires is None:
+                raise ApiKeyRegistryError(f"MCP_API_KEYS entry {key_id} needs expires as YYYY-MM-DD")
+        entries.append(
+            (
+                key_id,
+                ApiKeyEntry(
+                    key_id=key_id,
+                    sha256=digest,
+                    principal=principal,
+                    groups=tuple(dict.fromkeys(g.strip() for g in groups)),
+                    expires=expires,
+                    disabled=disabled,
+                ),
+            )
+        )
+    return tuple(entries)
+
+
+def _api_key_id_from_token(token: str) -> str | None:
+    if len(token) > API_KEY_MAX_TOKEN_CHARS or not token.startswith(API_KEY_PREFIX):
+        return None
+    key_id, separator, secret = token[len(API_KEY_PREFIX) :].partition(".")
+    if not separator or not _API_KEY_ID_PATTERN.fullmatch(key_id):
+        return None
+    if len(secret) < API_KEY_MIN_SECRET_CHARS or not _API_KEY_SECRET_PATTERN.fullmatch(secret):
+        return None
+    return key_id
+
+
+def _epoch_at_utc_midnight(day: date) -> int:
+    return int(datetime(day.year, day.month, day.day, tzinfo=UTC).timestamp())
 
 
 def verify_gateway_headers(headers: Headers) -> AccessToken:
@@ -207,6 +385,16 @@ def _consume_gateway_nonce(issuer: str, principal: str, nonce: str, timestamp: i
 def mcp_context_from_access_token(access_token: AccessToken, fallback: MCPContext) -> MCPContext:
     config = get_config()
     claims = dict(access_token.claims or {})
+    if claims.get("auth_source") == API_KEY_AUTH_SOURCE:
+        # Built by verify_api_key from the operator's registry. Read it directly so the
+        # Entra claim-name settings cannot change who an API key is or what it may do.
+        return MCPContext(
+            auth_headers=fallback.auth_headers,
+            principal_id=str(access_token.subject),
+            groups=tuple(_claim_values(claims, "groups")),
+            auth_source=API_KEY_AUTH_SOURCE,
+            tenant_id=None,
+        )
     principal_id = _first_claim(claims, parse_csv(config.entra_principal_claims)) or access_token.subject
     if not principal_id:
         principal_id = access_token.client_id

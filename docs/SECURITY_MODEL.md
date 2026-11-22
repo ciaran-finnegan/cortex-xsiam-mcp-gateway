@@ -8,7 +8,11 @@ credential broker.
 
 For HTTP transport, incoming users can be authenticated through Entra bearer
 JWT validation, HMAC-signed trusted gateway identity forwarding, or either path
-when `MCP_IDENTITY_AUTH_MODE=entra_or_gateway`.
+when `MCP_IDENTITY_AUTH_MODE=entra_or_gateway`. `MCP_IDENTITY_AUTH_MODE=api_key`
+replaces both with per-person static keys for a small test group: the gateway
+holds only each key's SHA-256, maps it to a principal and groups set by the
+operator, and applies the same tool, dataset and audit controls. A static key
+is a bearer secret with no second factor, so it is a stopgap before Entra.
 
 Every MCP tool invocation is checked against `TOOL_ACCESS_POLICY`.
 `query_dataset`, `search_logs`, and discovery tools enforce dataset allowlists

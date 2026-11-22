@@ -31,6 +31,7 @@ from pkg.util import bundle_openapi_from_folders, get_papi_auth_headers, get_pap
 from service.cortex_mcp.identity_middleware import IdentityMiddleware
 from service.cortex_mcp.server import create_mcp_server
 from usecase.dataset_catalogue import get_catalogue
+from usecase.identity import load_api_key_registry
 from usecase.module_util import discover_and_register_modules
 
 logger = logging.getLogger("Cortex MCP")
@@ -118,15 +119,19 @@ async def async_main(transport: Transport):
 
 def validate_transport_security(transport: Transport) -> None:
     config = get_config()
-    if (
-        transport != "stdio"
-        and config.identity_auth_mode.strip().lower() == "none"
-        and not config.allow_unauthenticated_http
-    ):
+    mode = config.identity_auth_mode.strip().lower()
+    if transport != "stdio" and mode == "none" and not config.allow_unauthenticated_http:
         raise ValueError(
             "HTTP MCP transport requires verified identity; configure MCP_IDENTITY_AUTH_MODE "
             "or explicitly set MCP_ALLOW_UNAUTHENTICATED_HTTP=true for isolated testing"
         )
+    if mode == "api_key":
+        # Fail at start on a malformed registry. An empty one is allowed: it rejects every caller.
+        registry = load_api_key_registry(config.api_keys)
+        if not registry:
+            logger.warning("MCP_IDENTITY_AUTH_MODE=api_key with no keys in MCP_API_KEYS: every request is rejected")
+        else:
+            logger.info("API key identity enabled for %d key(s)", len(registry))
 
 
 async def initialize_mcp_server(api_key: str, api_key_id: str, papi_url: str) -> FastMCP:

@@ -14,6 +14,11 @@ This project follows a lightweight changelog format until stable releases begin.
   in any letter case. Result rows keep the bare name. Field names still admit
   no backtick, so a quoted name cannot be closed early. Dataset names are not
   quoted. `validate_xql` does not yet flag a bare reserved word in raw XQL.
+- Added `MCP_IDENTITY_AUTH_MODE=api_key`: per-person static client keys for a
+  small test group before an identity provider is wired in. `MCP_API_KEYS`
+  holds only each key's SHA-256 with the principal and groups it maps to, the
+  server refuses to start on a malformed registry, and the mode accepts no
+  Entra token or gateway header. See `docs/CONFIGURATION.md`.
 - Added endpoint script execution, off by default (`SCRIPT_RUN_ENABLED`):
   `list_endpoint_scripts`, `run_endpoint_script`, and
   `get_endpoint_script_run` run a script from the XSIAM agent script library on
