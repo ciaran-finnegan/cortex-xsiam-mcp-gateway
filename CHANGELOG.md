@@ -4,6 +4,16 @@ This project follows a lightweight changelog format until stable releases begin.
 
 ## Unreleased
 
+- Fixed typed queries failing with an opaque server error when a field is
+  named like an XQL stage or operator, for example the `target` field of
+  SailPoint events. `query_dataset`, `continue_dataset_query`, `search_logs`,
+  `dataset_health`, `coverage_gap`, and the helpers now write such a name in
+  backticks in every position: filter, fields, sort, bin, `comp ... by`,
+  metric argument, alias, and the continuation seek clause. The list is 52
+  words (`XQL_RESERVED_WORDS`), measured against the XSIAM parser and matched
+  in any letter case. Result rows keep the bare name. Field names still admit
+  no backtick, so a quoted name cannot be closed early. Dataset names are not
+  quoted. `validate_xql` does not yet flag a bare reserved word in raw XQL.
 - Added endpoint script execution, off by default (`SCRIPT_RUN_ENABLED`):
   `list_endpoint_scripts`, `run_endpoint_script`, and
   `get_endpoint_script_run` run a script from the XSIAM agent script library on
