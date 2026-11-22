@@ -23,6 +23,7 @@ hashes, in memory, to pair two queries, and are never written.
 import hashlib
 import json
 import logging
+import math
 import re
 import time
 from collections import OrderedDict
@@ -365,7 +366,7 @@ def _finite_number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     number = float(value)
-    return number if number == number and abs(number) != float("inf") else None
+    return number if math.isfinite(number) else None
 
 
 def _query_units(response: dict[str, Any]) -> tuple[float | None, str | None]:
