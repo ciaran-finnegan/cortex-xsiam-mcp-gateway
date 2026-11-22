@@ -387,3 +387,107 @@ async def test_query_dataset_denies_dataset_before_execution(monkeypatch):
     assert response["success"] is False
     assert response["executed"] is False
     assert "not allowed" in response["error"]
+
+
+def test_reserved_word_fields_are_backtick_quoted_in_every_row_query_position():
+    # XSIAM reads a bare `target`, `limit`, `tag` or `top` as a stage keyword and rejects the query.
+    plan = DatasetQueryPlan(
+        dataset="identity_audit_raw",
+        fields=["_time", "action", "target"],
+        filters=[
+            QueryFilter(field="target", operator="contains", value="analyst"),
+            QueryFilter(field="limit", operator="in", value=["a", "b"]),
+            QueryFilter(field="tag", operator="eq", value="PROCESS", value_type="enum"),
+            QueryFilter(field="top", operator="gte", value=1_700_000_000_000, value_type="timestamp_ms"),
+            QueryFilter(field="view", operator="is_not_null"),
+        ],
+        order_by=[QuerySort(field="target", direction="desc"), QuerySort(field="action")],
+        enable_continuation=True,
+    )
+
+    assert build_dataset_xql(plan, seek_values=["z", "a"]).xql == (
+        "dataset = identity_audit_raw "
+        '| filter (`target` contains "analyst") and (`limit` in ("a", "b")) and (`tag` = ENUM.PROCESS) '
+        'and (`top` >= to_timestamp(1700000000000, "MILLIS")) and (`view` != null) '
+        '| filter ((`target` < "z") or (`target` = "z" and action > "a")) '
+        "| sort desc `target`, asc action | fields _time, action, `target` | limit 26"
+    )
+
+
+def test_reserved_word_fields_are_backtick_quoted_in_aggregates_and_bins():
+    plan = DatasetQueryPlan(
+        dataset="identity_audit_raw",
+        mode="aggregate",
+        metrics=[
+            QueryMetric(function="count", alias="limit"),
+            QueryMetric(function="count_distinct", field="target", alias="targets"),
+        ],
+        group_by=["target", "action"],
+        time_bucket=QueryTimeBucket(field="span", size=1, unit="h"),
+        order_by=[QuerySort(field="limit", direction="desc"), QuerySort(field="target")],
+        limit=10,
+    )
+
+    assert build_dataset_xql(plan).xql == (
+        "dataset = identity_audit_raw | bin `span` span = 1h "
+        "| comp count() as `limit`, count_distinct(`target`) as targets by `span`, `target`, action "
+        "| sort desc `limit`, asc `target` | limit 10"
+    )
+
+
+def test_reserved_word_quoting_ignores_case_and_leaves_other_names_bare():
+    plan = DatasetQueryPlan(
+        dataset="identity_audit_raw",
+        fields=["Target", "TARGET", "targets", "target_name", "type", "name", "status"],
+    )
+
+    assert build_dataset_xql(plan).xql == (
+        "dataset = identity_audit_raw | fields `Target`, `TARGET`, targets, target_name, type, name, status | limit 25"
+    )
+
+
+@pytest.mark.parametrize("name", ["target`", "`target`", "target` | limit 1000 | fields `x", "tar`get", "target "])
+def test_field_names_cannot_carry_or_close_a_backtick_quote(name):
+    plans = [
+        {"fields": [name]},
+        {"fields": ["action"], "filters": [QueryFilter(field=name, operator="eq", value="x")]},
+        {"fields": ["action"], "order_by": [QuerySort(field=name)]},
+        {"mode": "aggregate", "metrics": [QueryMetric(function="count", alias="n")], "group_by": [name]},
+        {"mode": "aggregate", "metrics": [QueryMetric(function="count", alias=name)]},
+        {"mode": "aggregate", "metrics": [QueryMetric(function="max", field=name, alias="n")]},
+    ]
+    for plan in plans:
+        with pytest.raises(ValueError, match="Invalid"):
+            build_dataset_xql(DatasetQueryPlan(dataset="identity_audit_raw", **plan))
+
+
+@pytest.mark.asyncio
+async def test_query_dataset_returns_a_reserved_word_field_under_its_bare_name(monkeypatch):
+    monkeypatch.setattr(get_config(), "log_search_dataset_policy", '{"DataReader":["identity_audit_raw"]}')
+    seen = {}
+
+    async def fake_run(ctx, query, result_limit, **kwargs):
+        seen["query"] = query
+        return {
+            "query_id": "query-target",
+            "reply": {
+                "status": "SUCCESS",
+                "number_of_results": 1,
+                "results": {"data": [{"action": "REVOKE", "target": '{"name":"analyst.one"}', "unrequested": "x"}]},
+            },
+        }
+
+    monkeypatch.setattr(datasets, "run_xql_query", fake_run)
+
+    response = await datasets.query_dataset(
+        _ctx(),
+        dataset="identity_audit_raw",
+        fields=["action", "target"],
+        filters=[QueryFilter(field="target", operator="is_not_null")],
+        timeframe=QueryTimeframe(relative_ms=60_000),
+        limit=1,
+    )
+
+    assert seen["query"] == "dataset = identity_audit_raw | filter (`target` != null) | fields action, `target` | limit 1"
+    assert response["success"] is True
+    assert response["rows"] == [{"action": "REVOKE", "target": '{"name":"analyst.one"}'}]
