@@ -198,6 +198,9 @@ This project follows a lightweight changelog format until stable releases begin.
   `xdr_data` is light and runs in every mode; before, the fixed seven-day sample
   was rated medium and refused in operations mode, so `validate_xql` skipped its
   field check there. An idle dataset now costs two cheap samples instead of one.
+  A sample the cost guard refuses, on either window, ends the helper or
+  `dataset_health` call with that refusal, so an unverified dataset is never
+  reported as empty.
 
 ## 0.2.0-alpha.1 - 2026-07-10
 

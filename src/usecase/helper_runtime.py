@@ -210,13 +210,9 @@ async def discovered_field_names(run: HelperRun, dataset: str) -> frozenset[str]
     for hours in (FIELD_DISCOVERY_WINDOW_HOURS, FIELD_DISCOVERY_WIDE_WINDOW_HOURS):
         run._spend()
         record: dict[str, Any] = {"dataset": dataset, "purpose": "field_discovery", "query_sha256": query_hash(xql)}
-        try:
-            response = await execute_query(run, xql, FIELD_DISCOVERY_SAMPLE, window_timeframe(hours), record)
-        except CostGuardRefusal:
-            if hours == FIELD_DISCOVERY_WINDOW_HOURS:
-                raise
-            # The day was empty and the week is refused: an idle heavy dataset has no verified fields.
-            return frozenset()
+        # A refused sample propagates on either window, so the caller returns the approvable
+        # refusal instead of treating an unverified dataset as one with no fields.
+        response = await execute_query(run, xql, FIELD_DISCOVERY_SAMPLE, window_timeframe(hours), record)
         run.queries.append(record)
         if response.get("error"):
             return frozenset()

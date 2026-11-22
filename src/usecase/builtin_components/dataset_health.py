@@ -73,12 +73,9 @@ async def _observed_fields(run: HelperRun, dataset: str) -> list[dict[str, Any]]
     for hours in (SCHEMA_SAMPLE_WINDOW_HOURS, STALE_LOOKBACK_HOURS):
         run._spend()
         record: dict[str, Any] = {"dataset": dataset, "purpose": "field_discovery", "query_sha256": query_hash(xql)}
-        try:
-            response = await execute_query(run, xql, SCHEMA_SAMPLE_ROWS, window_timeframe(hours), record)
-        except CostGuardRefusal:
-            if hours == SCHEMA_SAMPLE_WINDOW_HOURS:
-                raise
-            return []
+        # A refused sample propagates on either window: an empty day followed by a refused
+        # week is not evidence the dataset is empty, so it must not be reported as no_data.
+        response = await execute_query(run, xql, SCHEMA_SAMPLE_ROWS, window_timeframe(hours), record)
         if response.get("error"):
             record["error"] = True
             run.queries.append(record)

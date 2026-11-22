@@ -449,6 +449,31 @@ class RefusingXsiam(FakeXsiam):
 
 
 @pytest.mark.asyncio
+async def test_field_discovery_raises_the_refusal_when_the_day_is_empty_and_the_week_is_refused(monkeypatch):
+    """A refused wide sample is not an empty schema: the caller must get the approvable refusal."""
+    week = {"relativeTime": helper_runtime.FIELD_DISCOVERY_WIDE_WINDOW_HOURS * 3_600_000}
+
+    class WeekRefusingXsiam(FakeXsiam):
+        async def run(self, ctx, query, limit, timeframe=None, **kwargs):
+            if timeframe == week:
+                raise _refusal()
+            return await super().run(ctx, query, limit, timeframe=timeframe, **kwargs)
+
+    fake = WeekRefusingXsiam(schemas={"acme_quiet_raw": []})
+    _install(monkeypatch, fake, ["acme_quiet_raw"], {"Tier1": ["acme_quiet_raw"]})
+    principal = MCPContext(auth_headers={}, principal_id="tier1@example.com", groups=("Tier1",))
+    run = helper_runtime.HelperRun(_ctx(), principal, tool="firewall_traffic")
+
+    with pytest.raises(CostGuardRefusal):
+        await helper_runtime.discovered_field_names(run, "acme_quiet_raw")
+
+    assert [item["purpose"] for item in run.queries] == ["field_discovery", "field_discovery"]
+    assert run.queries[1]["error"] is True and run.queries[1]["cost_guard_rule"] == "approval_required"
+    # Nothing was cached, so an approved retry samples again instead of reusing an empty answer.
+    assert "acme_quiet_raw" not in helper_runtime._field_cache
+
+
+@pytest.mark.asyncio
 async def test_helper_queries_carry_the_tool_name_the_approval_and_a_timeframe(monkeypatch):
     fake = FakeXsiam(rows={(ENDPOINTS, "rows"): [{"endpoint_name": "WKS-1234", "ip_address": ["10.1.2.3"], "user": "jsmith"}]})
     seen: list[tuple[dict | None, dict]] = []

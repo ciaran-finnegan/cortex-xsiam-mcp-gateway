@@ -10,6 +10,7 @@ from entities.MCPContext import MCPContext
 from usecase import dataset_catalogue as dc
 from usecase import helper_runtime
 from usecase.builtin_components import dataset_health as health
+from usecase.cost_guard import CostGuardRefusal
 
 AUDIT = "management_auditing"
 TRAFFIC = "panw_ngfw_traffic_raw"
@@ -110,6 +111,42 @@ async def test_dataset_health_distinguishes_stale_from_no_data_and_uses_daily_bu
         {"relativeTime": health.SCHEMA_SAMPLE_WINDOW_HOURS * 3_600_000},
         {"relativeTime": health.STALE_LOOKBACK_HOURS * 3_600_000},
     ]
+
+
+@pytest.mark.asyncio
+async def test_dataset_health_returns_the_refusal_when_the_day_is_empty_and_the_week_is_refused(monkeypatch):
+    """An empty day plus a refused week is unverified, not an outage: no_data would be a false report."""
+    week = {"relativeTime": health.STALE_LOOKBACK_HOURS * 3_600_000}
+
+    class WeekRefusingXsiam(FakeXsiam):
+        async def run(self, ctx, query, limit, timeframe=None, **kwargs):
+            if timeframe == week:
+                self.calls.append({"dataset": TRAFFIC, "query": query, "limit": limit, "timeframe": timeframe})
+                raise CostGuardRefusal(
+                    {
+                        "success": False,
+                        "executed": False,
+                        "error": "cost_guard",
+                        "message": "Query not allowed by the cost guard (approval_required): test.",
+                        "rule": "approval_required",
+                    }
+                )
+            return await super().run(ctx, query, limit, timeframe=timeframe, **kwargs)
+
+    fake = WeekRefusingXsiam()
+    _install(monkeypatch, fake, [TRAFFIC], [TRAFFIC])
+
+    response = await health.dataset_health(_ctx(), dataset=TRAFFIC)
+
+    assert response["success"] is False and response["executed"] is False
+    assert response["error"] == "cost_guard" and response["rule"] == "approval_required"
+    assert "datasets" not in response, "a refused sample must not be reported as an empty dataset"
+    assert [call["timeframe"] for call in fake.calls] == [
+        {"relativeTime": health.SCHEMA_SAMPLE_WINDOW_HOURS * 3_600_000},
+        week,
+    ]
+    refused = [query for query in response["provenance"]["queries"] if query.get("error")]
+    assert len(refused) == 1 and refused[0]["cost_guard_rule"] == "approval_required"
 
 
 @pytest.mark.asyncio
