@@ -2031,6 +2031,7 @@ async def test_link_on_the_api_host_is_fetched_with_the_api_key(monkeypatch, tmp
         "https://api-acme.xdr.example.test.attacker.example/public_api/v1/download/t",
         "https://files.api-acme.xdr.example.test/public_api/v1/download/t",
         "https://api-acme.xdr.example.test:8443/public_api/v1/download/t",
+        "https://api-acme.xdr.example.test:0/public_api/v1/download/t",
         "https://api-other.xdr.example.test/public_api/v1/download/t",
     ],
 )
@@ -2069,6 +2070,34 @@ async def test_api_key_is_not_sent_after_a_redirect_off_the_api_host(monkeypatch
     assert len(seen) == 2
     assert seen[0].headers["authorization"] == API_KEY
     assert _no_api_key(seen[1]) and "cookie" not in seen[1].headers
+
+
+@pytest.mark.asyncio
+async def test_api_key_is_not_sent_again_when_a_redirect_returns_to_the_api_host(monkeypatch, tmp_path, fetcher):
+    """Another host must not be able to aim an authenticated request at a path it picks on the API host."""
+    monkeypatch.setattr(get_config(), "script_run_results_dir", str(tmp_path / "script-results"))
+    fetcher.link = API_LINK
+
+    def bounce(request):
+        if request.url.host == "storage.example.test":
+            return httpx.Response(302, headers={"location": f"{API_URL}/public_api/v1/download/chosen-by-other-host"})
+        if request.url.path.endswith("synthetic-download-token"):
+            return httpx.Response(302, headers={"location": "https://storage.example.test/hop"})
+        return _tenant_download(request)
+
+    seen = _serve_download(monkeypatch, bounce)
+    ctx = await _started()
+
+    reply = await get_endpoint_script_run(ctx, action_id=ACTION_ID, retrieve_files_for=["wks-0001"])
+
+    assert [request.url.host for request in seen] == [
+        "api-acme.xdr.example.test",
+        "storage.example.test",
+        "api-acme.xdr.example.test",
+    ]
+    assert seen[0].headers["authorization"] == API_KEY
+    assert _no_api_key(seen[1]) and _no_api_key(seen[2])
+    assert reply["files"]["retrieved"][0]["error"] == "the download failed with status 401"
 
 
 @pytest.mark.asyncio

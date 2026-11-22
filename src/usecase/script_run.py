@@ -1960,7 +1960,8 @@ def _host_and_port(url: str) -> tuple[str, int] | None:
     try:
         parts = urlsplit(url)
         hostname = parts.hostname
-        port = parts.port or (443 if parts.scheme.lower() == "https" else None)
+        # An explicit port is compared as written, so ":0" is never read as the default.
+        port = parts.port if parts.port is not None else (443 if parts.scheme.lower() == "https" else None)
     except ValueError:
         return None
     if parts.scheme.lower() != "https" or not hostname or port is None:
@@ -2006,7 +2007,9 @@ async def download_zip(
     """Stream a download link to ``destination`` under a size cap. Redirects are followed only to https.
 
     The API key headers go only to the configured API host, checked again on every redirect, so a
-    redirect to any other host is fetched without them.
+    redirect to any other host is fetched without them. Once a hop leaves the API host the key is
+    dropped for the rest of the chain, so another host cannot steer an authenticated request back
+    to a path of its choosing on the API host.
     """
     url = _download_url(link)
     if destination.is_symlink():
@@ -2015,7 +2018,10 @@ async def download_zip(
         for _ in range(MAX_DOWNLOAD_REDIRECTS + 1):
             # Nothing one host sets (a cookie) is carried to the next hop.
             client.cookies.clear()
-            async with client.stream("GET", url, headers=_headers_for(url, credentials)) as response:
+            headers = _headers_for(url, credentials)
+            if not headers:
+                credentials = None
+            async with client.stream("GET", url, headers=headers) as response:
                 if response.status_code in (301, 302, 303, 307, 308):
                     location = response.headers.get("location")
                     if not location:
