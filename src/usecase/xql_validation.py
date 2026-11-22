@@ -60,7 +60,11 @@ APPENDED_LIMIT = 25
 CACHE_TTL_SECONDS = 3600
 CACHE_MAX_ENTRIES = 256
 FIELD_DISCOVERY_SAMPLE = 25
-FIELD_DISCOVERY_WINDOW_MS = 7 * DAY_MS
+# One day first: an early-exit sample over a day starts from a light estimate on every dataset
+# tier, so it is normally below the approval threshold. Both windows stay subject to every cost
+# guard check. An empty day widens once to a week before the dataset is reported as possibly idle.
+FIELD_DISCOVERY_WINDOW_MS = DAY_MS
+FIELD_DISCOVERY_WIDE_WINDOW_MS = 7 * DAY_MS
 PROBE_WINDOW_MS = HOUR_MS
 PROBE_TIMEOUT_SECONDS = 30
 MAX_SUGGESTIONS = 3
@@ -563,7 +567,7 @@ async def _check_fields(
             reason = "Field discovery is unavailable, so field names were not checked."
         else:
             reason = (
-                f"Field discovery found no rows in dataset {dataset} over the last {_days(FIELD_DISCOVERY_WINDOW_MS)} days, "
+                f"Field discovery found no rows in dataset {dataset} over the last {_days(FIELD_DISCOVERY_WIDE_WINDOW_MS)} days, "
                 "so field names were not checked. The dataset may not be receiving data."
             )
         problems.append(Problem("field_check_skipped", reason, severity="warning"))
@@ -705,26 +709,30 @@ async def _dataset_fields(ctx, scope: str, dataset: str) -> tuple[frozenset[str]
     if cached and now - cached[0] < CACHE_TTL_SECONDS:
         return cached[1], "cache" if cached[1] else cached[2]
     now_ms = int(time.time() * 1000)
-    try:
-        response = await run_xql_query(
-            ctx,
-            build_field_discovery_xql(dataset, FIELD_DISCOVERY_SAMPLE),
-            FIELD_DISCOVERY_SAMPLE,
-            timeframe={"from": now_ms - FIELD_DISCOVERY_WINDOW_MS, "to": now_ms},
-            timeout_seconds=PROBE_TIMEOUT_SECONDS,
-            tool="validate_xql",
-        )
-    except CostGuardRefusal:
-        # Not cached: a later mode with a higher approval threshold may allow discovery.
-        return frozenset(), "cost_guard"
-    except (PAPIClientError, CredentialBrokerError, PermissionError, ValueError):
-        response = {"error": "unavailable"}
-    if response.get("error"):
-        names: frozenset[str] = frozenset()
-        source = "unavailable"
-    else:
+    names: frozenset[str] = frozenset()
+    source = "unavailable"
+    for window_ms in (FIELD_DISCOVERY_WINDOW_MS, FIELD_DISCOVERY_WIDE_WINDOW_MS):
+        try:
+            response = await run_xql_query(
+                ctx,
+                build_field_discovery_xql(dataset, FIELD_DISCOVERY_SAMPLE),
+                FIELD_DISCOVERY_SAMPLE,
+                timeframe={"from": now_ms - window_ms, "to": now_ms},
+                timeout_seconds=PROBE_TIMEOUT_SECONDS,
+                tool="validate_xql",
+            )
+        except CostGuardRefusal:
+            # Not cached: a later mode with a higher approval threshold may allow discovery.
+            return frozenset(), "cost_guard"
+        except (PAPIClientError, CredentialBrokerError, PermissionError, ValueError):
+            response = {"error": "unavailable"}
+        if response.get("error"):
+            names, source = frozenset(), "unavailable"
+            break
         names = frozenset(name for row in extract_xql_rows(response) for name in row if isinstance(name, str))
         source = "discovery"
+        if names:
+            break
     # Failures and empty samples are cached too, so discovery runs at most once an hour.
     _store(_field_cache, key, (now, names, source))
     return names, source

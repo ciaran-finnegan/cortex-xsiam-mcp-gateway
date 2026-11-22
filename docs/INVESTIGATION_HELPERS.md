@@ -92,7 +92,8 @@ most three bounded queries per dataset: a 25-row sample for field names and
 types (values discarded), an arrival trend by hour (windows up to 48 hours) or
 by day, and three recent records with up to eight fields. `status` is
 `receiving`, `stale` (nothing in the window but records within seven days),
-`no_data`, or `unknown` when no timestamp field was observed.
+`no_data`, or `unknown` when no timestamp field was observed or the schema
+sample query failed.
 
 Give an exact `dataset`, or a `topic` to check the three best catalogue
 matches. It works for datasets with no catalogue record, since it only needs
