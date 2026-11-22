@@ -194,3 +194,13 @@ async def test_coverage_gap_contract_and_default_policy():
     assert {"query", "xql", "filters", "fields", "join", "tenants"}.isdisjoint(schema["properties"])
     default_policy = json.loads(Settings.model_fields["tool_access_policy"].default)
     assert "coverage_gap" in default_policy["Tier1"] and "coverage_gap" in default_policy["SOC"]
+
+
+def test_host_fields_named_like_a_reserved_word_are_backtick_quoted():
+    xql = coverage.build_reference_total_xql(DIRECTORY, "target", ("tag", "computer"))
+
+    assert xql == (
+        f'dataset = {DIRECTORY} | filter `target` != null and `tag` = "computer" '
+        '| alter cg_reference_host = uppercase(arrayindex(split(`target`, "."), 0)) | dedup cg_reference_host '
+        "| comp count() as total | limit 1"
+    )

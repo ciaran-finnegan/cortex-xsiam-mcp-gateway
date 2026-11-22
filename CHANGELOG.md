@@ -4,6 +4,16 @@ This project follows a lightweight changelog format until stable releases begin.
 
 ## Unreleased
 
+- Fixed typed queries failing with an opaque server error when a field is
+  named like an XQL stage or operator, for example the `target` field of
+  SailPoint events. `query_dataset`, `continue_dataset_query`, `search_logs`,
+  `dataset_health`, `coverage_gap`, and the helpers now write such a name in
+  backticks in every position: filter, fields, sort, bin, `comp ... by`,
+  metric argument, alias, and the continuation seek clause. The list is 52
+  words (`XQL_RESERVED_WORDS`), measured against the XSIAM parser and matched
+  in any letter case. Result rows keep the bare name. Field names still admit
+  no backtick, so a quoted name cannot be closed early. Dataset names are not
+  quoted. `validate_xql` does not yet flag a bare reserved word in raw XQL.
 - Added endpoint script execution, off by default (`SCRIPT_RUN_ENABLED`):
   `list_endpoint_scripts`, `run_endpoint_script`, and
   `get_endpoint_script_run` run a script from the XSIAM agent script library on
@@ -192,6 +202,17 @@ This project follows a lightweight changelog format until stable releases begin.
   would; globs stay a fallback. The default map pins the firewall traffic, URL
   and cloud flow log datasets to `medium`, and its existing `light` pin for
   `xql_query_center_history` now takes effect.
+- Field discovery samples one day first and widens to seven days only when the day
+  returns no rows, in `validate_xql`, the investigation helpers and `dataset_health`.
+  With the early-exit sample scoring change (#68), discovery on a heavy dataset such as
+  `xdr_data` starts from a light estimate and is normally below every mode's
+  approval threshold, though both samples stay subject to every cost guard check;
+  before, the fixed seven-day sample
+  was rated medium and refused in operations mode, so `validate_xql` skipped its
+  field check there. An idle dataset now costs two cheap samples instead of one.
+  A sample the cost guard refuses, on either window, ends the helper or
+  `dataset_health` call with that refusal, and a sample that fails reports the
+  dataset as `unknown`, so an unverified dataset is never reported as empty.
 
 ## 0.2.0-alpha.1 - 2026-07-10
 

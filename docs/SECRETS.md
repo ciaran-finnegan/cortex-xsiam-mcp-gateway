@@ -169,20 +169,20 @@ unlocks the way the app does, Touch ID, Windows Hello or the account password,
 and `op` waits while the app is locked.
 
 Store the key as an API Credential item in a vault shared only with the people
-who run the gateway, e.g. `XSIAM dev tenant Tier1`, key in `credential`, text
+who run the gateway, e.g. `XSIAM example tenant Tier1`, key in `credential`, text
 fields `auth_id` and `url`. From a terminal, read it at a hidden prompt:
 
 ```bash
 stty -echo; printf 'XSIAM API key: '; read -r KEY; stty echo; printf '\n'
 printf '%s' "$KEY" | jq -Rs \
-  --arg title "XSIAM dev tenant Tier1" \
+  --arg title "XSIAM example tenant Tier1" \
   --arg url "https://api-your-xsiam-tenant.example" \
   --arg id "12" \
   '{title: $title, category: "API_CREDENTIAL", fields: [
      {id: "credential", type: "CONCEALED", label: "credential", value: .},
      {id: "auth_id", type: "STRING", label: "auth_id", value: $id},
      {id: "url", type: "STRING", label: "url", value: $url}]}' \
-  | op item create --vault "Security Engineering" - --format json \
+  | op item create --vault "Example Vault" - --format json \
   | jq -r '"stored \(.vault.name)/\(.id)"'
 unset KEY
 ```
@@ -193,9 +193,9 @@ repeat, so in a shared file use the item id,
 per variable named in `XSIAM_CREDENTIAL_PROFILES`.
 
 ```bash
-CORTEX_MCP_PAPI_URL=op://Security Engineering/XSIAM dev tenant Tier1/url
-CORTEX_MCP_PAPI_AUTH_HEADER=op://Security Engineering/XSIAM dev tenant Tier1/credential
-CORTEX_MCP_PAPI_AUTH_ID=op://Security Engineering/XSIAM dev tenant Tier1/auth_id
+CORTEX_MCP_PAPI_URL=op://Example Vault/XSIAM example tenant Tier1/url
+CORTEX_MCP_PAPI_AUTH_HEADER=op://Example Vault/XSIAM example tenant Tier1/credential
+CORTEX_MCP_PAPI_AUTH_ID=op://Example Vault/XSIAM example tenant Tier1/auth_id
 ```
 
 Run:
