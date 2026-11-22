@@ -162,11 +162,16 @@ def test_empty_api_key_registry_rejects_every_key(monkeypatch):
             }
         ),
         # json.dumps cannot repeat a name, so these are written out. Without the check the last value wins.
-        '{"analyst-one": {"sha256": "%s", "principal": "p", "groups": [], "disabled": true},'
-        ' "analyst-one": {"sha256": "%s", "principal": "p", "groups": ["Admin"]}}' % ("a" * 64, "a" * 64),
-        '{"analyst-one": {"sha256": "%s", "principal": "p", "groups": ["Tier1"], "groups": ["Admin"]}}' % ("a" * 64),
-        '{"analyst-one": {"sha256": "%s", "principal": "p", "groups": [], "disabled": true, "disabled": false}}'
-        % ("a" * 64),
+        (
+            '{"analyst-one": {"sha256": "HASH", "principal": "p", "groups": [], "disabled": true},'
+            ' "analyst-one": {"sha256": "HASH", "principal": "p", "groups": ["Admin"]}}'
+        ).replace("HASH", "a" * 64),
+        '{"analyst-one": {"sha256": "HASH", "principal": "p", "groups": ["Tier1"], "groups": ["Admin"]}}'.replace(
+            "HASH", "a" * 64
+        ),
+        '{"analyst-one": {"sha256": "HASH", "principal": "p", "groups": [], "disabled": true, "disabled": false}}'.replace(
+            "HASH", "a" * 64
+        ),
     ],
 )
 def test_malformed_api_key_registry_fails_closed(monkeypatch, registry):
